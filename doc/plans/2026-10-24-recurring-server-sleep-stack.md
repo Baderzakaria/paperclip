@@ -641,3 +641,82 @@ Slice 13 final local verification also passes all 154 affected settings cases
 checks/replay, and a generic-plan query probe with 40,000 completed dispatches.
 Both queries use the prepared-only partial index with six shared buffers,
 including the routine join. Remote CI/review remain required.
+
+## Next owner audit: decision retention
+
+Slice 13 is [#17490](https://github.com/paperclipai/paperclip/pull/17490), head
+`706beb01f2`, based on the repaired target PR #17486 (`1bbfc69590`). It is
+attached and review was requested. The target PR now has fresh Greptile 5/5
+with its mixed-hint finding resolved; its fresh CI is still running. Grok's CI
+and review are running. No new readiness or merge claim is made.
+
+Branch `codex/sleep-14-decision-retention` starts from #17490. This section is
+an audit, not an implemented retention migration. The original full inventory
+remains the completion scope.
+
+The existing startup/tick retention function selects every active company,
+builds `attentionService.list({includeDismissed:true, all:true,
+allowUnscopedAll:true})`, then calls `autoArchive`. Notification delivery was
+already separated in slice 08. Retention itself is not just an expiry scan of
+`decision_retention`: `attentionService` materializes those records via
+`syncItems` while building the feed. An item never viewed in the UI still needs
+retention coverage. Removing the periodic feed build and looking only at existing
+retention rows would silently miss such sources.
+
+The auto-archive policy uses 90 days since source activity, `keep = false`, and
+no existing archive. The 30-day shelf default and per-queue shelf overrides are
+UI classification, not the automatic archive deadline. Keep these concepts
+separate. Preserve version CAS, actor columns, archiveVersion, notification
+outbox creation, and audit in the owning transaction. Manual archive/revive,
+keep/unkeep, and archive-proposal manifests are also producers of schedule
+changes; they must not require another unrelated source write to take effect.
+
+Current feed sources and eligibility dependencies observed in attention.ts:
+
+| Source | Activity timestamp / eligibility dependencies to audit |
+| --- | --- |
+| approval | Approval updatedAt; pending status; issue approval links |
+| issue_thread_interaction | Interaction updatedAt; pending status; issue and audience policy |
+| decision | Decision updatedAt; open status; current feed selection has a default 500-row cap |
+| join_request | Join updatedAt; pending_approval; matching company invite |
+| recovery_action | Recovery updatedAt; active/escalated; human owner and visible source issue |
+| blocker_attention | Prospective blockedTransitionAt or terminal blocker's updatedAt; dependency graph, liveness, monitor and unblock-owner state |
+| review | Issue updatedAt; in_review; human participant/assignee, pending approval, or stalled review liveness |
+| failed_run | finishedAt/updatedAt/createdAt; bounded-retry-exhaustion event; failed/timed_out; nonterminated agent; no newer run for that agent/task |
+| budget_alert | Incident updatedAt; current budget overview/window; hard threshold or observed >=85% |
+| agent_error_alert | Agent updatedAt; error status |
+
+`productivity_review` remains in the source-kind contract and retention origin
+resolver, but this inspected feed does not directly emit that kind. Do not invent
+a new producer or assume all enum values imply live rows. Failed-run attention
+has no simple age cutoff in `listAttentionExhaustedRuns`; old rows cannot be
+excluded merely because they are old.
+
+Review/blocker attention depends on more than issue status. The review liveness
+input includes agents, queued/running runs, wake requests, pending interactions,
+approvals, external-response waits, recovery paths, monitors, and `now`. Identify
+any clock-driven eligibility transitions as well as source mutations before
+removing the backstop. Company activation must discover old eligible sources,
+while company deactivation must stop its passive work.
+
+A company-scoped dirty signal can coalesce a source change into a finite feed
+reconciliation, but it is only valid after every supported source writer and
+transaction owner is accounted for. A live-event callback or activity-log hook
+alone is not a proven durable producer contract. Do not hide provider/domain
+policy in the shared scheduler or add blanket database-write interception.
+
+Also avoid a notification feedback loop: syncItems currently attempts an
+on-conflict insert for all items on every feed read, then updates changed activity
+versions. Unconditionally signaling every such attempted insert would cause the
+worker's own read/materialization to continually wake itself. Any notification
+at this boundary must distinguish actual new/changed retention state and converge.
+
+Required evidence must include an unseen source aging into retention, all audited
+source classes and activation paths, exact archive deadline, activity moving a
+deadline later, keep/unkeep and manual archive/revive, no repeated feed rebuild
+with unchanged pending or completed history, failure/restart/drain, and a source
+change during archive selection. The current version CAS protects retention-row
+changes; it does not by itself prove that an underlying source did not change
+between the feed read and archive. Preserve or strengthen that boundary explicitly
+without silently archiving freshly active work. No retention code or PR is yet
+claimed for this branch.
