@@ -340,6 +340,8 @@ vi.mock("../services/index.js", () => ({
   })),
   decisionService: vi.fn(() => ({
     sweepExpired: vi.fn(async () => ({ expired: 0 })),
+    sweepTtlExpiry: vi.fn(async () => ({ expired: 0 })),
+    nextExpiryAt: vi.fn(async () => null),
     sweepContinuations: vi.fn(async () => ({ retry: false })),
   })),
   decisionRetentionService: vi.fn(() => ({
@@ -859,7 +861,9 @@ describe("startServer feedback export wiring", () => {
       expect(deliveryWorkRegisterMock.mock.calls.some(([queue]) => queue === DELIVERY_QUEUES.decisionContinuation)).toBe(true);
       const decisions = vi.mocked(decisionService).mock.results.at(-1)!.value;
       expect(decisions.sweepContinuations).toHaveBeenCalledTimes(1);
-      expect(decisions.sweepExpired).toHaveBeenCalledWith(expect.any(Date), { includeContinuations: false });
+      expect(decisions.sweepTtlExpiry).toHaveBeenCalledTimes(1);
+      expect(deliveryWorkRegisterMock.mock.calls.some(([queue]) => queue === DELIVERY_QUEUES.decisionExpiry)).toBe(true);
+      expect(decisions.sweepExpired).toHaveBeenCalledWith(expect.any(Date), { includeContinuations: false, includeExpiry: false });
     } finally {
       setIntervalSpy.mockRestore();
     }
@@ -897,6 +901,7 @@ describe("startServer feedback export wiring", () => {
       expect(heartbeatServiceMock.reconcileCostAccounting).toHaveBeenCalledTimes(1);
       expect(environmentCustomImagesServiceMock.cleanupExpiredSetupSessions).not.toHaveBeenCalled();
       expect(deliveryWorkRegisterMock.mock.calls.some(([queue]) => queue === DELIVERY_QUEUES.decisionContinuation)).toBe(false);
+      expect(deliveryWorkRegisterMock.mock.calls.some(([queue]) => queue === DELIVERY_QUEUES.decisionExpiry)).toBe(false);
     } finally {
       setIntervalSpy.mockRestore();
     }

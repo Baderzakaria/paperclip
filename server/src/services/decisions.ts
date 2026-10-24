@@ -15,7 +15,8 @@ import {
 import { decisionRetentionService, hashAttentionArchiveManifest } from "./decision-retention.js";
 
 import { decisionContinuationService, type DecisionContinuationWake } from "./decision-continuations.js";
-import { writeDecisionChange } from "./decision-work-notifications.js";
+import { decisionExpiryService } from "./decision-expiry.js";
+import { notifyDecisionChange, writeDecisionChange } from "./decision-work-notifications.js";
 
 type Snapshot = { status: string; assigneeAgentId: string | null; assigneeUserId: string | null; updatedAt: string;
   descendantCount?: number; descendantIds?: string[]; childCount?: number; attentionArchive?: unknown };
@@ -122,6 +123,7 @@ function boardCanActDirectly(actor: AuthorizationActor, companyId: string) {
 
 export function decisionService(db: Db, options: DecisionServiceOptions) {
   const continuations = decisionContinuationService(db, options.wakeOriginAgent);
+  const expiry = decisionExpiryService(db, continuations.deliver);
   const authz = authorizationService(db);
   let targetSweepCursor: string | null = null;
   type CreateInput = { companyId: string; actor: AuthorizationActor; agentId: string; runId: string; bundleId?: string | null;
@@ -227,6 +229,7 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
       ...(input.additionalTargetSnapshots ?? {}),
     };
     const id = randomUUID();
+    await notifyDecisionChange(dbOrTx);
     const [created] = await dbOrTx.insert(decisions).values({ id, companyId: input.companyId, bundleId: input.bundleId ?? null,
       originAgentId: input.agentId, originIssueId: provenance.issueId, originRunId: input.runId, ruleKey: input.ruleKey ?? null,
       title: input.title, body: input.body, options: input.options, inputs: input.inputs ?? null, expiresAt,
@@ -635,14 +638,7 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
     }
     if (current.status !== "open") throw conflict("decision_already_resolved", { code: "decision_already_resolved" });
     if (current.expiresAt <= new Date()) {
-      const [expired] = await writeDecisionChange(db, async tx => tx.update(decisions).set({ status: "expired", updatedAt: new Date(), metadata: { ...metadata, expiredReason: "ttl",
-        ...(current.continuationPolicy === "wake_origin_agent" ? { continuationPending: true } : {}) } })
-        .where(and(eq(decisions.id, current.id), eq(decisions.status, "open"), lte(decisions.expiresAt, new Date()))).returning());
-      if (expired) {
-        await logActivity(db, { companyId: expired.companyId, actorType: "system", actorId: "decision-expiry-sweeper", agentId: expired.originAgentId,
-          runId: expired.originRunId, action: "decision.expired", entityType: "decision", entityId: expired.id, details: { expiredReason: "ttl" } });
-        await continuations.deliver(expired.id);
-      }
+      await expiry.expire(current, "ttl", new Date());
       throw conflict("decision_expired", { code: "decision_expired" });
     }
     if (!current.options.some((option) => option.id === input.optionId)) throw unprocessable("Unknown optionId");
@@ -702,7 +698,7 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
       return { ...bundle, decisions: created }; });
   }
 
-  async function sweepExpired(now = new Date(), options: { includeContinuations?: boolean } = {}) {
+  async function sweepExpired(now = new Date(), options: { includeContinuations?: boolean; includeExpiry?: boolean } = {}) {
     const configuredBatchSize = Number(process.env.PAPERCLIP_DECISIONS_SWEEP_BATCH_SIZE ?? 100);
     const batchSize = Number.isFinite(configuredBatchSize)
       ? Math.max(1, Math.trunc(configuredBatchSize))
@@ -724,9 +720,7 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
       await continuations.deliver(recovered.id);
     }
     if (options.includeContinuations !== false) await continuations.sweep(batchSize);
-    const ttlRows = await db.select().from(decisions)
-      .where(and(eq(decisions.status, "open"), lte(decisions.expiresAt, now)))
-      .orderBy(asc(decisions.expiresAt)).limit(batchSize);
+    const ttlRows = options.includeExpiry === false ? [] : await expiry.due(now, batchSize);
     const remaining = batchSize - ttlRows.length;
     const targetRows = remaining > 0
       ? await db.select().from(decisions)
@@ -748,15 +742,13 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
       const targetsCompleted = !targetGone && strictTargetIds.size > 0 &&
         targets.every((target) => target.status === "done") &&
         targets.some((target) => snapshots[target.id]?.status !== "done");
-      if (!targetGone && !targetsCompleted && decision.expiresAt >= now) continue;
+      if (!targetGone && !targetsCompleted && (options.includeExpiry === false || decision.expiresAt > now)) continue;
       const reason = targetGone ? "target_gone" : targetsCompleted ? "target_completed" : "ttl";
-      const [updated] = await writeDecisionChange(db, async tx => tx.update(decisions).set({ status: "expired", updatedAt: now, metadata: { ...decision.metadata, expiredReason: reason,
-        ...(decision.continuationPolicy === "wake_origin_agent" ? { continuationPending: true } : {}) } }).where(and(eq(decisions.id, decision.id), eq(decisions.status, "open"))).returning());
-      if (!updated) continue; expired += 1;
-      await logActivity(db, { companyId: updated.companyId, actorType: "system", actorId: "decision-expiry-sweeper", agentId: updated.originAgentId, runId: updated.originRunId, action: "decision.expired", entityType: "decision", entityId: updated.id, details: { expiredReason: reason } });
-      await continuations.deliver(updated.id); }
+      expired += await expiry.expire(decision, reason, now);
+    }
     return { expired, resumed };
   }
 
-  return { create, createBundle, get, list, stats, outcome, decide, cancel, dismiss, sweepExpired, sweepContinuations: continuations.sweep };
+  return { create, createBundle, get, list, stats, outcome, decide, cancel, dismiss, sweepExpired, sweepContinuations: continuations.sweep,
+    sweepTtlExpiry: expiry.sweep, nextExpiryAt: expiry.next };
 }

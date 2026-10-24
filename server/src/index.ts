@@ -1,3 +1,4 @@
+import { registerDecisionExpiryWork } from "./services/decision-expiry-work.js";
 import { registerDecisionContinuationWork } from "./services/decision-continuation-work.js";
 import { registerDecisionArchiveDeliveryWork } from "./services/decision-archive-delivery-work.js";
 import { registerToolReviewProjectionWork } from "./services/tool-review-projection-work.js";
@@ -1803,7 +1804,9 @@ async function startServerWithDatabaseTeardown(
       });
       await step("decision_continuation_worker", () => registerDecisionContinuationWork(deliveryWork, decisionExecutor,
         () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped).ready);
-      await step("decision_expiry", () => decisionExecutor.sweepExpired(new Date(), { includeContinuations: false }));
+      await step("decision_expiry_worker", () => registerDecisionExpiryWork(deliveryWork, decisionExecutor,
+        () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped).ready);
+      await step("decision_expiry", () => decisionExecutor.sweepExpired(new Date(), { includeContinuations: false, includeExpiry: false }));
       const loginSchedule = loginCleanupSchedule(db, config.heartbeatSchedulerIntervalMs);
       await step("login_cleanup_workers", () => registerLoginCleanupWork(deliveryWork, [
         { queue: DELIVERY_QUEUES.adapterLoginCleanup, run: () => adapterLoginReaper.sweep().then(logAdapterLoginReaperResult), next: loginSchedule.adapter },
@@ -1824,7 +1827,7 @@ async function startServerWithDatabaseTeardown(
       trackHeartbeatSchedulerWork((async () => {
         if (isIdleTaskDrainActive() || heartbeatSchedulerStopped) return;
         scheduleRoutineStatusReconcile();
-        trackHeartbeatSchedulerWork(decisionExecutor.sweepExpired(new Date(), { includeContinuations: false }).catch((err: unknown) => {
+        trackHeartbeatSchedulerWork(decisionExecutor.sweepExpired(new Date(), { includeContinuations: false, includeExpiry: false }).catch((err: unknown) => {
           logger.error({ err }, "decision expiry sweep failed");
         }));
         trackHeartbeatSchedulerWork(runRetentionSweep().catch((err: unknown) => {
