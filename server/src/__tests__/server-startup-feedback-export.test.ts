@@ -5,7 +5,7 @@ import { readIdleSleepSafety } from "../services/idle-sleep-safety.js";
 import * as idleLocalWork from "../services/idle-local-work.js";
 import { idleBackupWakeMarker, markIdleBackupWakeRequired } from "../services/idle-database-backup.js";
 import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
-import { reconcileBuiltInAgentsOnStartup, reconcileCodexLocalManagedHomesOnStartup, reconcilePersistedRuntimeServicesOnStartup } from "../services/index.js";
+import { decisionService, reconcileBuiltInAgentsOnStartup, reconcileCodexLocalManagedHomesOnStartup, reconcilePersistedRuntimeServicesOnStartup } from "../services/index.js";
 import { runDatabaseBackup } from "@paperclipai/db";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
@@ -340,6 +340,7 @@ vi.mock("../services/index.js", () => ({
   })),
   decisionService: vi.fn(() => ({
     sweepExpired: vi.fn(async () => ({ expired: 0 })),
+    sweepContinuations: vi.fn(async () => ({ retry: false })),
   })),
   decisionRetentionService: vi.fn(() => ({
     autoArchive: vi.fn(async () => 0),
@@ -855,6 +856,10 @@ describe("startServer feedback export wiring", () => {
       expect(routineServiceMock.tickScheduledTriggers).toHaveBeenCalledTimes(1);
       expect(environmentCustomImagesServiceMock.cleanupExpiredSetupSessions).toHaveBeenCalledTimes(1);
       expect(deliveryWorkRegisterMock.mock.calls.some(([queue]) => queue === DELIVERY_QUEUES.customImageExpiry)).toBe(true);
+      expect(deliveryWorkRegisterMock.mock.calls.some(([queue]) => queue === DELIVERY_QUEUES.decisionContinuation)).toBe(true);
+      const decisions = vi.mocked(decisionService).mock.results.at(-1)!.value;
+      expect(decisions.sweepContinuations).toHaveBeenCalledTimes(1);
+      expect(decisions.sweepExpired).toHaveBeenCalledWith(expect.any(Date), { includeContinuations: false });
     } finally {
       setIntervalSpy.mockRestore();
     }
@@ -891,6 +896,7 @@ describe("startServer feedback export wiring", () => {
       expect(routineServiceMock.tickScheduledTriggers).not.toHaveBeenCalled();
       expect(heartbeatServiceMock.reconcileCostAccounting).toHaveBeenCalledTimes(1);
       expect(environmentCustomImagesServiceMock.cleanupExpiredSetupSessions).not.toHaveBeenCalled();
+      expect(deliveryWorkRegisterMock.mock.calls.some(([queue]) => queue === DELIVERY_QUEUES.decisionContinuation)).toBe(false);
     } finally {
       setIntervalSpy.mockRestore();
     }

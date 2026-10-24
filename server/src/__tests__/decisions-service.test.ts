@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { eq, inArray } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
@@ -11,6 +11,7 @@ import {
   companies,
   companyMemberships,
   createDb,
+  withDedicatedDbConnection,
   decisionEffectExecutions,
   decisionRetention,
   decisions,
@@ -26,7 +27,15 @@ import { decisionService } from "../services/decisions.js";
 import { hashAttentionArchiveManifest } from "../services/decision-retention.js";
 import type { AttentionArchiveManifestEntry, AttentionArchiveTargetSnapshot } from "@paperclipai/shared";
 
-const support = await getEmbeddedPostgresTestSupport();
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
+import { decisionContinuationService } from "../services/decision-continuations.js";
+import { registerDecisionContinuationWork } from "../services/decision-continuation-work.js";
+import { writeDecisionChange } from "../services/decision-work-notifications.js";
+import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
+import { idleWorkSnapshot } from "../services/task-admission.js";
+
+const externalUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_DECISIONS_TEST_DATABASE_URL");
+const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
 const describePg = support.supported ? describe : describe.skip;
 
 describePg("decisionService", () => {
@@ -41,9 +50,11 @@ describePg("decisionService", () => {
   let decidedByUserId: string;
   let wakes: Array<Record<string, unknown>>;
 
+  let stopWorker: (() => Promise<void>) | undefined;
+
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-decisions-");
-    db = createDb(tempDb.connectionString);
+    if (!externalUrl) tempDb = await startEmbeddedPostgresTestDatabase("paperclip-decisions-");
+    db = createDb(externalUrl ?? tempDb!.connectionString, { maxConnections: 6, idleTimeoutSeconds: 0, maxLifetimeSeconds: 0 });
   }, 20_000);
 
   beforeEach(async () => {
@@ -69,13 +80,14 @@ describePg("decisionService", () => {
   });
 
   afterEach(async () => {
+    await stopWorker?.(); stopWorker = undefined;
     delete process.env.PAPERCLIP_DECISIONS_SWEEP_BATCH_SIZE;
     delete process.env.PAPERCLIP_DECISIONS_RECOVERY_GRACE_MS;
     delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
     await db.delete(decisionEffectExecutions); await db.delete(decisionTargetIssues); await db.delete(decisions); await db.delete(decisionRetention); await db.delete(activityLog);
     await db.delete(issueComments); await db.delete(issueRelations); await db.delete(heartbeatRuns); await db.delete(issues); await db.delete(agents); await db.delete(companyMemberships); await db.delete(authUsers); await db.delete(companies);
   });
-  afterAll(async () => tempDb?.cleanup());
+  afterAll(async () => { await db?.$client.end({ timeout: 1 }); await tempDb?.cleanup(); });
 
   const agentActor = () => ({ type: "agent" as const, companyId, agentId, runId, source: "agent_jwt" as const,
     onBehalfOfUserId: originResponsibleUserId, onBehalfOfMemberships: [{ companyId, membershipRole: "member", status: "active" }] });
@@ -656,4 +668,210 @@ describePg("decisionService", () => {
     expect(result).toMatchObject({ status: "decided", chosenOptionId: "dismissed" });
     expect(wakes).toEqual([{ companyId, agentId, issueId: originIssueId, decisionId: created.id, outcome: "decided" }]);
   });
+  describe("continuation worker", () => {
+    let coordinator: ReturnType<typeof createDeliveryWorkCoordinator> | undefined;
+    let draining: boolean;
+    const errors: unknown[] = [];
+    const wake = vi.fn(async (_input: Record<string, unknown>) => {});
+    const workerService = () => decisionService(db, { wakeOriginAgent: wake });
+
+    beforeEach(async () => {
+      await Promise.all(Array.from({ length: 6 }, () => db.execute(sql`select pg_sleep(0.01)`)));
+      draining = false; errors.length = 0; wake.mockReset();
+      stopWorker = async () => {
+        await coordinator?.stop(); coordinator = undefined;
+        vi.useRealTimers(); vi.restoreAllMocks();
+        await db.execute(sql`drop trigger if exists decision_ack_fail on decisions`);
+        await db.execute(sql`drop function if exists decision_ack_fail()`);
+        expect(errors).toEqual([]);
+      };
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"], shouldAdvanceTime: true });
+    });
+    async function start() {
+      coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => !draining,
+        canReconcile: () => true, onError: error => errors.push(error) });
+      await registerDecisionContinuationWork(coordinator, workerService(), () => !draining).ready;
+    }
+    async function quiet() {
+      await vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(30_000);
+        expect(idleWorkSnapshot().active).toBe(0);
+        expect(coordinator!.nextWakeAt()).toBeNull();
+      }, { timeout: 5000 });
+      const reads = vi.spyOn(db, "select"), writes = vi.spyOn(db, "update"), executes = vi.spyOn(db, "execute");
+      await vi.advanceTimersByTimeAsync(60 * 60_000);
+      expect(reads).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled(); expect(executes).not.toHaveBeenCalled();
+      reads.mockRestore(); writes.mockRestore(); executes.mockRestore();
+    }
+    async function pending(id: string) {
+      expect((await service().get(id))?.metadata.continuationPending).toBe(true);
+    }
+    async function delivered(id: string) {
+      expect((await service().get(id))?.metadata.continuationPending).toBe(false);
+    }
+    const markReady = (id: string, source = db) => writeDecisionChange(source, async tx => tx.update(decisions)
+      .set({ status: "cancelled", metadata: { continuationPending: true } }).where(eq(decisions.id, id)));
+
+    it.each(["decide", "cancel", "dismiss", "expire"] as const)("reactivates from real %s and leaves delivered history quiet", async action => {
+      const row = await createCommentDecision();
+      await start(); await quiet();
+      const svc = workerService();
+      if (action === "decide") await svc.decide({ id: row.id, optionId: "yes", decidedByUserId, userActor: boardActor() });
+      if (action === "cancel") await svc.cancel(row.id, { actorType: "agent", actorId: agentId });
+      if (action === "dismiss") await svc.dismiss(row.id, decidedByUserId, boardActor());
+      if (action === "expire") { await expireDecisionNow(row.id); await svc.sweepExpired(new Date(), { includeContinuations: false }); }
+      await quiet(); await delivered(row.id);
+      expect(wake).toHaveBeenCalledTimes(1);
+      expect(wake.mock.calls[0][0]).toMatchObject({ decisionId: row.id, companyId, agentId, issueId: originIssueId });
+    });
+
+    it("stays quiet while open or running, then wakes when effect completion commits", async () => {
+      const row = await createCommentDecision();
+      await db.update(decisions).set({ status: "decided", executionStatus: "running", chosenOptionId: "yes",
+        decidedByUserId, metadata: { continuationPending: true } }).where(eq(decisions.id, row.id));
+      await start(); await quiet(); expect(wake).not.toHaveBeenCalled();
+      await workerService().decide({ id: row.id, optionId: "yes", decidedByUserId, userActor: boardActor() });
+      await quiet(); await delivered(row.id); expect(wake).toHaveBeenCalledTimes(1);
+      expect(await db.select().from(issueComments).where(eq(issueComments.issueId, targetIssueId))).toHaveLength(1);
+    });
+
+    it("coalesces simultaneous foreground replay and worker delivery without replaying effects", async () => {
+      const row = await createCommentDecision();
+      await start();
+      await Promise.all(Array.from({ length: 3 }, () => workerService().decide({
+        id: row.id, optionId: "yes", decidedByUserId, userActor: boardActor(),
+      }).catch(error => { if (error.message !== "decision_already_resolved") throw error; })));
+      await quiet(); await delivered(row.id); expect(wake).toHaveBeenCalledTimes(1);
+      expect(await db.select().from(issueComments).where(eq(issueComments.issueId, targetIssueId))).toHaveLength(1);
+    });
+
+    it("shares an in-flight wake with a dedicated child pool and rereads after completion", async () => {
+      const row = await createCommentDecision(); await markReady(row.id);
+      let release!: () => void;
+      const gate = new Promise<void>(resolve => { release = resolve; });
+      wake.mockImplementationOnce(async () => gate);
+      const first = decisionContinuationService(db, wake).deliver(row.id);
+      const childWake = vi.fn(async () => {});
+      let child: Promise<void>;
+      try {
+        await vi.waitFor(() => expect(wake).toHaveBeenCalledTimes(1));
+        child = withDedicatedDbConnection(db, async connection => {
+          const attempt = decisionContinuationService(connection, childWake).deliver(row.id);
+          expect(attempt).toBe(first);
+          await attempt;
+        });
+        await vi.advanceTimersByTimeAsync(100);
+      } finally { release(); }
+      await first; await child!;
+      await decisionContinuationService(db, childWake).deliver(row.id);
+      expect(childWake).not.toHaveBeenCalled(); await delivered(row.id);
+    });
+
+    it("reconstructs pending delivery at restart without replaying decision effects", async () => {
+      const row = await createCommentDecision();
+      wake.mockRejectedValueOnce(new Error("wake unavailable"));
+      await expect(workerService().decide({ id: row.id, optionId: "yes", decidedByUserId, userActor: boardActor() })).rejects.toThrow("wake unavailable");
+      await pending(row.id); await start(); await quiet(); await delivered(row.id);
+      expect(wake).toHaveBeenCalledTimes(2);
+      expect(await db.select().from(issueComments).where(eq(issueComments.issueId, targetIssueId))).toHaveLength(1);
+    });
+
+    it("retries a failed acknowledgement with the existing at-least-once wake contract", async () => {
+      const row = await createCommentDecision(); await start();
+      await db.execute(sql`create function decision_ack_fail() returns trigger language plpgsql as $$ begin
+        if NEW.metadata ->> 'continuationPending' = 'false' then raise exception 'ack unavailable'; end if;
+        return NEW; end $$`);
+      await db.execute(sql`create trigger decision_ack_fail before update on decisions for each row execute function decision_ack_fail()`);
+      await expect(workerService().cancel(row.id, { actorType: "agent", actorId: agentId })).rejects.toMatchObject({ cause: { message: "ack unavailable" } });
+      await pending(row.id);
+      await vi.advanceTimersByTimeAsync(60_000);
+      await db.execute(sql`drop trigger decision_ack_fail on decisions`);
+      await quiet(); await delivered(row.id);
+      expect(wake.mock.calls.length).toBeGreaterThan(1);
+      for (const error of errors) expect(error).toMatchObject({ cause: { message: "ack unavailable" } });
+      errors.length = 0;
+    });
+
+    it("waits for an outer transaction, ignores rollback, and recovers the committed write", async () => {
+      const row = await createCommentDecision(); await start(); await quiet();
+      await expect(db.transaction(async tx => {
+        await markReady(row.id, tx as unknown as typeof db);
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(wake).not.toHaveBeenCalled(); throw new Error("rollback");
+      })).rejects.toThrow("rollback");
+      await quiet(); expect((await service().get(row.id))?.status).toBe("open");
+      await db.transaction(async tx => {
+        await markReady(row.id, tx as unknown as typeof db);
+        await vi.advanceTimersByTimeAsync(60_000); expect(wake).not.toHaveBeenCalled();
+      });
+      await quiet(); await delivered(row.id); expect(wake).toHaveBeenCalledTimes(1);
+    });
+
+    it("retains a first write during drain without scanning and delivers after resume", async () => {
+      const row = await createCommentDecision(); await start(); await quiet(); draining = true;
+      await markReady(row.id);
+      const reads = vi.spyOn(db, "select");
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(reads).not.toHaveBeenCalled(); reads.mockRestore(); expect(wake).not.toHaveBeenCalled();
+      draining = false; await quiet(); await delivered(row.id); expect(wake).toHaveBeenCalledTimes(1);
+    });
+
+    it("retains a failed wake through drain and resumes its retry", async () => {
+      const row = await createCommentDecision(); await start();
+      wake.mockImplementationOnce(async () => { draining = true; throw new Error("wake unavailable"); });
+      await markReady(row.id);
+      await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(30_000); expect(errors).toHaveLength(1); });
+      await pending(row.id);
+      const reads = vi.spyOn(db, "select"); await vi.advanceTimersByTimeAsync(60_000);
+      expect(reads).not.toHaveBeenCalled(); reads.mockRestore();
+      draining = false; errors.length = 0; await quiet(); await delivered(row.id); expect(wake).toHaveBeenCalledTimes(2);
+    });
+
+    it("preserves changes arriving during delivery and stops after shutdown", async () => {
+      const firstRow = await createCommentDecision(), secondRow = await createCommentDecision();
+      let release!: () => void;
+      const gate = new Promise<void>(resolve => { release = resolve; });
+      wake.mockImplementationOnce(async () => { await markReady(secondRow.id); await gate; });
+      await markReady(firstRow.id);
+      const starting = start();
+      try { await vi.waitFor(() => expect(wake).toHaveBeenCalledTimes(1)); }
+      finally { release(); }
+      await starting; await quiet(); await delivered(firstRow.id); await delivered(secondRow.id);
+      expect(wake).toHaveBeenCalledTimes(2);
+      await coordinator!.stop(); coordinator = undefined;
+      await vi.advanceTimersByTimeAsync(60_000); expect(wake).toHaveBeenCalledTimes(2);
+    });
+
+    it("awaits an admitted wake before completing shutdown", async () => {
+      const row = await createCommentDecision(); await markReady(row.id);
+      let release!: () => void;
+      const gate = new Promise<void>(resolve => { release = resolve; });
+      wake.mockImplementationOnce(async () => gate);
+      const starting = start();
+      let stopped = false;
+      let stopping: Promise<void>;
+      try {
+        await vi.waitFor(() => expect(wake).toHaveBeenCalledTimes(1));
+        stopping = coordinator!.stop().then(() => { stopped = true; });
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(stopped).toBe(false);
+      } finally { release(); }
+      await starting; await stopping!; coordinator = undefined;
+      await delivered(row.id); expect(stopped).toBe(true);
+    });
+
+    it("pages past a failed first candidate and preserves its retry", async () => {
+      const seed = await createCommentDecision();
+      await db.delete(decisionTargetIssues).where(eq(decisionTargetIssues.decisionId, seed.id));
+      await db.delete(decisions).where(eq(decisions.id, seed.id));
+      const ids = Array.from({ length: 101 }, (_, i) => `10000000-0000-4000-8000-${String(i).padStart(12, "0")}`);
+      await db.insert(decisions).values(ids.map(id => ({ ...seed, id, status: "cancelled", metadata: { continuationPending: true } })));
+      wake.mockImplementation(async input => { if (input.decisionId === ids[0]) throw new Error("first unavailable"); });
+      await start();
+      expect(wake).toHaveBeenCalledTimes(101); await delivered(ids.at(-1)!); await pending(ids[0]);
+      expect(errors).toHaveLength(1); errors.length = 0; wake.mockImplementation(async () => {});
+      await quiet(); await delivered(ids[0]); expect(wake).toHaveBeenCalledTimes(102);
+    });
+  });
+
 });

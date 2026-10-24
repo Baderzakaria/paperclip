@@ -2661,6 +2661,13 @@
       "when": 1792863626931,
       "tag": "0381_open_madame_web",
       "breakpoints": true
+    },
+    {
+      "idx": 382,
+      "version": "7",
+      "when": 1792871748836,
+      "tag": "0382_chemical_madame_web",
+      "breakpoints": true
     }
   ]
 }

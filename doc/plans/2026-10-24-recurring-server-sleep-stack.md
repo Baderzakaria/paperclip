@@ -15,7 +15,7 @@ Do not mark an item done from a timer removal or a green check alone.
 | 01 | Custom-image setup expiry | Session writes, existing expiry, startup/retry/drain | [#17443](https://github.com/paperclipai/paperclip/pull/17443), all checks passed, Greptile 5/5 at `36844a458b` |
 | 02 | Remaining chat maintenance | Provider runtime discovery; voice reconciliation; milestones; wake notices; interaction continuations; terminal confirmations; GitHub recovery; Teams maintenance, separately by owner | Pending |
 | 03 | Run and task recovery | Orphan runs and active leases; shutdown workspace settlement; scheduled retries; queued runs; stranded assignments; resolved dependencies; task watchdogs; silent-run monitoring; stale locks | Pending |
-| 04 | Decision retention and notifications | Retention deadlines and notification delivery are separate reasons | Retention pending; notification delivery: [#17475](https://github.com/paperclipai/paperclip/pull/17475), local verification passed, Greptile 5/5 at `692e3ee02c`, CI running |
+| 04 | Decision retention and notifications | Retention deadlines and notification delivery are separate reasons | Retention pending; notification delivery: [#17475](https://github.com/paperclipai/paperclip/pull/17475), all checks passed (Paperclip Review skipped), Greptile 5/5 at `692e3ee02c` |
 | 05 | Decision expiry and interrupted effects | Expiry, effect recovery, continuation recovery | Pending |
 | 06 | Tool connection health | Configuration/use activation and defined proactive health deadlines | Pending |
 | 07 | Secret proposals, tool reviews, gateway tokens | Separate expiry/scrub/recovery owners | Secret proposals: [#17446](https://github.com/paperclipai/paperclip/pull/17446), checks passed at `d41590ac0e`; gateway credentials: [#17450](https://github.com/paperclipai/paperclip/pull/17450), all checks passed, Greptile 5/5 at `c5c53fc43f`; pending tool-review expiry: [#17453](https://github.com/paperclipai/paperclip/pull/17453), all checks passed, Greptile 5/5 at `ce6a260a83`; approved recovery: [#17454](https://github.com/paperclipai/paperclip/pull/17454), all checks passed, Greptile 5/5 at `7a1cf03e62`; interrupted claims: [#17458](https://github.com/paperclipai/paperclip/pull/17458), all checks passed, Greptile 5/5 at `85003a7ac4`; projection: [#17468](https://github.com/paperclipai/paperclip/pull/17468), all checks passed, Greptile 5/5 at `0956883a84` |
@@ -369,3 +369,26 @@ unavailable.
 Slice 08 review update: Greptile is 5/5 on `692e3ee02c` with no actionable
 findings. The latest CI snapshot has 10 successful checks and 44 in progress,
 with no failures. This is a live CI wait, not a readiness or completion claim.
+
+
+## Slice 09 implementation: decision continuations
+
+The continuation owner and worker are implemented on `codex/sleep-09-decision-continuations`.
+See [decision continuations](../idle-decision-continuations.md) for producer,
+transaction, concurrency, failure, and test evidence. The existing row is durable
+truth; the only DB API addition is an opaque shared work-scope identity for local
+coalescing across child pools. No new queue table or external wake exemption is
+added. Terminal effect settlement is fenced to running state so a competing
+caller cannot re-arm an acknowledged continuation. A concurrent partial index
+bounds pending selection independently of retained history.
+
+The selected run passes 92 tests; nine older embedded-Postgres cases are locally
+skipped, with the new lifecycle tests running against real external PostgreSQL.
+Workspace typecheck/build pass. Migration apply/replay and a 40,000-row prepared
+query probe pass. Initial fixture type/error-shape failures are recorded in the
+behavior document. PR creation and full CI/review are next.
+
+Parent #17475 at `692e3ee02c` now has passing checks and Greptile 5/5; the extra
+Paperclip Review check was skipped. Fresh master is `fe85fd7ac4`, still at
+migration 0377. The stack remains open and unmerged. The full inventory above
+remains the completion scope.

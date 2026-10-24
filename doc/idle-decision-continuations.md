@@ -1,0 +1,106 @@
+# Decision continuation delivery while idle
+
+A terminal decision can owe an agent wake. Its existing row stores that debt:
+`continuationPolicy = wake_origin_agent`, `metadata.continuationPending = true`,
+and either expired/cancelled status or a decided status with succeeded/partial/
+failed execution. Open decisions and running effects are not ready to deliver.
+This migration adds no queue table and changes no wake payload.
+
+## Ownership and producers
+
+`decisions.ts` owns decision creation, authorization, signatures, effects, and
+state changes. Its ten update sites now use a narrow transaction-aware write
+helper before the SQL statement. These cover the running claim; ordinary effect
+completion; archive-proposal signature, manifest, and execution failures; archive
+success; TTL rejection on use; cancel; direct dismissal; and background expiry.
+The helper acquires intent in the existing outer transaction or its savepoint.
+It does not include effect execution, provider calls, activity publication, or
+agent wake callbacks in a new database transaction.
+
+Creation and bundle creation insert open decisions, so they do not create ready
+continuation debt. Acknowledgement only clears debt and belongs to the delivery
+owner; it does not signal itself. The production decision services are created
+by server startup and routes with the application's DB handle. Independent SQL
+writers and additional active processes require a separate notification and
+ownership contract. This change does not make wake-producing service methods
+safe to call inside an uncommitted caller transaction; only their SQL mutation
+boundary has the existing outer-commit guarantee.
+
+`decision-continuations.ts` owns the readiness predicate, delivery, and recovery.
+It reads at most 100 IDs per page and advances past failed candidates before
+reporting failure. This avoids starving later rows behind a failing first page.
+A partial ID index contains ready pending continuations only. The predicate uses
+fixed SQL literals so a prepared generic plan can still use that index.
+
+The shared DB package exposes an opaque work-scope identity. Raw DB object
+identity is insufficient because dedicated and liveness child pools already
+share their owner's signals. The key is shared by those children and nested
+transactions; independent roots have different keys. No connection credentials,
+private transaction state, or decision policy are exposed. Existing signal
+consumers and transactions that do not register work keep their behavior.
+
+## Foreground, recovery, and failure
+
+Foreground delivery remains immediate. All service instances sharing the DB
+owner coalesce a simultaneous wake for the same decision into one promise.
+Delivery re-reads durable readiness after claiming that local flight, so a late
+foreground call cannot resend a continuation already acknowledged by recovery.
+The promise is removed on success or failure. This is process-local coalescing,
+not a new durable claim or an exactly-once guarantee.
+
+Effect completion requires the row to remain running. A competing completion
+cannot restore pending metadata after another caller has completed and delivered
+it. Effects retain their own existing durable claims and authorization checks.
+The delivery worker never executes effects.
+
+A wake failure leaves pending metadata intact. A failed acknowledgement also
+leaves debt, so a later attempt can send the wake again. A crash after accepting
+the wake but before acknowledgement retains the existing at-least-once contract.
+An uncertain producer transaction remains held until the shared work-signal
+protocol establishes settlement; one empty scan cannot clear that uncertainty.
+
+## Lifecycle and scope
+
+Startup reconstructs pending delivery. Committed changes wake the worker through
+the existing coordinator. Failures or remaining ready debt retain a 30-second
+retry. Open/running decisions, no decisions, and delivered history have no
+recurring continuation scan or deadline. Changes during a pass retain another
+request. Drain/standby defer dispatch without consuming that request; shutdown
+waits for admitted delivery. A future process-local retry is not a Cloud alarm.
+
+Enabled-heartbeat startup registers this worker before the combined decision
+sweep. The main tick skips that sweep's independent continuation scan. Its public
+API retains combined behavior by default. Expiry or effect recovery can still
+deliver their newly produced continuations immediately. Disabled-heartbeat
+startup keeps its existing behavior and does not dispatch this new worker.
+
+Decision expiry, invalidated-target scanning, interrupted effect recovery, and
+retention remain separate migrations. Existing Cloud safety blockers are not
+relaxed. This establishes worker quiet under the named conditions, not deployed
+host/database suspension or measured fleet savings.
+
+## Verification
+
+The selected run passes 92 tests: 49 real-PostgreSQL decision cases, 39 startup
+cases, and four database work-signal unit cases. Fifteen new continuation cases
+cover real decide/cancel/dismiss/expiry producers, running-to-terminal completion,
+foreground contention, dedicated child pools, stale caller re-read, restart,
+failed acknowledgement, outer rollback/commit, first write during drain, failed
+retry through drain, changes during delivery, shutdown, and paging past a failed
+candidate. Quiet checks observe no SQL calls across an hour of controlled time.
+Nine pre-existing embedded-PostgreSQL signal tests are skipped locally because
+the embedded runtime is unavailable; CI must run that supported environment.
+Workspace typecheck and build pass. The final literal-predicate adjustment also
+passes all 49 decision tests.
+
+Migration 0382 applies and replays without error. A rolled-back synthetic
+40,000-row history with one pending continuation uses the partial index under
+`force_generic_plan`, reads two shared buffers, and executes in 0.015 ms on the
+local PostgreSQL server. This is query evidence, not a production latency claim.
+
+The first test selection had 90 passes and one failure: the injected PostgreSQL
+acknowledgement error is wrapped by Drizzle, but the assertion expected its
+message at the top level. The assertion now checks the original cause. No
+production retry, hold, or timeout was weakened. A recursive unit-fixture type
+initially prevented migration generation; an explicit fixture type fixed it.
+Full CI and fresh review remain required before PR readiness.
