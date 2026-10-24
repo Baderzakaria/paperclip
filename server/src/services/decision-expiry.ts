@@ -1,4 +1,4 @@
-import { and, asc, eq, lte, sql } from "drizzle-orm";
+import { and, asc, eq, getTableColumns, lte, sql } from "drizzle-orm";
 import { decisions, type Db } from "@paperclipai/db";
 import { logActivity } from "./activity-log.js";
 import { writeDecisionChange } from "./decision-work-notifications.js";
@@ -8,7 +8,7 @@ type ExpiryReason = "ttl" | "target_gone" | "target_completed";
 const open = sql`${decisions.status} = 'open'`;
 
 export function decisionExpiryService(db: Db, deliverContinuation: (id: string) => Promise<void>) {
-  let recoveryCursor: { expiresAt: Date; id: string } | undefined;
+  let recoveryCursor: { expiresAt: string; id: string } | undefined;
   async function expire(decision: Decision, reason: ExpiryReason, now: Date) {
     const [updated] = await writeDecisionChange(db, async tx => tx.update(decisions).set({
       status: "expired", updatedAt: now,
@@ -24,9 +24,10 @@ export function decisionExpiryService(db: Db, deliverContinuation: (id: string) 
     return 1;
   }
 
-  async function due(now: Date, limit: number, cursor?: { expiresAt: Date; id: string }) {
-    return db.select().from(decisions).where(and(open, lte(decisions.expiresAt, now), cursor
-      ? sql`(${decisions.expiresAt}, ${decisions.id}) > (${cursor.expiresAt.toISOString()}::timestamptz, ${cursor.id}::uuid)` : undefined))
+  async function due(now: Date, limit: number, cursor?: { expiresAt: string; id: string }) {
+    return db.select({ ...getTableColumns(decisions), cursorExpiresAt: sql<string>`${decisions.expiresAt}::text` })
+      .from(decisions).where(and(open, lte(decisions.expiresAt, now), cursor
+      ? sql`(${decisions.expiresAt}, ${decisions.id}) > (${cursor.expiresAt}::timestamptz, ${cursor.id}::uuid)` : undefined))
       .orderBy(asc(decisions.expiresAt), asc(decisions.id)).limit(limit);
   }
 
@@ -38,7 +39,7 @@ export function decisionExpiryService(db: Db, deliverContinuation: (id: string) 
     for (const row of rows) {
       if (signal?.aborted) return { expired };
       try { expired += await expire(row, "ttl", now); } catch (error) { errors.push(error); }
-      recoveryCursor = { expiresAt: row.expiresAt, id: row.id };
+      recoveryCursor = { expiresAt: row.cursorExpiresAt, id: row.id };
     }
     if (rows.length < 100) recoveryCursor = undefined;
     if (errors.length === 1) throw errors[0];

@@ -92,3 +92,12 @@ buffers, and executes in 0.022 ms locally. The probe transaction rolls back. Thi
 is query evidence, not a production latency or savings claim. Workspace
 typecheck and build pass on the combined branch. Full PR CI and fresh review
 remain required before readiness.
+
+A follow-up paging regression uses 101 overdue rows sharing a PostgreSQL
+microsecond timestamp, with the first 100 writes failing. The original Date-based
+cursor rounded the timestamp to milliseconds and repeatedly selected that failed
+page, starving the last valid row. The cursor now carries PostgreSQL timestamp
+text into its tuple comparison; business deadline calculations still use Date.
+The regression failed before the fix and verifies progress past the failed page,
+then recovery of all failed rows after the fault is removed.
+The repaired expiry suite passes all 15 cases, and server typechecking passes.
