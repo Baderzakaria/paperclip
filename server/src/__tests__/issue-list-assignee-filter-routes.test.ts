@@ -800,6 +800,7 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
     "descendantOf",
     "labelId",
     "participantAgentId",
+    "createdFromIssueId",
   ])("returns 422 instead of a DB error for malformed %s filters", async (param) => {
     const companyId = randomUUID();
     await db.insert(companies).values({
@@ -828,6 +829,7 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
     "descendantOf",
     "labelId",
     "participantAgentId",
+    "createdFromIssueId",
   ])("returns 422 from issues/count for malformed %s filters", async (param) => {
     const companyId = randomUUID();
     await db.insert(companies).values({

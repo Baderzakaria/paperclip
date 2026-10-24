@@ -7,7 +7,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { test } from 'node:test';
 import { buildControllerRuntime } from './build-runtime.mjs';
-import { verifyControllerRuntime } from './verify-runtime.mjs';
+import { encodeRuntimeReceipt, RUNTIME_MAX_RECEIPT_BYTES, verifyControllerRuntime } from './verify-runtime.mjs';
 
 const exec = promisify(execFile);
 const source = dirname(fileURLToPath(import.meta.url));
@@ -56,6 +56,10 @@ test('copied controller runs without source dependencies, retains native evidenc
   await rename(built, directory);
   const input = { directory, sourceRevision, receiptSha256: receipt.receiptSha256 };
   assert.equal((await verifyControllerRuntime(input)).totalBytes, receipt.totalBytes);
+  const rawReceipt = JSON.parse(await readFile(join(directory, 'runtime.json'), 'utf8'));
+  assert(encodeRuntimeReceipt(rawReceipt).length < RUNTIME_MAX_RECEIPT_BYTES);
+  const manyInputs = Object.fromEntries(Array.from({ length: 25_000 }, (_, index) => [`src/part-${index}.ts`, 'a'.repeat(64)]));
+  assert.throws(() => encodeRuntimeReceipt({ ...rawReceipt, inputs: manyInputs }), /receipt exceeds its byte allowance/);
   const environment = { PATH: process.env.PATH, ...(process.env.LANG ? { LANG: process.env.LANG } : {}) };
   const probe = join(root, 'probe.mjs'); await writeFile(probe, isolatedProbe);
   const isolated = await exec(process.execPath, [probe, directory], { cwd: root, env: environment, timeout: 20_000 });

@@ -6,6 +6,12 @@ import { join, resolve } from 'node:path';
 
 export const RUNTIME_MAX_BYTES = 32 * 1_048_576;
 export const RUNTIME_MAX_FILES = 4096;
+export const RUNTIME_MAX_RECEIPT_BYTES = 2 * 1_048_576;
+export function encodeRuntimeReceipt(receipt) {
+  const bytes = Buffer.from(JSON.stringify(receipt, null, 2) + '\n');
+  if (bytes.length > RUNTIME_MAX_RECEIPT_BYTES) throw new Error('Controller runtime receipt exceeds its byte allowance');
+  return bytes;
+}
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 async function readRegular(path, limit) {
   const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
@@ -28,7 +34,7 @@ export async function verifyControllerRuntime({ directory, sourceRevision, recei
   if (!/^[a-f0-9]{40}$/.test(sourceRevision ?? '') || !/^[a-f0-9]{64}$/.test(receiptSha256 ?? '')) throw new Error('Runtime verification requires trusted revision and receipt digest');
   const root = resolve(directory);
   if (!(await lstat(root)).isDirectory()) throw new Error('Runtime root must be a real directory');
-  const receiptBytes = await readRegular(join(root, 'runtime.json'), 2 * 1_048_576);
+  const receiptBytes = await readRegular(join(root, 'runtime.json'), RUNTIME_MAX_RECEIPT_BYTES);
   if (sha256(receiptBytes) !== receiptSha256) throw new Error('Runtime receipt digest mismatch');
   const receipt = JSON.parse(receiptBytes.toString('utf8'));
   if (receipt.schema !== 'paperclip.runner-eval.controller-runtime/v1' || receipt.sourceRevision !== sourceRevision

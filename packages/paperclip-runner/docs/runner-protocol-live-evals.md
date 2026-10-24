@@ -348,7 +348,8 @@ lifecycle scripts. `runtime.json` records the caller-supplied source revision,
 source input hashes, installed package manifest hashes, and every output file's
 size and SHA-256. The caller must build from the intended trusted checkout; the
 revision label alone is not source attestation. The artifact is limited to
-32 MiB and 4,096 files. It contains no campaign credentials or allowance.
+32 MiB and 4,096 files, including a receipt limited to 2 MiB by both the builder
+and verifier. It contains no campaign credentials or allowance.
 
 Save the printed `receiptSha256` outside the artifact, such as a trusted build
 job output. Before a worker loads any copied code, invoke the verifier from its

@@ -4,7 +4,7 @@ import { createRequire } from 'node:module';
 import { cp, mkdir, readFile, readdir, realpath, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { RUNTIME_MAX_BYTES, RUNTIME_MAX_FILES } from './verify-runtime.mjs';
+import { encodeRuntimeReceipt, RUNTIME_MAX_BYTES, RUNTIME_MAX_FILES } from './verify-runtime.mjs';
 
 const source = dirname(fileURLToPath(import.meta.url));
 const repository = resolve(source, '../../../..');
@@ -82,7 +82,7 @@ export async function buildControllerRuntime({ outputDirectory, sourceRevision }
   }
   await inventory(output);
   const receipt = { schema: 'paperclip.runner-eval.controller-runtime/v1', sourceRevision, nodeMajor: 24, inputs, packageInputs, payloadBytes, files };
-  const receiptBytes = JSON.stringify(receipt, null, 2) + '\n';
+  const receiptBytes = encodeRuntimeReceipt(receipt);
   if (payloadBytes + Buffer.byteLength(receiptBytes) > RUNTIME_MAX_BYTES) throw new Error('Controller runtime receipt exceeds its artifact allowance');
   await writeFile(join(output, 'runtime.json'), receiptBytes, { flag: 'wx', mode: 0o600 });
   return { ...receipt, totalBytes: payloadBytes + Buffer.byteLength(receiptBytes), receiptSha256: sha256(receiptBytes) };
