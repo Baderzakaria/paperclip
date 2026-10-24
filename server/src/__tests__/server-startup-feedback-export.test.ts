@@ -344,6 +344,7 @@ vi.mock("../services/index.js", () => ({
   decisionRetentionService: vi.fn(() => ({
     autoArchive: vi.fn(async () => 0),
     deliverNotifications: vi.fn(async () => ({ notifiedAgents: 0, delivered: 0 })),
+    nextArchiveNotificationAt: vi.fn(async () => null),
   })),
   feedbackService: feedbackServiceFactoryMock,
   bootstrapExecutionPolicyFromEnv: vi.fn(async () => null),

@@ -1,3 +1,4 @@
+import { registerDecisionArchiveDeliveryWork } from "./services/decision-archive-delivery-work.js";
 import { registerToolReviewProjectionWork } from "./services/tool-review-projection-work.js";
 import { registerToolReviewInterruptionWork } from "./services/tool-review-interruption-work.js";
 import { registerToolReviewRecoveryWork } from "./services/tool-review-recovery-work.js";
@@ -1775,8 +1776,7 @@ async function startServerWithDatabaseTeardown(
         });
         archived += await retentionExecutor.autoArchive({ companyId: company.id, items: page.items });
       }
-      const notifications = await retentionExecutor.deliverNotifications();
-      return { archived, ...notifications };
+      return { archived };
     };
     // Startup housekeeping: provider and connection sweeps that every timer tick
     // repeats and that neither serving requests nor run recovery depends on.
@@ -1809,6 +1809,8 @@ async function startServerWithDatabaseTeardown(
       // Retry any orphan sandbox teardown left by a failed acquire before a
       // server restart, so a leaked sandbox does not stay allocated.
       await step("environment_lease_cleanup", startEnvironmentCleanup);
+      await step("archive_notification_worker", () => registerDecisionArchiveDeliveryWork(deliveryWork, retentionExecutor,
+        () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped).ready);
       await step("retention_sweep", runRetentionSweep);
     };
 
