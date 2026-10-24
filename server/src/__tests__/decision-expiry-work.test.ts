@@ -196,7 +196,11 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
       if NEW.id = '10000000-0000-4000-8000-000000000000' and NEW.status = 'expired' then raise exception 'expiry unavailable'; end if;
       return NEW; end $$`);
     await db.execute(sql`create trigger decision_expiry_fail before update on decisions for each row execute function decision_expiry_fail()`);
-    await expect(service().sweepTtlExpiry()).rejects.toMatchObject({ cause: { message: "expiry unavailable" } });
+    const recovery = service();
+    await expect(recovery.sweepTtlExpiry()).rejects.toMatchObject({ cause: { message: "expiry unavailable" } });
+    expect(wake).toHaveBeenCalledTimes(99);
+    expect((await service().get(ids.at(-1)!))?.status).toBe("open");
+    expect(await recovery.sweepTtlExpiry()).toEqual({ expired: 1 });
     expect((await service().get(ids.at(-1)!))?.status).toBe("expired");
     expect((await service().get(ids[0]))?.status).toBe("open"); expect(wake).toHaveBeenCalledTimes(100);
     await db.execute(sql`drop trigger decision_expiry_fail on decisions`);
@@ -212,6 +216,28 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
     await start(); await expired(first.id);
     await vi.waitFor(() => expect(secondId).not.toBe(""));
     await expired(secondId); await quiet(); expect(wake).toHaveBeenCalledTimes(2);
+  });
+
+
+  it("finishes an admitted expiry but leaves the next candidate for restart during shutdown", async () => {
+    const first = await create(), second = await create();
+    await db.update(decisions).set({ expiresAt: new Date(Date.now() - 1000) });
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    wake.mockImplementationOnce(async () => gate);
+    const starting = start();
+    let stopped = false;
+    let stopping: Promise<void>;
+    try {
+      await vi.waitFor(() => expect(wake).toHaveBeenCalledTimes(1));
+      stopping = coordinator!.stop().then(() => { stopped = true; });
+      await vi.advanceTimersByTimeAsync(60_000); expect(stopped).toBe(false);
+    } finally { release(); }
+    await starting; await stopping!; coordinator = undefined;
+    expect(wake).toHaveBeenCalledTimes(1); expect(stopped).toBe(true);
+    const states = await Promise.all([service().get(first.id), service().get(second.id)]);
+    expect(states.map(row => row!.status).sort()).toEqual(["expired", "open"]);
+    await start(); await quiet(); expect(wake).toHaveBeenCalledTimes(2);
   });
 
 });

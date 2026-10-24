@@ -410,3 +410,20 @@ admitted failure finished; the assertion now verifies all errors after settled
 recovery. No hold or retry was weakened. This branch must receive the parent
 review repairs and adapt its own paged expiry worker to cancellation before PR
 publication. No tenth PR or readiness is claimed.
+
+
+## Slice 10: decision TTL expiry
+
+The TTL implementation now includes parent continuation repairs from `5f96892a58`.
+The merge preserves both the expiry owner and per-decision effect ownership.
+See [decision TTL expiry](../idle-decision-expiry.md). Creation and bundle writes
+join the same notification helper; an indexed minimum open expiry drives work.
+The combined tick opts out of TTL selection without removing target invalidation
+or effect recovery. Expiry-on-use remains enforced, including exact equality.
+Bounded passes retain a fair expiry/ID cursor and stop between candidates.
+
+All 103 selected tests pass after the merge, including fourteen TTL worker cases.
+Migration replay and a 40,000-row history query probe pass (two buffers).
+Final workspace typecheck/build and fresh PR CI/review remain required.
+The parent continuation PR is awaiting fresh review/CI on `5f96892a58`, with both
+initial findings repaired and resolved. The full inventory remains in scope.

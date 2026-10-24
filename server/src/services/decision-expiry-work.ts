@@ -10,7 +10,7 @@ export function registerDecisionExpiryWork(
 ) {
   return registerDeadlineWork(coordinator, DELIVERY_QUEUES.decisionExpiry, {
     retryMs: 30_000, canRun,
-    run: () => service.sweepTtlExpiry(),
+    run: signal => service.sweepTtlExpiry(new Date(), signal),
     next: service.nextExpiryAt,
   });
 }

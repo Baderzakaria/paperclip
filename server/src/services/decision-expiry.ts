@@ -8,6 +8,7 @@ type ExpiryReason = "ttl" | "target_gone" | "target_completed";
 const open = sql`${decisions.status} = 'open'`;
 
 export function decisionExpiryService(db: Db, deliverContinuation: (id: string) => Promise<void>) {
+  let recoveryCursor: { expiresAt: Date; id: string } | undefined;
   async function expire(decision: Decision, reason: ExpiryReason, now: Date) {
     const [updated] = await writeDecisionChange(db, async tx => tx.update(decisions).set({
       status: "expired", updatedAt: now,
@@ -29,18 +30,17 @@ export function decisionExpiryService(db: Db, deliverContinuation: (id: string) 
       .orderBy(asc(decisions.expiresAt), asc(decisions.id)).limit(limit);
   }
 
-  async function sweep(now = new Date()) {
-    let cursor: { expiresAt: Date; id: string } | undefined;
+  async function sweep(now = new Date(), signal?: AbortSignal) {
     let expired = 0;
+    if (signal?.aborted) return { expired };
     const errors: unknown[] = [];
-    for (;;) {
-      const rows = await due(now, 100, cursor);
-      for (const row of rows) {
-        try { expired += await expire(row, "ttl", now); } catch (error) { errors.push(error); }
-      }
-      if (rows.length < 100) break;
-      cursor = rows.at(-1)!;
+    const rows = await due(now, 100, recoveryCursor);
+    for (const row of rows) {
+      if (signal?.aborted) return { expired };
+      try { expired += await expire(row, "ttl", now); } catch (error) { errors.push(error); }
+      recoveryCursor = { expiresAt: row.expiresAt, id: row.id };
     }
+    if (rows.length < 100) recoveryCursor = undefined;
     if (errors.length === 1) throw errors[0];
     if (errors.length) throw new AggregateError(errors, "Decision expiry failed");
     return { expired };
