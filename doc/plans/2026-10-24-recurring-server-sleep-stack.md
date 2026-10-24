@@ -931,3 +931,24 @@ after its single justified retry. The duplicate cancelled workflows for #17490
 and #17497 were each rerun once to clear stale cancelled contexts. The #17490
 retry has a new E2E shard 3 failure under investigation; do not call it green or
 rerun again without a repair. #17497's retry was still running at this observation.
+
+### Plugin scheduling implementation, 2026-10-24
+
+The next slice replaces the plugin scheduler's private 30-second query loop with
+shared deadlines and transaction-aware producer wakes. It uses existing job/run
+rows, preserves overdue schedules, handles empty manifest sync, and tracks calls
+through durable settlement and shutdown. See [the implementation contract](../idle-plugin-jobs.md)
+and [producer audit](2026-10-24-plugin-job-sleep-audit.md).
+
+The baseline empty-instance regression failed before the migration. The first
+expanded local run passed 59 tests across plugin scheduling, warm standby, the
+shared coordinator, and decision expiry. The consumer run exposed an incomplete
+loader mock after empty-manifest synchronization became mandatory; that fixture
+was corrected; all 14 loader recovery cases passed. Workspace typechecks and the
+production build passed. Final server typecheck and build also passed after the
+lifecycle wiring edits. Remote review/checks remain open.
+
+Separate stack gates remain: #17490 E2E cleanup hit a cancellation lock timeout;
+#17510 has a security finding about unscoped approval queue scans plus CI failures.
+Neither PR is claimed green. Approval retention #17497 is green at `2c5babcabc`.
+The complete original inventory remains in scope; this slice does not finish it.

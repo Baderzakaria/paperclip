@@ -70,3 +70,21 @@ The current health checker returns immediately for AI-purpose connections, while
 the sweep does not explicitly exclude that purpose. Audit inert due rows and
 pre-probe setup failures before deriving deadlines from `healthCheckedAt`.
 No tool-health migration is claimed by this plugin-job slice.
+
+## Implementation decisions
+
+The migration now uses existing job/run rows and the shared deadline worker.
+Local lifecycle wakes needed the helper to retain an explicit wake across drain;
+the plugin tests exercise that condition through a real status event. The worker
+handle already exposes status subscriptions, so no new worker-manager API is
+needed. The job store accepts the query/transaction subset shared by root clients
+and transactions instead of casting transaction handles to full pools.
+
+Claims recheck current state with a job-row lock. Worker calls stay outside the
+transaction. Completion and schedule advancement commit atomically; failed
+persistence retries only settlement. Unresolved old runs are not blindly replayed.
+This preserves the conservative Cloud sleep blocker for unknown external effects.
+
+Related proposals: #7905 covers empty manifest sync; this migration needs that
+behavior on both activation paths. #11571 proposes company-scoped jobs; this
+migration retains the current instance-scoped contract and does not implement it.

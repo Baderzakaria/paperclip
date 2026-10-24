@@ -2144,7 +2144,7 @@ export function pluginLoader(
       const { workerManager, jobScheduler } = runtimeServices;
 
       // 1. Stop the job scheduler tick loop
-      jobScheduler.stop();
+      await jobScheduler.stop();
 
       // 2. Stop all worker processes
       await workerManager.stopAll();
@@ -2416,9 +2416,9 @@ export function pluginLoader(
       // 6. Sync job declarations and register with scheduler
       // ------------------------------------------------------------------
       const jobDeclarations = manifest.jobs ?? [];
+      await jobStore.syncJobDeclarations(pluginId, jobDeclarations);
+      await jobScheduler.registerPlugin(pluginId);
       if (jobDeclarations.length > 0) {
-        await jobStore.syncJobDeclarations(pluginId, jobDeclarations);
-        await jobScheduler.registerPlugin(pluginId);
         registered.jobs = jobDeclarations.length;
 
         log.info(

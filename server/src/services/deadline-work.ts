@@ -14,7 +14,7 @@ export function registerDeadlineWork(
   let requested = 1, reconciled = 0;
   let next: number | null = null;
   let earliest = 0;
-  return coordinator.register(queue, {
+  const worker = coordinator.register(queue, {
     retryMs: task.retryMs,
     pausePassiveMaintenance: true,
     onSettled: () => { requested++; },
@@ -32,4 +32,5 @@ export function registerDeadlineWork(
     hasPending: async () => requested !== reconciled,
     nextRunAt: () => next,
   });
+  return { ...worker, wake: () => { requested++; worker.wake(); } };
 }

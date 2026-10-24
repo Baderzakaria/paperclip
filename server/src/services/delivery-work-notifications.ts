@@ -59,6 +59,7 @@ export const DELIVERY_QUEUES = {
   gitRestorePoints: "git-restore-points",
   nativeWorkspaceSyncRetention: "native-workspace-sync-retention",
   question: "question-responses",
+  pluginSchedules: "plugin-schedules",
   pluginLifecycle: "plugin-resource-lifecycle",
   toolAction: "tool-action-receipts",
   terminalWorkspaces: "terminal-workspaces",
