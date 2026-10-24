@@ -95,3 +95,12 @@ and earliest-deadline lookup use the partial index and read two buffers (0.012 m
 and 0.003 ms in the local probe). The probe transaction is rolled back.
 
 Full PR CI and review must pass separately before this slice is ready.
+
+A follow-up regression seeds a legacy invalid claim with a PostgreSQL-generated
+microsecond timestamp ahead of a valid claim. With a one-row page, the original
+Date cursor selected the invalid claim again and starved the valid effect. That
+regression failed before repair. Recovery now retains the timestamp as database
+text for cursor comparisons, leaving business grace deadlines unchanged. The
+invalid claim remains durable debt and is revisited after paging wraps; the valid
+claim progresses without repeating its completed effect.
+All 18 effect-recovery lifecycle cases and server typechecking pass after repair.
