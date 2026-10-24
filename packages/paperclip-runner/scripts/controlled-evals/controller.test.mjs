@@ -3,11 +3,14 @@ import { test } from 'node:test';
 import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { canonical, costRuntime, observabilityBoundConfiguration, requestBindingSha256, sha256, validateManifest } from './manifest.mjs';
-import { attemptDirectory, runControlledEval } from './run.mjs';
-import { summarizeControlledCampaign } from './report.mjs';
-import { decodeControlledEvidence, packControlledAttempt, readControlledEvidence, readAttemptControlledEvidence, summarizeControlledEvidence } from './archive.mjs';
+import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
+const runtime = process.env.PAPERCLIP_CONTROLLER_TEST_RUNTIME
+  ? pathToFileURL(resolve(process.env.PAPERCLIP_CONTROLLER_TEST_RUNTIME) + '/') : import.meta.url;
+const { canonical, costRuntime, observabilityBoundConfiguration, requestBindingSha256, sha256, validateManifest } = await import(new URL('./manifest.mjs', runtime));
+const { attemptDirectory, runControlledEval } = await import(new URL('./run.mjs', runtime));
+const { summarizeControlledCampaign } = await import(new URL('./report.mjs', runtime));
+const { decodeControlledEvidence, packControlledAttempt, readControlledEvidence, readAttemptControlledEvidence, summarizeControlledEvidence } = await import(new URL('./archive.mjs', runtime));
 import { aggregateProtocolEvalCampaign, sanitizeProtocolEvalRuns } from '../runner-protocol-eval-campaign.mjs';
 
 const childScript = options => `

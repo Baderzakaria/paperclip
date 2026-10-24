@@ -329,6 +329,51 @@ GitHub workers. Hosted integration must bind unique cells to the prepared
 allocation, reject workflow/job reruns, and preserve the controller evidence
 before enabling paid work. Hosted tracing, destination readback, vendor
 metering bounds, and actual paid qualification remain separate gates.
+
+### Portable controller runtime
+
+The controller can run from a copied artifact without a repository checkout,
+`tsx`, or a worker-side dependency install. Build it once from the trusted
+orchestration checkout after installing that checkout's pinned dependencies:
+
+```sh
+node packages/paperclip-runner/scripts/controlled-evals/build-runtime.mjs \
+  /private/new-controller-runtime-directory "$(git rev-parse HEAD)"
+```
+
+The output directory must not exist. The build copies the controller entrypoints,
+bundles the shared cost and tracing code, and copies the installed protobuf
+runtime dependency closure. It does not install dependencies or run package
+lifecycle scripts. `runtime.json` records the caller-supplied source revision,
+source input hashes, installed package manifest hashes, and every output file's
+size and SHA-256. The caller must build from the intended trusted checkout; the
+revision label alone is not source attestation. The artifact is limited to
+32 MiB and 4,096 files. It contains no campaign credentials or allowance.
+
+Save the printed `receiptSha256` outside the artifact, such as a trusted build
+job output. Before a worker loads any copied code, invoke the verifier from its
+trusted orchestration checkout with that digest and the expected revision:
+
+```sh
+node packages/paperclip-runner/scripts/controlled-evals/verify-runtime.mjs \
+  /private/copied-controller-runtime-directory \
+  "$TRUSTED_CONTROLLER_REVISION" "$TRUSTED_CONTROLLER_RECEIPT_SHA256"
+```
+
+The verifier rejects altered, missing, unexpected, or nonregular files and a
+mismatched receipt. Do not obtain the expected digest from the downloaded
+artifact itself or execute its verifier before checking it with trusted code.
+Verification assumes a worker-owned directory that no other process can mutate
+between verification and execution.
+
+Use the copied `controlled-evals/run.mjs` as `--runner-cli` and its sibling
+`archive.mjs` as `PAPERCLIP_RUNNER_EVAL_ARCHIVE_CLI`. The existing reviewed campaign
+manifest is still required. Its executable paths and digests bind the actual
+Runner build, not this controller wrapper. The artifact does not authorize paid
+work, coordinate worker allocations, or prevent a workflow rerun by itself.
+The hosted matrix still needs the shared manifest and per-worker admission
+checks described above.
+
 ## Controller tracing allocations and retained proof
 
 The opt-in controller uses the existing native launch generator and Product E2E

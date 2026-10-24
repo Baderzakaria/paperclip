@@ -1,5 +1,5 @@
-import { readFile } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { readFile, realpath } from 'node:fs/promises';
+import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { canonical, costRuntime, readJson, requestBindingSha256, sha256, units, usd, validateManifest } from './manifest.mjs';
 import { inspectControlledObservability } from './observability.mjs';
@@ -94,7 +94,7 @@ export async function summarizeControlledCampaign(value, { filesByAttempt } = {}
     committedUsd: usd(committed), overBudget: committed > units(manifest.maxUsd), incompleteAttempts: attempts.filter(attempt => attempt.status === 'incomplete').length,
     costStatus: attempts.some(attempt => attempt.status === 'incomplete') || committed > units(manifest.maxUsd) ? 'incomplete' : 'provisional', attempts };
 }
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(await realpath(process.argv[1])).href) {
   if (process.argv.length !== 3) throw new Error('Usage: report.mjs <controller-manifest.json>');
   const result = await summarizeControlledCampaign(await readJson(process.argv[2]));
   process.stdout.write(JSON.stringify(result, null, 2) + '\n');

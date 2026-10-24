@@ -202,7 +202,7 @@ registerHooks({ resolve(specifier, context, nextResolve) {
   } finally { await observability?.close(); }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(await realpath(process.argv[1])).href) {
   const controller = new AbortController();
   const cancel = () => controller.abort();
   process.once('SIGINT', cancel); process.once('SIGTERM', cancel);

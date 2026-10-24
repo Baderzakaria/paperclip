@@ -1,11 +1,9 @@
 import { createHash } from 'node:crypto';
-import { createRequire } from 'node:module';
 import { readFile } from 'node:fs/promises';
 import { isAbsolute } from 'node:path';
 
-const require = createRequire(new URL('../../../../server/package.json', import.meta.url));
-const { tsImport } = await import(require.resolve('tsx/esm/api'));
-export const costRuntime = await tsImport('./shared-cost-runtime.ts', import.meta.url);
+import { costRuntime } from './runtime.mjs';
+export { costRuntime };
 export const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 export const canonical = value => JSON.stringify(value, (_key, item) => item && typeof item === 'object' && !Array.isArray(item)
   ? Object.fromEntries(Object.keys(item).sort().map(key => [key, item[key]])) : item);
