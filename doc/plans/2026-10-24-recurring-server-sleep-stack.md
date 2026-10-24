@@ -794,3 +794,38 @@ budget case), and 201 tool-gateway cases. Workspace typecheck, production build,
 migration numbering/safety, fresh replay and idempotent index replay pass. The
 implementation is committed as `ea3dd40cdd`; remote publication, CI and review
 remain required. The earlier failures remain recorded above.
+
+
+## Slice 14 publication and precision review repair
+
+Approval retention is [#17497](https://github.com/paperclipai/paperclip/pull/17497),
+initial head `2f334c678b`, based on #17490. It is attached. Initial CI run
+40135489716 completed without a failed CI job. Greptile gave 4/5 with one P2:
+JavaScript Date truncation can repeat a full failed page whose source timestamp
+contains microseconds (comment 4368633789, thread PRRT_kwDORclPyM6v79u7).
+
+A database-generated timestamp regression failed before repair: all 100 failed
+rows repeated and blocked row 101. The cursor now preserves the database text
+timestamp. All 21 lifecycle cases pass afterward, and server typecheck passes.
+During the full regression run, the earlier quiet-window test crossed its real
+deadline after settlement. It now measures an explicit window before that
+deadline; it still asserts no SQL and eventual archival. Total selected coverage
+is now 318 unique tests. Fresh remote checks/review are required after this fix.
+
+Related precision audit is required before final stack acceptance: the earlier
+TTL worker (#17479) and effect-recovery worker (#17482) retain Date cursors too.
+Add database-precision regressions and repair those owning PRs, then propagate
+parent updates through the stack. The already-merged terminal-workspace sweep
+also uses a Date keyset cursor; verify and address it as a focused follow-up if
+confirmed. These are concrete remaining verification duties, not waived by the
+earlier green checks.
+
+Branch `codex/sleep-15-join-retention` exists at the initial slice-14 head, with
+no implementation yet. Its producer audit found request writes in access routes
+(accept, replay, auto-approve, approve, reject, key claim), Slack identity access
+creation, and company deletion. Eligibility is pending_approval plus matching
+invite/company and active company. Invite expiry/revocation do not remove the
+existing feed item. Preserve that policy. Retention controls and company status
+changes must notify this owner. Decision retention remains separately pending;
+its visibility dependencies differ, and normal decisions already have a
+maximum 30-day TTL before the 90-day archive threshold.

@@ -86,15 +86,17 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
 
   it("is quiet with no approvals and archives unseen durable approvals at their actual deadline", async () => {
     await start(); await quiet();
-    const deadline = Date.now() + 120_000;
+    const deadline = Date.now() + 600_000;
     const row = await create(new Date(deadline - delay));
     await settle();
     expect(await state(row.id)).toBeNull();
     expect(coordinator!.nextWakeAt()).toBe(deadline);
+    const quietWindow = deadline - Date.now() - 30_000;
+    expect(quietWindow).toBeGreaterThan(0);
     const reads = vi.spyOn(db, "select");
-    await vi.advanceTimersByTimeAsync(30_000);
+    await vi.advanceTimersByTimeAsync(quietWindow);
     expect(reads).not.toHaveBeenCalled(); reads.mockRestore();
-    await vi.advanceTimersByTimeAsync(120_000);
+    await vi.advanceTimersByTimeAsync(60_000);
     await archived(row.id); await quiet();
     expect((await db.select().from(approvals).where(eq(approvals.id, row.id)))[0].status).toBe("pending");
   });
@@ -320,6 +322,23 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
     expect(await db.select().from(decisionArchiveNotificationOutbox)).toMatchObject([
       { sourceId: row.id, originIssueId: target.id, originAgentId: agent.id, status: "pending" },
     ]);
+  });
+
+
+  it("advances past a failed page with full database timestamp precision", async () => {
+    await db.execute(sql`insert into approvals(company_id, type, payload, updated_at)
+      select ${companyId}, 'request_board_approval', jsonb_build_object('retentionTestFailure', n <= 100),
+        date_trunc('milliseconds', now() - interval '91 days') + interval '456 microseconds'
+          + case when n <= 100 then interval '0 seconds' else interval '1 second' end
+      from generate_series(1, 101) n`);
+    await failArchives();
+    const service = approvalRetentionService(db);
+    await expect(service.sweep()).rejects.toThrow("Approval retention failed");
+    expect(await service.sweep()).toEqual({ archived: 1 });
+    await db.execute(sql`drop trigger approval_retention_fail on decision_retention`);
+    expect(await service.sweep()).toEqual({ archived: 100 });
+    expect(await service.sweep()).toEqual({ archived: 0 });
+    expect(await service.next()).toBeNull();
   });
 
 });

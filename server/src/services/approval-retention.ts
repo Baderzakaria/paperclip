@@ -18,9 +18,9 @@ const eligibleLink = sql`not exists (
 )`;
 
 export function approvalRetentionService(db: Db) {
-  let cursor: { at: Date; id: string } | undefined;
+  let cursor: { at: string; id: string } | undefined;
   function candidates(database: Db, condition?: SQL) {
-    return database.select({ id: approvals.id, companyId: approvals.companyId, at: approvals.updatedAt }).from(approvals)
+    return database.select({ id: approvals.id, companyId: approvals.companyId, at: approvals.updatedAt, cursorAt: sql<string>`${approvals.updatedAt}::text` }).from(approvals)
       .innerJoin(companies, eq(companies.id, approvals.companyId))
       .leftJoin(decisionRetention, and(eq(decisionRetention.companyId, approvals.companyId),
         eq(decisionRetention.sourceKind, "approval"), sql`${decisionRetention.sourceId} = ${approvals.id}::text`))
@@ -31,7 +31,7 @@ export function approvalRetentionService(db: Db) {
   async function sweep(now = new Date(), signal?: AbortSignal) {
     const cutoff = new Date(now.getTime() - archiveDelay);
     const rows = await candidates(db, and(lte(approvals.updatedAt, cutoff), cursor
-      ? sql`(${approvals.updatedAt}, ${approvals.id}) > (${cursor.at.toISOString()}::timestamptz, ${cursor.id}::uuid)` : undefined)).limit(100);
+      ? sql`(${approvals.updatedAt}, ${approvals.id}) > (${cursor.at}::timestamptz, ${cursor.id}::uuid)` : undefined)).limit(100);
     let archived = 0;
     const errors: unknown[] = [];
     for (const candidate of rows) {
@@ -51,7 +51,7 @@ export function approvalRetentionService(db: Db) {
           }] });
         });
       } catch (error) { errors.push(error); }
-      cursor = { at: candidate.at, id: candidate.id };
+      cursor = { at: candidate.cursorAt, id: candidate.id };
     }
     if (rows.length < 100) cursor = undefined;
     if (errors.length === 1) throw errors[0];

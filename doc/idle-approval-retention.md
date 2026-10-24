@@ -22,7 +22,9 @@ agent-conversation tasks remain excluded. A waiting external conversation with
 a linked pending approval is active under that same shared visibility policy;
 its chat state alone cannot hide this approval. Tests exercise the Slack case.
 
-Each pass visits at most 100 candidates in activity/id order. A failed row does
+Each pass visits at most 100 candidates in activity/id order. The cursor keeps
+the database timestamp as text so sub-millisecond precision cannot repeat a
+failed page. A failed row does
 not prevent later pages from progressing. The failed durable record remains
 eligible for recovery. Each candidate is re-read and locked before archiving,
 so a resubmission committed while the worker waited cannot archive the new
