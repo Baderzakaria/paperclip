@@ -28,6 +28,7 @@ Do not mark an item done from a timer removal or a green check alone.
 | 14 | Skill-version retention and native-harness backup expiration | Separate retention owners and existing retention guarantees | Pending |
 | 15 | Automatic database backups | Shared scheduling, actual backup deadlines, existing checkpoint contract | Pending |
 | 16 | Aggregate maintenance tick | Retire enabled and disabled branches after all constituent owners migrate | Pending |
+| 17 | Grok routine dispatch | Committed reservations and feature changes; prepared-only recovery | Slice 13 implemented, local verification in progress |
 
 ## Stack and verification contract
 
@@ -621,3 +622,22 @@ when public MCP is configured, even when Grok is disabled. Include this in the
 full stack as slice 13, separately from decision retention. The disabled baseline
 issued three settings queries in 3.2 seconds. Its durable prepared dispatches,
 atomic claim, and existing uncertain-outcome policy must remain authoritative.
+
+
+## Slice 13: Grok routine dispatch
+
+The one-second idle scan is replaced with a shared-coordinator worker. The existing
+reservation and experimental-settings transactions notify it; the Grok service
+retains all authority, claims, delivery, and uncertainty handling. Prepared-only
+selection uses a concurrent partial index. The 21 lifecycle cases, 45 existing
+Grok cases, and 39 startup cases pass together (105). Workspace typecheck passes.
+See [Grok dispatch](../idle-grok-dispatch.md). Build, populated query proof, PR
+publication, and fresh review/CI remain required. Decision retention and every
+other pending inventory owner remain in scope.
+
+
+Slice 13 final local verification also passes all 154 affected settings cases
+(259 selected tests total), workspace typecheck, production build, migration
+checks/replay, and a generic-plan query probe with 40,000 completed dispatches.
+Both queries use the prepared-only partial index with six shared buffers,
+including the routine join. Remote CI/review remain required.

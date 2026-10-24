@@ -127,6 +127,38 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
     const row = await reserve(first); await delivered(row.id); await vi.waitFor(() => expect(next).toBeDefined());
     await delivered(next.id); await quiet(); expect(delivery).toHaveBeenCalledTimes(2);
   });
+  it("drains more than one page then stops with retained history", async () => {
+    const rows = [];
+    for (let i = 0; i < 11; i++) rows.push(await reserve(await grokRoutineFixture(db)));
+    await start(); await delivered(rows.at(-1)!.id); await quiet();
+    expect(delivery).toHaveBeenCalledTimes(11);
+    expect((await db.select().from(grokBotDispatches)).every(row => row.status === "accepted")).toBe(true);
+  });
+  it("shares the durable claim with a simultaneous foreground send", async () => {
+    const f = await grokRoutineFixture(db); await start(); await quiet();
+    const row = await reserve(f);
+    await Promise.all([grokRoutineService(db, delivery).send(f.company.id, f.agent.id, row.id), worker.tick()]);
+    await delivered(row.id); await quiet(); expect(delivery).toHaveBeenCalledTimes(1);
+  });
+  it("cancels an expired unsent dispatch without contacting the provider", async () => {
+    const f = await grokRoutineFixture(db); const row = await reserve(f);
+    await db.update(grokBotDispatches).set({ expiresAt: new Date(Date.now() - 1000) }).where(eq(grokBotDispatches.id, row.id));
+    await start(); await quiet(); expect(await status(row.id)).toBe("cancelled"); expect(delivery).not.toHaveBeenCalled();
+  });
+  it("does not enable pending dispatches before the settings transaction commits", async () => {
+    const f = await grokRoutineFixture(db); const row = await reserve(f); await enable(false);
+    await start(); await quiet();
+    await expect(db.transaction(async tx => {
+      await instanceSettingsService(tx as unknown as typeof db).updateExperimental({ enableGrokBot: true });
+      await vi.advanceTimersByTimeAsync(2000); expect(delivery).not.toHaveBeenCalled(); throw new Error("rollback");
+    })).rejects.toThrow("rollback");
+    await quiet(); expect(await status(row.id)).toBe("prepared");
+    await db.transaction(async tx => {
+      await instanceSettingsService(tx as unknown as typeof db).updateExperimental({ enableGrokBot: true });
+      await vi.advanceTimersByTimeAsync(2000); expect(delivery).not.toHaveBeenCalled();
+    });
+    await delivered(row.id); await quiet(); expect(delivery).toHaveBeenCalledTimes(1);
+  });
   it("joins an admitted send on shutdown and leaves later rows for restart", async () => {
     const first = await grokRoutineFixture(db), second = await grokRoutineFixture(db);
     let release!: () => void; const held = new Promise<void>(resolve => { release = resolve; });
