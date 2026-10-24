@@ -379,7 +379,7 @@ test('configured credentials are excluded before encoding and after archive deco
 });
 
 test('campaign collection retains and audits private archives, while public projection omits them', async t => {
-  const f = await fixture(t, { requests: 1 }); await f.run();
+  const f = await fixture(t, { count: 2, requests: 1 }); await f.run();
   const bundle = await packControlledAttempt({ manifest: f.manifest, attemptId: 'attempt-0' });
   const download = join(f.root, 'downloads', 'cell'), attempt = join(download, 'runs', 'attempt-0');
   await mkdir(attempt, { recursive: true });
@@ -391,9 +391,15 @@ test('campaign collection retains and audits private archives, while public proj
     'case.json': evalCase, 'config.json': config, 'controller-evidence.json': bundle,
   })) await writeFile(join(attempt, name), JSON.stringify(value));
   const cell = { cellId: 'execution-0', caseId: evalCase.id, rosterFile: 'roster.json', rosterId: 'roster-0', ...config };
+  const missingCell = { ...cell, cellId: 'execution-1', caseId: 'case-1' };
+  const program = join(f.root, 'evals/paperclip-runner');
+  for (const folder of ['rosters', 'cases', 'configs']) await mkdir(join(program, folder), { recursive: true });
+  await writeFile(join(program, 'rosters/roster.json'), JSON.stringify({ config: '../configs/config.json' }));
+  await writeFile(join(program, 'cases/case-1.json'), JSON.stringify({ ...evalCase, id: 'case-1' }));
+  await writeFile(join(program, 'configs/config.json'), JSON.stringify(config));
   const catalogPath = join(f.root, 'catalog.json');
   await writeFile(catalogPath, JSON.stringify({ schema: 'paperclip.runner-protocol-eval.catalog/v1', campaignId: f.manifest.campaignId,
-    selection: { kind: 'subset' }, cells: [cell], rosters: [{ ...cell, cases: [evalCase.id] }] }));
+    selection: { kind: 'subset' }, cells: [cell, missingCell], rosters: [{ ...cell, cases: [evalCase.id, missingCell.caseId] }] }));
   await writeFile(join(download, 'cell.json'), JSON.stringify({ ...cell, exitCode: 0 }));
   await rm(f.manifest.outputDirectory, { recursive: true });
   const input = { catalogPath, downloadsRoot: join(f.root, 'downloads'), evalsRoot: f.root,
@@ -401,7 +407,9 @@ test('campaign collection retains and audits private archives, while public proj
     source: { paperclip: { sha: f.manifest.sourceRevision }, evals: { sha: f.manifest.definitionsRevision } } };
   const result = await aggregateProtocolEvalCampaign(input);
   assert.equal(result.controlledCosts.knownUsd, '0.000068000');
-  assert.equal(result.controlledCosts.costStatus, 'provisional');
+  assert.equal(result.controlledCosts.costStatus, 'incomplete');
+  assert.equal(result.controlledCosts.committedUsd, '0.014068000');
+  assert.equal(result.controlledCosts.incompleteAttempts, 1);
   assert.deepEqual(JSON.parse(await readFile(join(input.runsOut, 'attempt-0', 'controller-evidence.json'), 'utf8')), bundle);
   const publicRoot = join(f.root, 'public');
   await sanitizeProtocolEvalRuns({ runsRoot: input.runsOut, publicRunsRoot: publicRoot });
@@ -411,13 +419,38 @@ test('campaign collection retains and audits private archives, while public proj
   await writeFile(join(attempt, 'request.json'), JSON.stringify(changedRequest));
   await assert.rejects(aggregateProtocolEvalCampaign(input), /Immutable attempt does not match/);
   await writeFile(join(attempt, 'request.json'), JSON.stringify(f.requests[0].request));
-  const drifted = structuredClone(bundle); drifted.manifest.attempts[0].executionId = 'not-the-selected-cell';
-  drifted.manifestSha256 = sha256(canonical(drifted.manifest));
-  await writeFile(join(attempt, 'controller-evidence.json'), JSON.stringify(drifted));
-  const bareArtifact = JSON.parse(await readFile(join(attempt, 'artifact.json'), 'utf8')); delete bareArtifact.controllerAccounting;
-  await writeFile(join(attempt, 'artifact.json'), JSON.stringify(bareArtifact));
-  await assert.rejects(aggregateProtocolEvalCampaign(input), /Controller archive identity drifted/);
-  await writeFile(join(attempt, 'artifact.json'), await readFile(f.requests[0].outputPath));
+  const originalArtifact = JSON.parse(await readFile(f.requests[0].outputPath, 'utf8'));
+  for (const mutate of [
+    value => { value.usage = { estimatedCostNanodollars: 0 }; },
+    value => { value.turn = { status: 'completed', assistantText: 'changed outcome' }; },
+    value => { value.controllerAccounting.cleanupVerified = false; },
+    value => { delete value.controllerAccounting; },
+  ]) {
+    const changed = structuredClone(originalArtifact); mutate(changed);
+    await writeFile(join(attempt, 'artifact.json'), JSON.stringify(changed));
+    await assert.rejects(aggregateProtocolEvalCampaign(input), /Immutable result disagrees/);
+  }
+  await writeFile(join(attempt, 'artifact.json'), JSON.stringify({ ...originalArtifact, provenance: { runnerPackage: 'private-program-provenance' } }));
+  await aggregateProtocolEvalCampaign(input);
+  const retainedFailure = { ...originalArtifact, controllerEvidenceError: 'Retained verification was interrupted', accountingError: 'Retained verification was interrupted',
+    accountingFailure: { class: 'provider_budget_coverage_unknown', category: 'provider_budget', retryable: false } };
+  await writeFile(join(attempt, 'artifact.json'), JSON.stringify(retainedFailure));
+  await aggregateProtocolEvalCampaign(input);
+  await writeFile(join(attempt, 'artifact.json'), JSON.stringify(originalArtifact));
+  const catalog = JSON.parse(await readFile(catalogPath, 'utf8'));
+  for (const change of [{ model: 'wrong-model' }, { provider: 'acpx', acpxAgent: 'claude' }, { driver: 'other-driver' }]) {
+    const driftedCatalog = structuredClone(catalog); Object.assign(driftedCatalog.cells[0], change);
+    await writeFile(catalogPath, JSON.stringify(driftedCatalog));
+    await writeFile(join(attempt, 'config.json'), JSON.stringify({ ...config, ...change }));
+    await assert.rejects(aggregateProtocolEvalCampaign(input), /Controller archive identity drifted/);
+  }
+  await writeFile(join(attempt, 'config.json'), JSON.stringify(config));
+  for (const change of [{ model: 'wrong-unexecuted-model' }, { provider: 'acpx', acpxAgent: 'claude', driver: 'acpx_runtime' }]) {
+    const driftedCatalog = structuredClone(catalog); Object.assign(driftedCatalog.cells[1], change);
+    await writeFile(catalogPath, JSON.stringify(driftedCatalog));
+    await assert.rejects(aggregateProtocolEvalCampaign(input), /Controller archive identity drifted/);
+  }
+  await writeFile(catalogPath, JSON.stringify(catalog));
   await rm(join(attempt, 'controller-evidence.json'));
   await assert.rejects(aggregateProtocolEvalCampaign(input), /Missing private controller evidence/);
 });

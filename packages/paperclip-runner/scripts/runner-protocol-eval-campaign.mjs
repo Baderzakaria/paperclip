@@ -184,6 +184,7 @@ export async function buildProtocolEvalCatalog({
       configFile: relative(programRoot, configPath).split(sep).join("/"),
       model: String(roster.model ?? config.model ?? "unknown"),
       provider: String(config.provider ?? "codex"),
+      ...(config.provider === "acpx" ? { acpxAgent: config.acpxAgent } : {}),
       driver: String(config.driver ?? "codex_app_server"),
       credentialName,
       ...(config.provider === "acpx" && config.acpxAgent === "grok"
@@ -214,6 +215,7 @@ export async function buildProtocolEvalCatalog({
       caseId,
       model: roster.model,
       provider: roster.provider,
+      ...(roster.acpxAgent ? { acpxAgent: roster.acpxAgent } : {}),
       driver: roster.driver,
       credentialName: roster.credentialName,
       ...(roster.authenticationMode ? { authenticationMode: roster.authenticationMode } : {}),
@@ -465,13 +467,19 @@ export async function aggregateProtocolEvalCampaign({
           const bundle = await readAttemptControlledEvidence(join(attemptRoot, entry.name));
           const allocation = bundle.manifest.attempts.find(item => item.attemptId === attemptId);
           const selectedExecutions = new Set(bundle.manifest.attempts.map(item => item.executionId));
-          if (bundle.manifest.campaignId !== catalog.campaignId || allocation.executionId !== cellId ||
+          const allocationsMatchCatalog = bundle.manifest.attempts.every(item => {
+            const cell = expectedByCell.get(item.executionId);
+            return cell && item.model === cell.model && item.provider === cell.provider
+              && item.acpxAgent === cell.acpxAgent
+              && cell.driver === (item.provider === "codex" ? "codex_app_server" : "acpx_runtime");
+          });
+          if (!allocationsMatchCatalog || bundle.manifest.campaignId !== catalog.campaignId || allocation.executionId !== cellId ||
               selectedExecutions.size !== expectedByCell.size || [...expectedByCell.keys()].some(id => !selectedExecutions.has(id)) ||
               bundle.manifest.sourceRevision !== source.paperclip.sha || bundle.manifest.definitionsRevision !== source.evals.sha) {
             throw new Error(`Controller archive identity drifted for ${cellId}`);
           }
           controllerBundles.push(bundle);
-        } else if (artifact.controllerAccounting) {
+        } else if ("controllerAccounting" in artifact || "controllerEvidenceError" in artifact) {
           throw new Error(`Missing private controller evidence for ${attemptId}; cost metadata alone is insufficient`);
         }
         await copyAttempt(

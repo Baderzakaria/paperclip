@@ -52,6 +52,14 @@ async function runChild(input) {
   }
 }
 
+export function controlledResultArtifact(artifact, report, attempt) {
+  return { ...(artifact ?? { schema: 'paperclip-runner/eval-session-artifact/v1', attemptId: attempt.attemptId,
+    requestedModel: attempt.model, infrastructureError: 'Controlled provider did not retain an artifact' }),
+    ...(report.failure ? { accountingError: 'Controlled request accounting or cleanup is incomplete',
+      accountingFailure: { class: 'provider_budget_coverage_unknown', category: 'provider_budget', retryable: false } } : {}),
+    controllerAccounting: report };
+}
+
 export async function runControlledEval({ manifestPath, requestPath, outputPath, environment = process.env, signal, transport }) {
   if (!['linux', 'darwin'].includes(process.platform)) throw new Error('Controlled eval process ownership requires Linux or macOS');
   signal?.throwIfAborted();
@@ -167,11 +175,7 @@ registerHooks({ resolve(specifier, context, nextResolve) {
     child: child ? { code: child.code, signal: child.signal, stopped: child.stopped } : null,
     cleanupVerified, secretExcluded, providerArtifactSha256, ledgerSha256, receiptHashes, accounting: snapshot };
   await atomicJson(join(root, 'result.json'), report);
-  const resultArtifact = artifact ?? { schema: 'paperclip-runner/eval-session-artifact/v1', attemptId: attempt.attemptId,
-    requestedModel: attempt.model, infrastructureError: 'Controlled provider did not retain an artifact' };
-  if (failure) Object.assign(resultArtifact, { accountingError: 'Controlled request accounting or cleanup is incomplete',
-    accountingFailure: { class: 'provider_budget_coverage_unknown', category: 'provider_budget', retryable: false } });
-  resultArtifact.controllerAccounting = report;
+  const resultArtifact = controlledResultArtifact(artifact, report, attempt);
   await mkdir(dirname(resolve(outputPath)), { recursive: true, mode: 0o700 });
   await writeFile(outputPath, JSON.stringify(resultArtifact, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
   return { code: failure ? 2 : child?.code ?? 2, report };

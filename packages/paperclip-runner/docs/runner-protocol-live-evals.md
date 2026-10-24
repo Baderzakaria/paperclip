@@ -209,7 +209,10 @@ requests keep their reservations, and failed or missing cell evidence keeps
 that cell's full allocation in the campaign report. An existing cell directory
 or output is never reset for a retry. Cancellation closes admission, drains
 upstream receipts within the proxy limit, and stops the owned CLI process
-group. Unverified provider cleanup remains explicit and retains the allocation.
+group. If the CLI exits while its owned group survives, the controller closes
+admission, stops that group, bounds inherited output pipes, and records an
+incomplete attempt. Unverified provider cleanup remains explicit and retains
+the allocation.
 
 Each result retains `controllerAccounting` alongside the original provider
 outcome and usage. Retain the durable controller directory as private evidence:
@@ -250,7 +253,10 @@ The reader accepts only bounded regular files and fixed evidence paths. A
 bundle is limited to 64 MiB of decoded content plus encoding overhead; this
 storage-format limit does not qualify a vendor charge or operating-cost bound.
 `report` accepts standalone bundle files; `report-attempts` additionally binds
-them to the surrounding immutable request and artifact. Both work after the
+them to the surrounding immutable request and reconstructed controller output,
+including the provider outcome, usage, and complete accounting result. The
+private program may add provenance or a stricter non-retryable retention
+failure. Missing source proof remains incomplete. Both work after the
 original worker directory is gone, using the same hash-chain ledger verifier.
 They group attempts by manifest, count operating holds once, deduplicate exact
 copies, reject conflicting copies, and keep full allocations for missing
@@ -259,7 +265,8 @@ selected attempts. They never consult old worker paths to fill archive gaps.
 The campaign collector preserves the bundle in private runs and returns its
 independently replayed totals as `controlledCosts`. For this collector, each
 manifest `executionId` must equal its catalog `cellId`, and the complete
-manifest selection must match the catalog. Extra attempts are rejected.
+manifest selection, model, provider, agent profile, and driver must match the
+catalog, including cells with no retained result. Extra attempts are rejected.
 Existing `costs` remain
 legacy provider-usage observations; do not add them to `controlledCosts`.
 The public attempt projection omits bundles and raw `controllerAccounting`.

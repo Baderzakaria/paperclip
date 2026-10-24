@@ -3,7 +3,7 @@ import { lstat, open, readdir, writeFile } from 'node:fs/promises';
 import { basename, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { bindRequest, canonical, fields, readJson, requestBindingSha256, sha256, units, usd, validateManifest } from './manifest.mjs';
-import { attemptDirectory } from './run.mjs';
+import { attemptDirectory, controlledResultArtifact } from './run.mjs';
 import { summarizeControlledCampaign } from './report.mjs';
 
 const MiB = 1_048_576;
@@ -126,6 +126,27 @@ export async function readAttemptControlledEvidence(directory, options) {
       || requestBindingSha256(request) !== allocation.requestSha256
       || artifact.controllerAccounting && artifact.controllerAccounting.manifestSha256 !== bundle.manifestSha256) {
     throw new Error('Immutable attempt does not match its controller archive');
+  }
+  const { files } = decodeControlledEvidence(bundle, options);
+  const reportBytes = files.get('result.json'), providerBytes = files.get('provider-artifact.json');
+  if (reportBytes) {
+    let report, provider;
+    try { report = JSON.parse(reportBytes.toString('utf8')); provider = providerBytes ? JSON.parse(providerBytes.toString('utf8')) : undefined; }
+    catch { return bundle; }
+    if (providerBytes || report?.providerArtifactSha256 === null) {
+      const expected = controlledResultArtifact(provider, report, allocation), actual = { ...artifact };
+      delete expected.provenance; delete actual.provenance;
+      if (actual.controllerEvidenceError !== undefined) {
+        if (typeof actual.controllerEvidenceError !== 'string' || !actual.controllerEvidenceError.trim()
+            || typeof actual.accountingError !== 'string' || !actual.accountingError.trim()
+            || canonical(actual.accountingFailure) !== canonical({ class: 'provider_budget_coverage_unknown', category: 'provider_budget', retryable: false })) {
+          throw new Error('Invalid immutable controller retention failure');
+        }
+        delete actual.controllerEvidenceError;
+        if (!expected.accountingFailure) { delete actual.accountingFailure; delete actual.accountingError; }
+      }
+      if (canonical(actual) !== canonical(expected)) throw new Error('Immutable result disagrees with its controller proof');
+    }
   }
   return bundle;
 }
