@@ -64,7 +64,14 @@ for (const classic of [false, true]) {
       await expect(page).toHaveURL(new RegExp(task.identifier));
       await takeover.getByRole("button", { name: "Resume subtree" }).click();
       await page.getByRole("dialog").getByRole("checkbox").uncheck();
+      const released = page.waitForResponse((response) =>
+        response.request().method() === "POST"
+        && new URL(response.url()).pathname.startsWith(`/api/issues/${task.identifier}/tree-holds/`)
+        && new URL(response.url()).pathname.endsWith("/release"),
+      );
       await page.getByRole("dialog").getByRole("button", { name: "Resume subtree", exact: true }).click();
+      expect((await released).ok()).toBe(true);
+      await expect(page.getByRole("dialog")).toHaveCount(0);
       await page.goto(`/${company.issuePrefix}/issues/${child.identifier}`);
       await expect(takeover).toHaveCount(0);
       await expect(editor).toBeVisible();
