@@ -15,8 +15,8 @@ Do not mark an item done from a timer removal or a green check alone.
 | 01 | Custom-image setup expiry | Session writes, existing expiry, startup/retry/drain | [#17443](https://github.com/paperclipai/paperclip/pull/17443), all checks passed, Greptile 5/5 at `36844a458b` |
 | 02 | Remaining chat maintenance | Provider runtime discovery; voice reconciliation; milestones; wake notices; interaction continuations; terminal confirmations; GitHub recovery; Teams maintenance, separately by owner | Pending |
 | 03 | Run and task recovery | Orphan runs and active leases; shutdown workspace settlement; scheduled retries; queued runs; stranded assignments; resolved dependencies; task watchdogs; silent-run monitoring; stale locks | Pending |
-| 04 | Decision retention and notifications | Retention deadlines and notification delivery are separate reasons | Retention pending; notification delivery: [#17475](https://github.com/paperclipai/paperclip/pull/17475), all checks passed (Paperclip Review skipped), Greptile 5/5 at `692e3ee02c` |
-| 05 | Decision expiry and interrupted effects | Expiry, effect recovery, continuation recovery | Continuations: [#17478](https://github.com/paperclipai/paperclip/pull/17478), all checks passed, Greptile 5/5 at `5f96892a58`; TTL: [#17479](https://github.com/paperclipai/paperclip/pull/17479), all checks passed, Greptile 5/5 at `63b58cc26f`; effects: [#17482](https://github.com/paperclipai/paperclip/pull/17482), local verification passed at `a5b5994c1d`, CI/review running; target invalidation pending |
+| 04 | Decision retention and notifications | Retention deadlines and notification delivery are separate reasons | Approval retention implemented in slice 14, verification in progress; other source owners pending; notification delivery: [#17475](https://github.com/paperclipai/paperclip/pull/17475), all checks passed (Paperclip Review skipped), Greptile 5/5 at `692e3ee02c` |
+| 05 | Decision expiry and interrupted effects | Expiry, effect recovery, continuation recovery | Continuations: [#17478](https://github.com/paperclipai/paperclip/pull/17478), all checks passed, Greptile 5/5 at `5f96892a58`; TTL: [#17479](https://github.com/paperclipai/paperclip/pull/17479), all checks passed, Greptile 5/5 at `63b58cc26f`; effects: [#17482](https://github.com/paperclipai/paperclip/pull/17482), all checks passed, Greptile 5/5 at `a5b5994c1d`; target invalidation: [#17486](https://github.com/paperclipai/paperclip/pull/17486), all checks passed, Greptile 5/5 at `1bbfc69590` |
 | 06 | Tool connection health | Configuration/use activation and defined proactive health deadlines | Pending |
 | 07 | Secret proposals, tool reviews, gateway tokens | Separate expiry/scrub/recovery owners | Secret proposals: [#17446](https://github.com/paperclipai/paperclip/pull/17446), checks passed at `d41590ac0e`; gateway credentials: [#17450](https://github.com/paperclipai/paperclip/pull/17450), all checks passed, Greptile 5/5 at `c5c53fc43f`; pending tool-review expiry: [#17453](https://github.com/paperclipai/paperclip/pull/17453), all checks passed, Greptile 5/5 at `ce6a260a83`; approved recovery: [#17454](https://github.com/paperclipai/paperclip/pull/17454), all checks passed, Greptile 5/5 at `7a1cf03e62`; interrupted claims: [#17458](https://github.com/paperclipai/paperclip/pull/17458), all checks passed, Greptile 5/5 at `85003a7ac4`; projection: [#17468](https://github.com/paperclipai/paperclip/pull/17468), all checks passed, Greptile 5/5 at `0956883a84` |
 | 08 | GitHub connection events and continuity | Event discovery/replay and credential continuity separately | Pending |
@@ -28,7 +28,8 @@ Do not mark an item done from a timer removal or a green check alone.
 | 14 | Skill-version retention and native-harness backup expiration | Separate retention owners and existing retention guarantees | Pending |
 | 15 | Automatic database backups | Shared scheduling, actual backup deadlines, existing checkpoint contract | Pending |
 | 16 | Aggregate maintenance tick | Retire enabled and disabled branches after all constituent owners migrate | Pending |
-| 17 | Grok routine dispatch | Committed reservations and feature changes; prepared-only recovery | Slice 13 implemented, local verification in progress |
+| 17 | Grok routine dispatch | Committed reservations and feature changes; prepared-only recovery | [#17490](https://github.com/paperclipai/paperclip/pull/17490), all checks passed, Greptile 5/5 at `706beb01f2` |
+| 18 | Abandoned import transfer spools | Creation/completion events, existing retention deadline, startup recovery | Pending; explicitly retained from the remaining-blocker checklist |
 
 ## Stack and verification contract
 
@@ -730,3 +731,58 @@ at this snapshot). These are verified live waits, not completed checks. Do not
 rerun them merely because a later observation times out. Continue inspecting
 these runs while implementing retention, and propagate any required parent
 repair into the later branch. No stack PR was merged.
+
+
+## Approval retention implementation in progress
+
+Remote verification on October 24: #17486 at `1bbfc69590` and #17490 at
+`706beb01f2` each have 56 completed checks, all successful or accepted
+neutral/skipped outcomes. Their PR bodies now record completion. Neither was
+merged; this remains a stack.
+
+The retention audit is now split by source owner. Slice 14 migrates **approval
+retention only**. Decisions, interactions, join requests, recovery actions,
+blocker attention, review, failed runs, budget alerts and agent errors remain
+explicitly pending. The original full recurring-work inventory remains scope.
+
+The implementation discovers pending approvals directly, including approvals
+never materialized by an attention-feed read. It uses active-company status,
+the feed's first linked issue, shared execution visibility, keep/archive state,
+and the approval's updated timestamp. The next obligation is updated timestamp
+plus 90 days. Each bounded pass rechecks and locks the approval before using
+existing versioned retention, audit and notification-outbox writes. Other
+retention sources still use the aggregate sweep; approval collection is excluded
+from that maintenance feed before its query, while normal UI reads are unchanged.
+
+Signals cover approval create/cancel/revision/resubmit/resolve, hard budget
+approvals, formal tool approvals, link/unlink/bulk linking, issue visibility and
+cascading deletion, company activation/pause/archive/deletion, and keep/archive/
+revive/accepted archive manifests. Source comments do not alter approval activity
+under the existing policy. Company portability imports no approval records;
+offline restore is reconstructed at startup. Independent SQL writers still
+require a wake integration. The Cloud sleep proof is unchanged.
+
+Initial real-Postgres proof: 14 lifecycle cases passed, then 19 including actual
+archive-write faults, page progress past a failed row, startup drain, first-link
+ordering and shutdown. The first consumer run passed retention and startup but
+failed five approval unit cases because its transaction stub omitted nested
+transactions; the stub was repaired without weakening production behavior.
+The budget suite initially skipped due to embedded-Postgres availability. Budget
+and attention suites now accept validated disposable external test databases.
+Expanded consumer verification, final index/migration proof, build and PR review
+remain required. No slice-14 PR has been published yet.
+
+
+Slice 14 expanded proof: all 20 worker lifecycle cases pass. The shared execution
+visibility predicate is used directly, and a waiting Slack conversation with a
+pending approval remains eligible with its archive notification persisted. The
+repaired approval stub and attention/retention/startup suites pass. Of 96 consumer
+cases, one budget case initially timed out during lazy lifecycle module loading
+and raced teardown; moving the import into setup preserves the original timeout
+and all five budget cases pass. No assertion or production behavior was weakened.
+The initial index diagnostic failed to construct a Drizzle client around the
+scoped raw driver; supplying its existing driver options fixed the diagnostic.
+The actual deadline query with 40,000 resolved approvals uses the pending index,
+four shared buffer hits and 0.314 ms execution; test data rolled back. Migration
+replay and checks pass. Workspace types, build and tool-gateway tests remain live
+in the current verification run. This is not final acceptance.

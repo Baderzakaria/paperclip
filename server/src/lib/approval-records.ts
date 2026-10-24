@@ -1,3 +1,4 @@
+import { writeApprovalChange } from "../services/retention-work-notifications.js";
 import { and, eq, inArray } from "drizzle-orm";
 import { approvals, type Db } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
@@ -37,7 +38,7 @@ export function approvalResolutionRecords(db: Db) {
     }
 
     const now = new Date();
-    const updated = await database
+    const updated = await writeApprovalChange(database, tx => tx
       .update(approvals)
       .set({
         status: targetStatus,
@@ -48,7 +49,7 @@ export function approvalResolutionRecords(db: Db) {
       })
       .where(and(eq(approvals.id, id), inArray(approvals.status, resolvableStatuses)))
       .returning()
-      .then((rows) => rows[0] ?? null);
+      .then((rows) => rows[0] ?? null));
 
     if (updated) {
       return { approval: updated, applied: true };

@@ -1,3 +1,4 @@
+import { approvalRetentionService, registerApprovalRetentionWork } from "./services/approval-retention.js";
 import { registerDecisionTargetWork } from "./services/decision-target-work.js";
 import { registerDecisionEffectRecoveryWork } from "./services/decision-effect-recovery-work.js";
 import { registerDecisionExpiryWork } from "./services/decision-expiry-work.js";
@@ -1775,6 +1776,7 @@ async function startServerWithDatabaseTeardown(
         // per company per tick.
         const page = await attentionService(db as any).list(company.id, {
           includeDismissed: true,
+          excludeSources: ["approval"],
           all: true,
           allowUnscopedAll: true,
         });
@@ -1821,6 +1823,8 @@ async function startServerWithDatabaseTeardown(
       // server restart, so a leaked sandbox does not stay allocated.
       await step("environment_lease_cleanup", startEnvironmentCleanup);
       await step("archive_notification_worker", () => registerDecisionArchiveDeliveryWork(deliveryWork, retentionExecutor,
+        () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped).ready);
+      await step("approval_retention", () => registerApprovalRetentionWork(deliveryWork, approvalRetentionService(db as any),
         () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped).ready);
       await step("retention_sweep", runRetentionSweep);
     };

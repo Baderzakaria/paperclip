@@ -8,6 +8,7 @@ export const DELIVERY_QUEUES = {
   executionStatus: "execution-status",
   executionDisposition: "execution-disposition",
   environmentCleanup: "environment-cleanup",
+  approvalRetention: "approval-retention",
   decisionTargets: "decision-targets",
   decisionEffectRecovery: "decision-effect-recovery",
   decisionExpiry: "decision-expiry",

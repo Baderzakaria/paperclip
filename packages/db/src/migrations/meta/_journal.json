@@ -2689,6 +2689,13 @@
       "when": 1792875344101,
       "tag": "0385_normal_blindfold",
       "breakpoints": true
+    },
+    {
+      "idx": 386,
+      "version": "7",
+      "when": 1792877330859,
+      "tag": "0386_omniscient_luke_cage",
+      "breakpoints": true
     }
   ]
 }

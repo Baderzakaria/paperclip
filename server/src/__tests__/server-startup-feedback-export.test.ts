@@ -1,3 +1,4 @@
+import { approvalRetentionService } from "../services/approval-retention.js";
 import { logger } from "../middleware/logger.js";
 import { getStartupRecoveryState } from "../startup-recovery-state.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
@@ -321,6 +322,11 @@ vi.mock("../realtime/live-events-ws.js", () => ({
   setupLiveEventsWebSocketServer: vi.fn(),
 }));
 
+vi.mock("../services/approval-retention.js", async importOriginal => ({
+  ...await importOriginal<typeof import("../services/approval-retention.js")>(),
+  approvalRetentionService: vi.fn(() => ({ sweep: vi.fn(async () => ({ archived: 0 })), next: vi.fn(async () => null) })),
+}));
+
 vi.mock("../services/index.js", () => ({
   backfillLegacyToolOAuthTokens: vi.fn(async () => ({
     scannedConnections: 0,
@@ -517,6 +523,18 @@ describe("startServer feedback export wiring", () => {
     createBetterAuthInstanceMock.mockReturnValue({});
     deriveAuthTrustedOriginsMock.mockReturnValue([]);
     process.env.BETTER_AUTH_SECRET = "test-secret";
+  });
+
+  it.each([false, true])("registers approval retention only when maintenance is enabled (%s)", async enabled => {
+    loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: enabled }));
+    await startServer(); await settleStartupHousekeeping();
+    const registration = deliveryWorkRegisterMock.mock.calls.find(([queue]) => queue === DELIVERY_QUEUES.approvalRetention);
+    expect(Boolean(registration)).toBe(enabled);
+    if (enabled) {
+      const service = vi.mocked(approvalRetentionService).mock.results.at(-1)!.value;
+      await registration![1].run(new AbortController().signal);
+      expect(service.sweep).toHaveBeenCalled(); expect(service.next).toHaveBeenCalled();
+    }
   });
 
   it("registers durable case handoffs independently of the heartbeat scheduler", async () => {

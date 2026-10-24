@@ -1,3 +1,4 @@
+import { notifyRetentionWork } from "./retention-work-notifications.js";
 import { notifyDecisionTargetWork } from "./decision-target-work.js";
 import { insertIssueComment } from "./issue-comment-writes.js";
 import { measureRunTransaction } from "./execution-transaction-timing.js";
@@ -11300,6 +11301,9 @@ export function issueService(db: Db) {
         if (patch.status === "done" || patch.status === "cancelled") {
           await notifyDecisionTargetWork(tx, `issue:${id}`);
         }
+        if (patch.hiddenAt !== undefined || patch.harnessKind !== undefined || patch.conversationAgentId !== undefined) {
+          await notifyRetentionWork(tx, "approval");
+        }
         const updated = await tx
           .update(issues)
           .set(patch)
@@ -11707,6 +11711,7 @@ export function issueService(db: Db) {
         try {
           await notifyTerminalWorkspaceWork(tx, `issue:${id}`);
           await requestRestorePointDeletion(tx, { sourceIssueId: id });
+          await notifyRetentionWork(tx, "approval");
           await notifyDecisionTargetWork(tx);
           removedIssue = await tx
             .delete(issues)

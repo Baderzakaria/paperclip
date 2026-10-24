@@ -1,3 +1,4 @@
+import { writeApprovalChange } from "./retention-work-notifications.js";
 import { toolReviewProjectionService } from "./tool-review-projection.js";
 import { toolReviewInterruptionService } from "./tool-review-interruption.js";
 import { claimToolTestApproval, persistToolTestOutcome, startToolTestInvocation, type ToolTestApprovalClaim } from "./tool-test-approval.js";
@@ -2577,7 +2578,7 @@ export function createToolGatewayService(
 
     let formalApprovalId: string | null = null;
     if (toolRequiresFormalApproval(input.tool)) {
-      const [approval] = await db
+      const [approval] = await writeApprovalChange(db, tx => tx
         .insert(approvals)
         .values({
           companyId: input.session.companyId,
@@ -2600,17 +2601,18 @@ export function createToolGatewayService(
             argumentsHash: canonicalArgumentsHash,
           },
         })
-        .returning();
+        .returning());
       formalApprovalId = approval.id;
-      await db
+      const approvalIssueId = input.session.issueId;
+      await writeApprovalChange(db, tx => tx
         .insert(issueApprovals)
         .values({
           companyId: input.session.companyId,
-          issueId: input.session.issueId,
+          issueId: approvalIssueId,
           approvalId: approval.id,
           linkedByAgentId: input.session.agentId,
         })
-        .onConflictDoNothing();
+        .onConflictDoNothing());
     }
 
     const interaction = await interactions.create(
