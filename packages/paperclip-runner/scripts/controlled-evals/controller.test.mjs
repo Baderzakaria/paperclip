@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { canonical, costRuntime, requestBindingSha256, sha256, validateManifest } from './manifest.mjs';
 import { attemptDirectory, runControlledEval } from './run.mjs';
 import { summarizeControlledCampaign } from './report.mjs';
-import { decodeControlledEvidence, packControlledAttempt, readControlledEvidence, summarizeControlledEvidence } from './archive.mjs';
+import { decodeControlledEvidence, packControlledAttempt, readControlledEvidence, readAttemptControlledEvidence, summarizeControlledEvidence } from './archive.mjs';
 import { aggregateProtocolEvalCampaign, sanitizeProtocolEvalRuns } from '../runner-protocol-eval-campaign.mjs';
 
 const childScript = options => `
@@ -376,6 +376,25 @@ test('configured credentials are excluded before encoding and after archive deco
   assert.throws(() => decodeControlledEvidence(unchecked, { environment }), /configured credential/);
   const file = join(f.root, 'archive.json'); await writeFile(file, JSON.stringify(unchecked));
   await assert.rejects(readControlledEvidence(file, { environment }), /configured credential/);
+});
+
+test('retention annotations preserve an already-failed controller result and its known costs', async t => {
+  const f = await fixture(t, { requests: 1, missingRoute: true }); await f.run();
+  const bundle = await packControlledAttempt({ manifest: f.manifest, attemptId: 'attempt-0' });
+  const artifact = JSON.parse(await readFile(f.requests[0].outputPath, 'utf8'));
+  assert.equal(artifact.controllerAccounting.status, 'incomplete');
+  artifact.controllerEvidenceError = 'A later retention check failed';
+  artifact.accountingError = artifact.controllerEvidenceError;
+  const directory = join(f.root, 'runs', 'attempt-0'); await mkdir(directory, { recursive: true });
+  for (const [name, value] of Object.entries({ 'request.json': f.requests[0].request, 'artifact.json': artifact, 'controller-evidence.json': bundle })) {
+    await writeFile(join(directory, name), JSON.stringify(value));
+  }
+  const retained = await readAttemptControlledEvidence(directory);
+  const report = await summarizeControlledEvidence([retained]);
+  assert.equal(report.costStatus, 'incomplete');
+  assert.equal(report.knownUsd, '0.000068000');
+  assert.equal(report.committedUsd, '0.014000000');
+  assert.equal(JSON.parse(await readFile(join(directory, 'artifact.json'), 'utf8')).accountingError, artifact.controllerEvidenceError);
 });
 
 test('campaign collection retains and audits private archives, while public projection omits them', async t => {

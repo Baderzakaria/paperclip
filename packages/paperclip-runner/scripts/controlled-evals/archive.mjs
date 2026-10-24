@@ -143,7 +143,8 @@ export async function readAttemptControlledEvidence(directory, options) {
           throw new Error('Invalid immutable controller retention failure');
         }
         delete actual.controllerEvidenceError;
-        if (!expected.accountingFailure) { delete actual.accountingFailure; delete actual.accountingError; }
+        if (expected.accountingFailure) { actual.accountingFailure = expected.accountingFailure; actual.accountingError = expected.accountingError; }
+        else { delete actual.accountingFailure; delete actual.accountingError; }
       }
       if (canonical(actual) !== canonical(expected)) throw new Error('Immutable result disagrees with its controller proof');
     }
