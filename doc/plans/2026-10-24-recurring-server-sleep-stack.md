@@ -602,3 +602,22 @@ run hit a PostgreSQL lock timeout, and the following test saw the experimental
 flag left enabled. No CI retry has been used. Reproduce the two tests on the
 exact parent head before classifying a retry or repair. This parent is not yet
 claimed green. The full original inventory remains in scope.
+
+Slice 11 #17482 now has all checks passing at `a5b5994c1d`, Greptile 5/5,
+no unresolved findings, and no merge conflict. Its one browser-shard retry passed
+after both affected cases passed locally on the exact head (2/2). The original
+fixture-cleanup lock timeout remains documented in the PR.
+
+Slice 12 is #17486 at initial head `5062efb368`. Review found that deletion's
+absent hint could be dropped when the same outer transaction included a scoped
+hint. Both operation orders failed new regressions before the explicit `all`
+hint repair. The repaired target/TTL selection passes 34 cases. CI also exposed
+a TTL test race: passive-SQL measurement now joins already-admitted sweeps,
+without dropping unresolved recovery holds. Fresh CI/review remain required.
+
+The fresh master audit at `991c47bc6e` identified an additional recurring-server
+owner: the Grok routine dispatcher starts a one-second settings/dispatch scan
+when public MCP is configured, even when Grok is disabled. Include this in the
+full stack as slice 13, separately from decision retention. The disabled baseline
+issued three settings queries in 3.2 seconds. Its durable prepared dispatches,
+atomic claim, and existing uncertain-outcome policy must remain authoritative.

@@ -3,7 +3,7 @@ import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notificatio
 import type { decisionService } from "./decisions.js";
 
 export function notifyDecisionTargetWork(transaction: object, hint?: `issue:${string}` | `decision:${string}`) {
-  return notifyDeliveryWork(transaction, DELIVERY_QUEUES.decisionTargets, hint);
+  return notifyDeliveryWork(transaction, DELIVERY_QUEUES.decisionTargets, hint ?? "all");
 }
 
 export function registerDecisionTargetWork(
