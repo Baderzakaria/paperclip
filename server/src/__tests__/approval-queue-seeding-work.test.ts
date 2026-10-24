@@ -37,6 +37,8 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
   afterEach(async () => {
     await coordinator?.stop(); coordinator = undefined;
     vi.useRealTimers(); vi.restoreAllMocks();
+    await db.execute(sql`drop trigger if exists approval_queue_delete_gate on decision_queue_items`);
+    await db.execute(sql`drop function if exists approval_queue_delete_gate()`);
     await db.execute(sql`drop trigger if exists approval_queue_fail on decision_queue_items`);
     await db.execute(sql`drop function if exists approval_queue_fail()`);
     await db.delete(decisionTriageEvents); await db.delete(decisionQueueItems); await db.delete(decisionQueues);
@@ -288,6 +290,39 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     release(); await started; await stopping; coordinator = undefined; intercepted.mockRestore();
     expect(await memberships()).toHaveLength(1);
     await start(); await quiet(); expect(await memberships()).toHaveLength(2);
+  });
+
+  it("serializes manual removal and automatic seeding without a queue/item lock cycle", async () => {
+    const approval = await pending();
+    const [link] = await db.select().from(issueApprovals).where(eq(issueApprovals.approvalId, approval.id));
+    const queues = decisionQueueService(db);
+    const seed = () => queues.materializeSeedSources(companyId, [{ sourceKind: "approval", sourceId: approval.id, issueId: link.issueId }]);
+    await seed();
+    await db.execute(sql`create function approval_queue_delete_gate() returns trigger language plpgsql as $$ begin
+      perform pg_advisory_xact_lock(hashtext(TG_ARGV[0])); return old; end $$`);
+    await db.execute(sql`create trigger approval_queue_delete_gate after delete on decision_queue_items for each row execute function approval_queue_delete_gate(${sql.raw("'" + companyId + "'")})`);
+    const blocker = await db.$client.reserve();
+    await blocker`select pg_advisory_lock(hashtext(${companyId}))`;
+    let complete: Promise<PromiseSettledResult<unknown>[]> | undefined;
+    try {
+      const removed = queues.removeItem({ ...mutation(), sourceKind: "approval", sourceId: approval.id });
+      await vi.waitFor(async () => {
+        const [row] = await db.execute<{ count: number }>(sql`select count(*)::int as count from pg_stat_activity
+          where datname = current_database() and state = 'active' and wait_event = 'advisory'`);
+        expect(row.count).toBeGreaterThan(0);
+      }, { timeout: 5000 });
+      complete = Promise.allSettled([removed, seed()]);
+      await vi.waitFor(async () => {
+        const [row] = await db.execute<{ count: number }>(sql`select count(*)::int as count from pg_stat_activity
+          where datname = current_database() and state = 'active' and wait_event_type = 'Lock' and wait_event <> 'advisory'`);
+        expect(row.count).toBeGreaterThan(0);
+      }, { timeout: 5000 });
+    } finally {
+      await blocker`select pg_advisory_unlock_all()`; blocker.release();
+    }
+    const results = await complete!;
+    expect(results.map(result => result.status), results.filter(result => result.status === "rejected").map(result => String(result.reason?.cause?.message ?? result.reason)).join("; ")).toEqual(["fulfilled", "fulfilled"]);
+    expect(await memberships()).toHaveLength(1);
   });
 
 });
