@@ -223,6 +223,24 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
     expect(await recovery.nextEffectRecoveryAt()).not.toBeNull();
   });
 
+  it("pages past invalid claims using database timestamp precision", async () => {
+    vi.stubEnv("PAPERCLIP_DECISIONS_SWEEP_BATCH_SIZE", "1");
+    const invalid = await create(), valid = await create();
+    await claim(invalid.id); await claim(valid.id, new Date(Date.now() - 120_000));
+    await db.execute(sql`update decisions set decided_by_user_id = null,
+      updated_at = date_trunc('milliseconds', now() - interval '3 minutes') + interval '456 microseconds'
+      where id = ${invalid.id}`);
+    const recovery = service();
+    expect(await recovery.recoverEffects()).toEqual({ resumed: 0 });
+    expect(await recovery.recoverEffects()).toEqual({ resumed: 1 });
+    expect(await comments()).toHaveLength(1);
+    expect((await recovery.get(invalid.id))?.executionStatus).toBe("running");
+    expect(await recovery.nextEffectRecoveryAt()).not.toBeNull();
+    expect(await recovery.recoverEffects()).toEqual({ resumed: 0 });
+    expect(await recovery.recoverEffects()).toEqual({ resumed: 0 });
+    expect(await comments()).toHaveLength(1);
+  });
+
   it("advances past malformed claims and retries them on a later pass", async () => {
     vi.stubEnv("PAPERCLIP_DECISIONS_SWEEP_BATCH_SIZE", "1");
     const invalid = await create(), valid = await create();
