@@ -842,3 +842,27 @@ paging in the earlier TTL and effect-recovery owners, propagating parent changes
 through later PRs; qualify the terminal-workspace cursor; then implement the
 join-request retention audit on this branch. Every original inventory item and
 remaining retention source remains required. No merge is authorized.
+
+## Decision and workspace precision follow-up
+
+Expiry #17479 now preserves the PostgreSQL timestamp in its cursor, head
+`e89c682ba5`. Its regression failed before repair; all 15 expiry cases and server
+typechecking pass. Fresh CI is green and Greptile is 5/5 at that head.
+Effect recovery #17482 has the same verified repair at `cebcd9c427`: its invalid
+legacy claim regression failed before repair, then all 18 cases and typechecking
+passed. Both changes have been merged through #17486, #17490, and #17497.
+The combined 33 expiry/effect cases pass on the latest stack. Fresh dependent
+CI/review is running. Superseded runs on the Grok/retention heads were cancelled
+when both base and head updated; replacement workflows exist. Do not rerun or
+claim those heads green until their current runs finish.
+
+Approval retention previously passed all checks and fresh 5/5 at `a29ce265b0`.
+Its new head is `2c5babcabc`, with only parent paging repairs added. Join retention
+still has no implementation; its branch now includes the current parents.
+
+The terminal-workspace audit also reproduced starvation using real microsecond
+source timestamps. The focused branch `codex/sleep-terminal-workspace-precision`
+preserves cursor precision in the owning query. All 87 workspace service/worker
+cases and server typechecking pass. See
+[workspace pagination](../idle-terminal-workspace-pagination.md). Publication and
+fresh CI/review are next. Join retention remains the next new migration duty.
