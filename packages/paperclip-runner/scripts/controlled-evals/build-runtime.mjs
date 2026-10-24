@@ -74,7 +74,7 @@ export async function buildControllerRuntime({ outputDirectory, sourceRevision }
       if (entry.isDirectory()) await inventory(path);
       else if (entry.isFile()) {
         const bytes = await readFile(path); totalBytes += bytes.length;
-        if (totalBytes > RUNTIME_MAX_BYTES || Object.keys(files).length >= RUNTIME_MAX_FILES) throw new Error('Controller runtime exceeds its artifact allowance');
+        if (totalBytes > RUNTIME_MAX_BYTES || Object.keys(files).length >= RUNTIME_MAX_FILES - 1) throw new Error('Controller runtime exceeds its artifact allowance');
         files[relative(output, path).split('\\').join('/')] = { sha256: sha256(bytes), sizeBytes: bytes.length };
       } else throw new Error('Controller runtime contains a nonregular file');
     }
@@ -82,6 +82,7 @@ export async function buildControllerRuntime({ outputDirectory, sourceRevision }
   await inventory(output);
   const receipt = { schema: 'paperclip.runner-eval.controller-runtime/v1', sourceRevision, nodeMajor: 24, inputs, packageInputs, totalBytes, files };
   const receiptBytes = JSON.stringify(receipt, null, 2) + '\n';
+  if (totalBytes + Buffer.byteLength(receiptBytes) > RUNTIME_MAX_BYTES) throw new Error('Controller runtime receipt exceeds its artifact allowance');
   await writeFile(join(output, 'runtime.json'), receiptBytes, { flag: 'wx', mode: 0o600 });
   return { ...receipt, receiptSha256: sha256(receiptBytes) };
 }

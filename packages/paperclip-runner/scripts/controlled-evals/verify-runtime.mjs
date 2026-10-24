@@ -32,9 +32,9 @@ export async function verifyControllerRuntime({ directory, sourceRevision, recei
   if (sha256(receiptBytes) !== receiptSha256) throw new Error('Runtime receipt digest mismatch');
   const receipt = JSON.parse(receiptBytes.toString('utf8'));
   if (receipt.schema !== 'paperclip.runner-eval.controller-runtime/v1' || receipt.sourceRevision !== sourceRevision
-      || receipt.nodeMajor !== 24 || !Number.isSafeInteger(receipt.totalBytes) || receipt.totalBytes < 1 || receipt.totalBytes > RUNTIME_MAX_BYTES
+      || receipt.nodeMajor !== 24 || !Number.isSafeInteger(receipt.totalBytes) || receipt.totalBytes < 1 || receipt.totalBytes + receiptBytes.length > RUNTIME_MAX_BYTES
       || !receipt.files || typeof receipt.files !== 'object' || Array.isArray(receipt.files)
-      || !Object.keys(receipt.files).length || Object.keys(receipt.files).length > RUNTIME_MAX_FILES) throw new Error('Invalid runtime receipt');
+      || !Object.keys(receipt.files).length || Object.keys(receipt.files).length >= RUNTIME_MAX_FILES) throw new Error('Invalid runtime receipt');
   const pending = new Map(Object.entries(receipt.files));
   let bytes = 0, entries = 0;
   async function inspect(path, prefix = '') {
