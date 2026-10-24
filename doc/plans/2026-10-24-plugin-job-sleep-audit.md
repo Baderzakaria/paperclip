@@ -1,0 +1,72 @@
+# Plugin job scheduling migration audit
+
+Baseline: approval queue slice `e04a0375dc` (#17510), with fetched master
+`a3675ddcdf`. This is the next independent recurring-server obligation; it does
+not replace the other outstanding inventory items.
+
+## Current owner and behavior
+
+`plugin-job-scheduler.ts` starts a private 30-second interval from `app.ts`.
+Each tick selects active jobs with a due `nextRunAt`, even on an empty instance.
+Cron calculation and dispatch already belong to this service; the migration
+should retain that ownership and register deadlines with the existing delivery
+coordinator. It must not create a second shared scheduler or one table per job.
+
+Saved job definitions and run records are the durable truth. Plugin lifecycle
+registration initializes next-run timestamps. Job pause/resume, manifest sync,
+job deletion, and run completion can all change the next eligible obligation.
+The scheduler currently catches tick errors; its scheduled entry point must not
+swallow errors that the shared coordinator needs for recovery.
+
+## Producer and lifecycle audit
+
+- `plugin-job-store.ts`: declaration sync, definition status changes, timestamp
+  updates, and deletion. These are the primary persistence boundary.
+- `plugin-registry.ts`: its separate declaration synchronization also directly
+  inserts/updates jobs. Do not assume the job store covers all writers.
+- `plugin-job-coordinator.ts`: loaded/disabled/unloaded events connect the store
+  and scheduler. The loaded handler skips declaration sync when the new manifest
+  has no jobs, which can leave old definitions. Preserve or explicitly repair
+  that behavior before claiming removed schedules are quiet.
+- `plugin-loader.ts`: also registers/unregisters jobs and stops the scheduler.
+  Inspect actual worker start/restart events; a worker becoming available must
+  wake overdue jobs without relying on periodic discovery.
+- `app.ts`: creates the scheduler before the delivery coordinator and starts it
+  just before coordinator creation. Wiring must pass the existing coordinator
+  after creation and retain correct shutdown ordering.
+
+## Correctness questions to settle before implementation
+
+1. Registration currently advances overdue timestamps as well as missing ones.
+   An observation must not silently move a real due deadline. Establish and test
+   startup/catch-up behavior rather than copying this as deadline discovery.
+2. Scheduled dispatch tracks jobs in memory, while manual dispatch also checks
+   saved running records. Replacing polling must not replay an unknown prior
+   provider effect or lose delivery; audit interrupted run recovery separately.
+3. Concurrency limits and a temporarily unavailable worker defer actual work.
+   Completion/availability signals should wake it. They are not permission for
+   an empty recurring scan.
+4. Invalid or missing cron expressions and disabled definitions must not cause
+   an endless past-due deadline. Preserve manual trigger behavior.
+5. Shutdown currently stops its timer while in-flight jobs finish naturally.
+   The shared owner must still track and await those admitted operations, with
+   durable results and schedule advancement preserved.
+6. The current status update and declaration-sync methods need outer-commit
+   signals. Never put worker RPC calls inside a database transaction.
+
+Prove empty, configured/manual-only, paused, and completed-history quiet;
+first actual declaration/status changes; future deadlines; restart/catch-up;
+worker unavailability and recovery; failures; drain/resume; concurrent writes;
+and shutdown. Cloud alarm coverage for plugin jobs remains unsupported and
+conservative sleep admission must stay intact.
+
+## Other audit observations retained for later slices
+
+Tool connection health checks have a distinct 15-minute proactive policy in
+`tool-access/catalog/health.ts`; the aggregate tick repeatedly discovers its due
+rows. About 94 direct tool-connection write sites exist, many for excluded chat
+or AI transports. Classify those writers instead of adding wrappers indiscriminately.
+The current health checker returns immediately for AI-purpose connections, while
+the sweep does not explicitly exclude that purpose. Audit inert due rows and
+pre-probe setup failures before deriving deadlines from `healthCheckedAt`.
+No tool-health migration is claimed by this plugin-job slice.
