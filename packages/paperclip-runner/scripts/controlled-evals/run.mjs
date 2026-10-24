@@ -42,14 +42,13 @@ async function runChild(input) {
   if (input.signal?.aborted) onAbort();
   try {
     const [code, signal] = await once(child, 'exit');
-    if (stopped) {
-      let groupPresent = true;
-      try { process.kill(-child.pid, 0); } catch (error) { if (error.code === 'ESRCH') groupPresent = false; }
-      if (groupPresent) await escalation;
-    }
+    const groupPresent = !absent(-child.pid);
+    if (groupPresent && !stopped) stop('provider_group_survived_cli_exit');
+    if (groupPresent) await escalation;
     return { code, signal, pid: child.pid, stopped, stdout: Buffer.concat(output.stdout).toString(), stderr: Buffer.concat(output.stderr).toString() };
   } finally {
     clearTimeout(timeout); clearTimeout(force); input.signal?.removeEventListener('abort', onAbort);
+    child.stdout.destroy(); child.stderr.destroy();
   }
 }
 

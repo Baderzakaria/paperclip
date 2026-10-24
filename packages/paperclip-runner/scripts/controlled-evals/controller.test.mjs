@@ -19,8 +19,9 @@ import {readFile,writeFile} from 'node:fs/promises';
 const args=new Map();for(let i=2;i<process.argv.length;i+=2)args.set(process.argv[i],process.argv[i+1]);
 const request=JSON.parse(await readFile(args.get('--request'),'utf8'));
 if(${Boolean(options.resistantDescendant)}) {
- const descendant=spawn(process.execPath,['-e',"process.on('SIGTERM',()=>{});process.stdout.write('ready');setInterval(()=>{},1000)"],{stdio:['ignore','pipe','ignore']});
- await once(descendant.stdout,'data');
+ const orphan=${Boolean(options.orphanExit)};
+ const descendant=spawn(process.execPath,['-e',"process.on('SIGTERM',()=>{});"+(orphan?"process.send('ready');":"process.stdout.write('ready');")+"setInterval(()=>{},1000)"],{stdio:orphan?['ignore','inherit','inherit','ipc']:['ignore','pipe','ignore']});
+ if(orphan)await once(descendant,'message');else await once(descendant.stdout,'data');
  await writeFile(request.session.workingDirectory+'/descendant.pid',String(descendant.pid));
 }
 
@@ -36,6 +37,7 @@ if(!${Boolean(options.missingArtifact)})await writeFile(args.get('--output'),JSO
  requestRouting:${options.missingRoute ? 'null' : "{mode:'controller_gateway',provider:descriptor.provider,declaredUpstreamRoute:descriptor.upstreamRoute,campaignId:descriptor.campaignId,executionId:descriptor.executionId,attemptId:descriptor.attemptId,descriptorSha256:createHash('sha256').update(descriptorRaw).digest('hex')}"},
  snapshot:{status:'closed',process:{runnerExited:true,runnerPid:process.pid,providerPid:process.pid}},statuses,
  leaked:${options.leakToken ? 'process.env.PAPERCLIP_RUNNER_EVAL_GATEWAY_TOKEN' : 'null'}}));
+if(${Boolean(options.orphanExit)})process.exit(0);
 `;
 
 async function fixture(t, { count = 1, allocation = '0.01', providerProfile = 'codex', route = 'direct', ...options } = {}) {
@@ -141,6 +143,23 @@ for (const fault of ['missingArtifact', 'missingRoute', 'leakToken']) test(`${fa
   const artifact = JSON.parse(await readFile(f.requests[0].outputPath, 'utf8'));
   assert.equal(artifact.accountingFailure.retryable, false);
   if (fault === 'leakToken') { assert.equal(result.report.secretExcluded, false); assert.equal(artifact.leaked, '[redacted]'); }
+});
+
+for (const missingArtifact of [false, true]) test(`CLI exit stops surviving owned processes, missing artifact=${missingArtifact}`, async t => {
+  const f = await fixture(t, { requests: 0, resistantDescendant: true, orphanExit: true, missingArtifact });
+  const pidFile = join(f.requests[0].request.session.workingDirectory, 'descendant.pid');
+  let pid;
+  t.after(() => { if (pid) { try { process.kill(pid, 'SIGKILL'); } catch {} } });
+  const result = await f.run();
+  pid = Number(await readFile(pidFile, 'utf8'));
+  assert.equal(result.report.child.stopped, 'provider_group_survived_cli_exit');
+  for (let i = 0; i < 50; i++) {
+    try { process.kill(pid, 0); } catch (error) { if (error.code === 'ESRCH') break; throw error; }
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' });
+  assert.equal(result.report.status, 'incomplete');
+  assert.equal((await summarizeControlledCampaign(f.manifest)).committedUsd, '0.014000000');
 });
 
 test('cancellation closes the proxy, bounds the owned child, and preserves unknown request holds', async t => {
