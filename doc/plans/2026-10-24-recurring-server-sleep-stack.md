@@ -15,10 +15,10 @@ Do not mark an item done from a timer removal or a green check alone.
 | 01 | Custom-image setup expiry | Session writes, existing expiry, startup/retry/drain | [#17443](https://github.com/paperclipai/paperclip/pull/17443), all checks passed, Greptile 5/5 at `36844a458b` |
 | 02 | Remaining chat maintenance | Provider runtime discovery; voice reconciliation; milestones; wake notices; interaction continuations; terminal confirmations; GitHub recovery; Teams maintenance, separately by owner | Pending |
 | 03 | Run and task recovery | Orphan runs and active leases; shutdown workspace settlement; scheduled retries; queued runs; stranded assignments; resolved dependencies; task watchdogs; silent-run monitoring; stale locks | Pending |
-| 04 | Decision retention and notifications | Retention deadlines and notification delivery are separate reasons | Retention pending; notification delivery implemented in slice 08, PR pending |
+| 04 | Decision retention and notifications | Retention deadlines and notification delivery are separate reasons | Retention pending; notification delivery: [#17475](https://github.com/paperclipai/paperclip/pull/17475), local verification passed, Greptile 5/5 at `692e3ee02c`, CI running |
 | 05 | Decision expiry and interrupted effects | Expiry, effect recovery, continuation recovery | Pending |
 | 06 | Tool connection health | Configuration/use activation and defined proactive health deadlines | Pending |
-| 07 | Secret proposals, tool reviews, gateway tokens | Separate expiry/scrub/recovery owners | Secret proposals: [#17446](https://github.com/paperclipai/paperclip/pull/17446), checks passed at `d41590ac0e`; gateway credentials: [#17450](https://github.com/paperclipai/paperclip/pull/17450), all checks passed, Greptile 5/5 at `c5c53fc43f`; pending tool-review expiry: [#17453](https://github.com/paperclipai/paperclip/pull/17453), all checks passed, Greptile 5/5 at `ce6a260a83`; approved recovery: [#17454](https://github.com/paperclipai/paperclip/pull/17454), all checks passed, Greptile 5/5 at `7a1cf03e62`; interrupted claims: [#17458](https://github.com/paperclipai/paperclip/pull/17458), all checks passed, Greptile 5/5 at `85003a7ac4`; projection: [#17468](https://github.com/paperclipai/paperclip/pull/17468), Greptile 5/5 at `0956883a84`, CI running |
+| 07 | Secret proposals, tool reviews, gateway tokens | Separate expiry/scrub/recovery owners | Secret proposals: [#17446](https://github.com/paperclipai/paperclip/pull/17446), checks passed at `d41590ac0e`; gateway credentials: [#17450](https://github.com/paperclipai/paperclip/pull/17450), all checks passed, Greptile 5/5 at `c5c53fc43f`; pending tool-review expiry: [#17453](https://github.com/paperclipai/paperclip/pull/17453), all checks passed, Greptile 5/5 at `ce6a260a83`; approved recovery: [#17454](https://github.com/paperclipai/paperclip/pull/17454), all checks passed, Greptile 5/5 at `7a1cf03e62`; interrupted claims: [#17458](https://github.com/paperclipai/paperclip/pull/17458), all checks passed, Greptile 5/5 at `85003a7ac4`; projection: [#17468](https://github.com/paperclipai/paperclip/pull/17468), all checks passed, Greptile 5/5 at `0956883a84` |
 | 08 | GitHub connection events and continuity | Event discovery/replay and credential continuity separately | Pending |
 | 09 | Merged-PR confirmations | Candidate writes, webhook activation where supported, outstanding-candidate fallback | Pending |
 | 10 | External-object refresh | Configuration changes, refresh deadlines, source events | Pending |
@@ -305,3 +305,67 @@ Workspace typecheck/build pass. Two added-fixture failures and their corrections
 are recorded in the behavior document. Full CI/review remains required.
 Retention eligibility/scanning, decision expiry, effect recovery, and decision
 continuation delivery remain independent unfinished reasons in the full ledger.
+
+
+Slice 08 is [#17475](https://github.com/paperclipai/paperclip/pull/17475), head
+`692e3ee02c`, based on #17468. The PR is attached and Greptile review was
+requested. Fresh CI is active with no failures in the latest snapshot.
+The first seven PRs are mergeable and have all checks passing at their recorded
+heads. They remain open; no merge was requested for this stack.
+
+## Next owner audit: decision continuations
+
+The next branch is `codex/sleep-09-decision-continuations`, based on #17475.
+No ninth implementation or readiness is claimed. `decisions.ts:sweepExpired`
+currently mixes four distinct reasons: interrupted effect recovery, pending
+continuation delivery, TTL expiry, and invalidated strict targets. Preserve
+separate PRs for those duties. A deadline alone cannot replace target-change
+notifications; target deletion and completion need an audited producer contract.
+
+For continuation delivery, the existing decision row already stores the durable
+obligation: `continuationPolicy = wake_origin_agent`,
+`metadata.continuationPending = true`, and a terminal outcome. Decided rows
+are ready only after execution reaches succeeded, partial, or failed. Open
+decisions and still-running effects must not create a delivery retry.
+
+All current decision-row writers are in `decisions.ts`. Production service
+instances are created in server startup and decision routes with the server DB
+handle. Audit creation/bundles, decision claims, regular and archive-proposal
+effect settlement/failure, TTL expiry on use, background expiry, cancellation,
+dismissal, and continuation acknowledgement. Reuse a narrow pre-write helper
+inside existing transaction ownership; do not wrap provider/effect execution
+or agent wake calls in a database transaction. The archive-proposal error
+branches inherit the claim's pending metadata and must remain eligible after
+terminal failure.
+
+The current foreground paths call `deliverContinuation` after saving the result.
+It sends the wake then clears pending metadata. Simply adding an eager worker
+would make foreground/worker overlap common. Preserve prompt foreground delivery
+and the existing at-least-once crash contract, but coalesce simultaneous attempts
+for the same decision and re-read durable readiness before sending. Scope any
+in-memory coalescing to the actual database/instance owner; do not let unrelated
+instances or differing transaction ownership share an accidental global key.
+The DB signal owner also supports child pools, so a proposed coalescing mechanism
+must explicitly reconcile that boundary rather than assuming object identity
+is always sufficient. No new table is needed merely for this migration.
+
+After commit-aware producer coverage, add a paged continuation-only recovery
+entry point and register it with the existing coordinator. Remove only its
+independent pending scan from the periodic combined sweep. Keep normal
+continuations produced by expiry/effect completion, and preserve the public
+combined recovery entry point for current callers/tests. A failed wake or
+acknowledgement retains its durable pending state and a retry. Matching delivered
+history becomes quiet.
+
+Tests should exercise actual decide/cancel/dismiss/expiry producers, completion
+of effects after a running claim, concurrent foreground and worker delivery,
+wake/acknowledgement failures, restart, outer commit/rollback, first write and
+failure during drain, pagination past failing rows, and delivered-history quiet.
+The existing decisions suite has an embedded-only setup; use the repository's
+validated external test database helper to exercise it on the disposable local
+PostgreSQL server, without silently skipping the suite when embedded setup is
+unavailable.
+
+Slice 08 review update: Greptile is 5/5 on `692e3ee02c` with no actionable
+findings. The latest CI snapshot has 10 successful checks and 44 in progress,
+with no failures. This is a live CI wait, not a readiness or completion claim.
