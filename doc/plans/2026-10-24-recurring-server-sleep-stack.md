@@ -581,3 +581,24 @@ rollback, restart with deleted target links, failed expiry, concurrent scope
 changes, fair paging, drain/resume, and shutdown. Exercise relevant route/service
 consumers when adding notification calls to their existing transaction boundary.
 Do not remove the periodic target sweep before this coverage exists.
+
+
+## Slice 12 implementation: decision targets
+
+The target owner, scoped notification adapter, and audited producer calls are
+implemented. Startup reconstructs open targets; ordinary terminal writes select
+linked decisions; deletion requests a bounded full scan after cascading links.
+The aggregate decision scan is removed now that its four separate owners exist.
+See [target invalidation](../idle-decision-targets.md) for scope and policy.
+
+The combined real-database/consumer selection passes 233 tests. Workspace
+typecheck and build pass. The final target run also passes all 18 cases, including the additional
+same-scope concurrent-change regression (234 unique selected cases in total). No new table or migration is introduced. Existing
+indexes support both lookup shapes in the 40,000-row completed-history probe.
+
+Slice 11 #17482 has Greptile 5/5 at `a5b5994c1d` and no unresolved findings.
+Its first browser shard 3/8 failed in agent-chat fixture cleanup: cancelling a
+run hit a PostgreSQL lock timeout, and the following test saw the experimental
+flag left enabled. No CI retry has been used. Reproduce the two tests on the
+exact parent head before classifying a retry or repair. This parent is not yet
+claimed green. The full original inventory remains in scope.
