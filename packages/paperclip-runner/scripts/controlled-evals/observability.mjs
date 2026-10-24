@@ -22,7 +22,7 @@ function rootTrace(manifest, attempt, identity, startedAt, finishedAt, cleanupVe
     'paperclip.eval.source_revision': manifest.sourceRevision, 'paperclip.eval.definitions_revision': manifest.definitionsRevision,
     'paperclip.eval.request_sha256': attempt.requestSha256, 'paperclip.eval.provider': attempt.provider,
     'paperclip.eval.profile': attempt.acpxAgent ?? attempt.provider, 'paperclip.eval.model': attempt.model,
-    'paperclip.eval.controller_status': failure ? 'incomplete' : 'closed',
+    'paperclip.eval.controller_status_before_root_export': failure ? 'incomplete' : 'closed',
     'paperclip.eval.cleanup_verified': String(cleanupVerified), 'paperclip.eval.feedback_persistence': 'unavailable_mock_control_plane',
     'paperclip.eval.grading': 'retained_artifact_separate',
   };
@@ -34,18 +34,23 @@ function rootTrace(manifest, attempt, identity, startedAt, finishedAt, cleanupVe
 }
 const nativeEvidence = (identity, descriptorSha256) => ({ mode: 'controller_otlp', configured: true, verification: 'unverified', ...identity, descriptorSha256 });
 
-export async function startControlledObservability({ manifest, attempt, request, root, apiKey, deadlineAt, startedAt, transport }) {
+export async function startControlledObservability({ manifest, attempt, request, root, apiKey, deadlineAt, startedAt, transport, signal }) {
   const identity = { projectId: manifest.observability.projectId, traceId: randomBytes(16).toString('hex'), spanId: randomBytes(8).toString('hex') };
   let native, controller;
+  const onAbort = () => { void close().catch(() => {}); };
   const close = async () => {
+    signal?.removeEventListener('abort', onAbort);
     const results = await Promise.allSettled([native?.close(), controller?.close()]);
     if (results.some(result => result.status === 'rejected')) throw new Error('OTLP closure unverified');
   };
   try {
+    signal?.throwIfAborted();
     native = await costRuntime.startEvalOtlpRelay({ ...policyFor(manifest, attempt, identity, deadlineAt, true), deadlineAt, apiKey,
       receiptPath: join(root, 'otlp-native.jsonl'), transport });
     controller = await costRuntime.startEvalOtlpRelay({ ...policyFor(manifest, attempt, identity, deadlineAt, false), deadlineAt, apiKey,
       receiptPath: join(root, 'otlp-controller.jsonl'), transport });
+    signal?.addEventListener('abort', onAbort, { once: true });
+    signal?.throwIfAborted();
     const descriptor = { schema: 'paperclip.runner-eval.observability/v1', campaignId: manifest.campaignId, executionId: attempt.executionId,
       attemptId: attempt.attemptId, ...identity, baseUrl: native.baseUrl, launch: launchFor(manifest, request, identity, native.baseUrl) };
     const raw = JSON.stringify(descriptor) + '\n';
@@ -56,17 +61,24 @@ export async function startControlledObservability({ manifest, attempt, request,
       expectedEvidence: nativeEvidence(identity, sha256(raw)), close, closeNative: native.close,
       finish: input => finished ??= (async () => {
         const finishedAt = new Date().toISOString();
+        let traceFailure = input.failure;
         try {
           await native.close();
-          const body = JSON.stringify(rootTrace(manifest, attempt, identity, startedAt, finishedAt, input.cleanupVerified, input.failure));
+          signal?.throwIfAborted();
+          try {
+            const receipts = costRuntime.inspectEvalOtlpReceipts(await readFile(join(root, 'otlp-native.jsonl')),
+              policyFor(manifest, attempt, identity, deadlineAt, true));
+            if (receipts.status !== 'accepted' || !receipts.signals.logs.records || !receipts.signals.traces.records) traceFailure ??= 'native_export_incomplete';
+          } catch { traceFailure ??= 'native_evidence_incomplete'; }
+          const body = JSON.stringify(rootTrace(manifest, attempt, identity, startedAt, finishedAt, input.cleanupVerified, traceFailure));
           await writeFile(join(root, 'otlp-root.json'), body, { flag: 'wx', mode: 0o600 });
           const response = await fetch(`${controller.baseUrl}/v1/traces`, { method: 'POST', redirect: 'error',
-            signal: AbortSignal.timeout(Math.max(1, Math.min(10_000, deadlineAt - Date.now()))),
+            signal: AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(Math.max(1, Math.min(10_000, deadlineAt - Date.now())))]),
             headers: { authorization: `Bearer ${controller.token}`, 'content-type': 'application/json', 'x-bt-parent': `project_id:${identity.projectId}` }, body });
           await response.arrayBuffer();
         } finally { await close(); }
         return inspectControlledObservability({ manifest, attempt, request, artifact: input.artifact,
-          report: { startedAt, traceFinishedAt: finishedAt, cleanupVerified: input.cleanupVerified, traceFailure: input.failure },
+          report: { startedAt, traceFinishedAt: finishedAt, cleanupVerified: input.cleanupVerified, traceFailure },
           deadlineAt, readEvidence: name => readFile(join(root, name)) });
       })() };
   } catch (error) { await close(); throw error; }

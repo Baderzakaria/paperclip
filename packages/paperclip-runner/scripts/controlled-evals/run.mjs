@@ -136,7 +136,7 @@ registerHooks({ resolve(specifier, context, nextResolve) {
     const childEnvironment = Object.fromEntries(['PATH', 'LANG', 'LANGUAGE', 'LC_ALL', 'TZ'].flatMap(name => environment[name] === undefined ? [] : [[name, environment[name]]]));
     Object.assign(childEnvironment, { HOME: join(root, 'home'), TMPDIR: join(root, 'tmp'), TMP: join(root, 'tmp'), TEMP: join(root, 'tmp'), PAPERCLIP_RUNNER_EVAL_GATEWAY_TOKEN: gateway.token });
     if (manifest.observability) {
-      observability = await startControlledObservability({ manifest, attempt, request, root, apiKey: observabilityKey, deadlineAt, startedAt, transport: otlpTransport });
+      observability = await startControlledObservability({ manifest, attempt, request, root, apiKey: observabilityKey, deadlineAt, startedAt, transport: otlpTransport, signal });
       secrets.push(...observability.secrets);
       childEnvironment.PAPERCLIP_RUNNER_EVAL_OTLP_TOKEN = observability.token;
     }
@@ -187,6 +187,7 @@ registerHooks({ resolve(specifier, context, nextResolve) {
         if (observabilityEvidence.status !== 'accepted') failure ??= 'observability_export_incomplete';
       } catch { failure ??= 'observability_evidence_incomplete'; }
     }
+    if (signal?.aborted) failure = 'controller_cancelled';
     const report = { schema: 'paperclip.runner-eval.control-result/v1', campaignId: manifest.campaignId, manifestSha256,
       executionId: attempt.executionId, attemptId: attempt.attemptId, requestSha256: attempt.requestSha256,
       allocationUsd: attempt.maxUsd, limits, startedAt, finishedAt: new Date().toISOString(), status: failure ? 'incomplete' : 'closed', failure,

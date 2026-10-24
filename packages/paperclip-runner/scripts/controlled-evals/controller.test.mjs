@@ -587,3 +587,35 @@ test('lost ledger finalization still closes both OTLP relays', async t => {
   const descriptor = JSON.parse(await readFile(join(root, 'observability.json'), 'utf8'));
   await assert.rejects(fetch(descriptor.baseUrl + '/v1/logs'));
 });
+
+for (const nativeFault of ['partial', 'quota']) test(`root includes ${nativeFault} native export failure before finalization`, async t => {
+  let rootPayload;
+  const f = await fixture(t, { observability: true, requests: 1, otelRequests: nativeFault === 'quota' ? 3 : 1,
+    otlpTransport: async (url, init) => {
+      if (new Headers(init.headers).get('x-bt-parent').startsWith('project_id:')) {
+        rootPayload = JSON.parse(Buffer.from(init.body).toString()); return Response.json({});
+      }
+      return nativeFault === 'partial' ? Response.json({ partialSuccess: String(url).endsWith('/logs') ? { rejectedLogRecords: 1 } : { rejectedSpans: 1 } }) : Response.json({});
+    } });
+  const result = await f.run();
+  assert.equal(result.code, 2); assert.equal(result.report.observability.traceFailure, 'native_export_incomplete');
+  const attributes = rootPayload.resourceSpans[0].scopeSpans[0].spans[0].attributes;
+  assert(attributes.some(item => item.key === 'paperclip.eval.controller_status_before_root_export' && item.value.stringValue === 'incomplete'));
+});
+
+test('cancellation during root export stops forwarding and cannot close the attempt successfully', async t => {
+  const cancellation = new AbortController(); let rootAborted = false;
+  const f = await fixture(t, { observability: true, requests: 1, otlpTransport: async (_url, init) => {
+    if (!new Headers(init.headers).get('x-bt-parent').startsWith('project_id:')) return Response.json({});
+    queueMicrotask(() => cancellation.abort());
+    return new Promise((_resolve, reject) => init.signal.addEventListener('abort', () => { rootAborted = true; reject(new Error('synthetic root abort')); }, { once: true }));
+  } });
+  const result = await f.run(0, () => success(), cancellation.signal);
+  assert.equal(rootAborted, true); assert.equal(result.code, 2); assert.equal(result.report.failure, 'controller_cancelled');
+  assert.equal(result.report.status, 'incomplete'); assert.equal(result.report.cleanupVerified, true);
+  const root = attemptDirectory(f.manifest, 'attempt-0');
+  const rows = (await readFile(join(root, 'otlp-controller.jsonl'), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+  assert.equal(rows.find(row => row.type === 'outcome').outcome, 'uncertain'); assert.equal(rows.at(-1).type, 'closed');
+  const summary = await summarizeControlledCampaign(f.manifest);
+  assert.equal(summary.committedUsd, '0.014000000'); assert.equal(summary.knownUsd, '0.000068000');
+});

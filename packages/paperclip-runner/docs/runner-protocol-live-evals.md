@@ -372,7 +372,11 @@ records plus the controller root. It describes the retained requests only;
 `verification: "unverified"` remains until separate Braintrust readback.
 Neither field proves complete capture, semantic grading success, or invoice
 settlement. The root links revisions, the compiled request, execution, attempt,
-provider, model, and cleanup status. Feedback persistence is explicitly
+provider, model, and cleanup status. Native receipts are checked before the root
+is built. Its `controller_status_before_root_export` includes known native export
+failures; the final retained report remains authoritative for root-export failures
+or later cancellation. Cancellation stays connected through root finalization.
+Feedback persistence is explicitly
 unavailable in the Runner mock control plane; it does not report zero complaints
 or suggestions. Actual grading and provider failures remain in the immutable
 Runner artifact.
