@@ -16,7 +16,7 @@ Do not mark an item done from a timer removal or a green check alone.
 | 02 | Remaining chat maintenance | Provider runtime discovery; voice reconciliation; milestones; wake notices; interaction continuations; terminal confirmations; GitHub recovery; Teams maintenance, separately by owner | Pending |
 | 03 | Run and task recovery | Orphan runs and active leases; shutdown workspace settlement; scheduled retries; queued runs; stranded assignments; resolved dependencies; task watchdogs; silent-run monitoring; stale locks | Pending |
 | 04 | Decision retention and notifications | Retention deadlines and notification delivery are separate reasons | Retention pending; notification delivery: [#17475](https://github.com/paperclipai/paperclip/pull/17475), all checks passed (Paperclip Review skipped), Greptile 5/5 at `692e3ee02c` |
-| 05 | Decision expiry and interrupted effects | Expiry, effect recovery, continuation recovery | Continuations: [#17478](https://github.com/paperclipai/paperclip/pull/17478), review repairs under verification; expiry branch in progress; effects and target invalidation pending |
+| 05 | Decision expiry and interrupted effects | Expiry, effect recovery, continuation recovery | Continuations: [#17478](https://github.com/paperclipai/paperclip/pull/17478), Greptile 5/5 at `5f96892a58`, CI running; TTL: [#17479](https://github.com/paperclipai/paperclip/pull/17479), local verification passed at `63b58cc26f`, CI/review running; effects and target invalidation pending |
 | 06 | Tool connection health | Configuration/use activation and defined proactive health deadlines | Pending |
 | 07 | Secret proposals, tool reviews, gateway tokens | Separate expiry/scrub/recovery owners | Secret proposals: [#17446](https://github.com/paperclipai/paperclip/pull/17446), checks passed at `d41590ac0e`; gateway credentials: [#17450](https://github.com/paperclipai/paperclip/pull/17450), all checks passed, Greptile 5/5 at `c5c53fc43f`; pending tool-review expiry: [#17453](https://github.com/paperclipai/paperclip/pull/17453), all checks passed, Greptile 5/5 at `ce6a260a83`; approved recovery: [#17454](https://github.com/paperclipai/paperclip/pull/17454), all checks passed, Greptile 5/5 at `7a1cf03e62`; interrupted claims: [#17458](https://github.com/paperclipai/paperclip/pull/17458), all checks passed, Greptile 5/5 at `85003a7ac4`; projection: [#17468](https://github.com/paperclipai/paperclip/pull/17468), all checks passed, Greptile 5/5 at `0956883a84` |
 | 08 | GitHub connection events and continuity | Event discovery/replay and credential continuity separately | Pending |
@@ -427,3 +427,66 @@ Migration replay and a 40,000-row history query probe pass (two buffers).
 Final workspace typecheck/build and fresh PR CI/review remain required.
 The parent continuation PR is awaiting fresh review/CI on `5f96892a58`, with both
 initial findings repaired and resolved. The full inventory remains in scope.
+
+
+Slice 10 is [#17479](https://github.com/paperclipai/paperclip/pull/17479), head
+`63b58cc26f`, based on the repaired continuation branch. It is attached to this
+chat and review was requested. Workspace typecheck/build passed on the combined
+branch after parent propagation. Full CI and review are active, not complete.
+Slice 09 has fresh Greptile 5/5 at `5f96892a58`, no unresolved review threads,
+and CI active with no failure in the latest snapshot. The first eight published
+slices remain open with their recorded passing checks. No merge is authorized.
+
+## Next owner audit: interrupted decision effects
+
+The next branch is `codex/sleep-11-decision-effect-recovery`, based on #17479.
+No eleventh implementation or PR is claimed. The remaining combined decision
+sweep selects `status = decided`, `executionStatus = running`, and
+`updatedAt <= now - recoveryGraceMs`. The existing grace defaults to 60 seconds;
+invalid values fall back and zero is permitted. The combined batch size defaults
+to 100. Preserve these semantics while moving only interrupted effect recovery.
+Target invalidation remains a separate pending reason after this migration.
+
+The existing decision update helper covers the running claim and terminal
+settlements. Extend that boundary for effect-recovery intent. Creation is open
+and does not itself constitute effect debt. The indexed minimum running claim
+plus grace should drive the next recovery attempt; open/terminal history must
+not keep it scanning. Preserve expiry and continuation as separate workers.
+
+Keep effect execution, signatures, recovery authority, effect claims, and
+postcommit issue actions in `decisions.ts` and its domain collaborators. A
+recovery selector may call a narrow decision-owned operation rather than move
+that policy into the scheduler. The new per-owner execution flight already
+coalesces foreground and recovery calls and re-reads the current decision before
+execution. Reuse it. Do not hold a DB transaction while waiting for the whole
+operation or replace durable per-effect claims with the in-memory flight.
+
+Regular effects use transaction-scoped advisory locks and saved effect execution
+rows. Completed effects must not replay; claimed work can resume. Recovery derives
+current user authority from stored `decidedByUserId` and current membership.
+The existing combined sweep skips rows without a deciding user. Audit how such
+invalid legacy rows are represented in readiness and sleep safety; do not allow
+them to starve actionable rows or invent permission to execute them. Malformed
+stored options or genuine execution failures must retain a visible obligation.
+
+Archive proposals have separate manifest/version checks and transaction ownership.
+The parent race repair serializes archive execution through its state write in
+one live owner. It is not a durable cross-process claim and does not establish
+exactly-once recovery after a process dies between archive commit and decision
+settlement. Preserve and explicitly test the supported failure behavior instead
+of treating this limitation as solved by a new timer.
+
+Use bounded passes, advance past per-row failures, and propagate cancellation
+between candidates. A first claim during drain, completion during recovery, and
+an unresolved failed write must retain their existing notification semantics.
+Reconstruct recovery deadlines on startup, keep new production SQL indexed, and
+preserve the public combined sweep's default behavior while removing its effect
+scan from the main tick.
+
+Required evidence includes a real claim with foreground interruption, exact
+recovery grace, ordinary active execution coalescing, completed effect history,
+claimed-effect restart, changed user authority, invalid legacy rows, provider/
+archive failure semantics, outer commit/rollback, failed retry through drain,
+changes during execution, fair bounded paging, and shutdown. Run existing
+archive and continuation regressions on the combined stack. The full original
+inventory remains the goal after this slice.
