@@ -720,3 +720,13 @@ changes; it does not by itself prove that an underlying source did not change
 between the feed read and archive. Preserve or strengthen that boundary explicitly
 without silently archiving freshly active work. No retention code or PR is yet
 claimed for this branch.
+
+
+Latest remote verification: #17486 has fresh Greptile 5/5 at `1bbfc69590`,
+all review findings resolved, and one live build job still pending in run
+40132295156. #17490 has fresh Greptile 5/5 at `706beb01f2`, no review threads,
+and active CI run 40132581543 (24 completed jobs, 22 still pending, no failures
+at this snapshot). These are verified live waits, not completed checks. Do not
+rerun them merely because a later observation times out. Continue inspecting
+these runs while implementing retention, and propagate any required parent
+repair into the later branch. No stack PR was merged.
