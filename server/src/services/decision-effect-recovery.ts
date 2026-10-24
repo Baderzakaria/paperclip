@@ -14,14 +14,14 @@ function recoveryGraceMs() {
 }
 
 export function decisionEffectRecoveryService(db: Db, resume: (id: string) => Promise<boolean>) {
-  let cursor: { updatedAt: Date; id: string } | undefined;
+  let cursor: { updatedAt: string; id: string } | undefined;
 
   async function sweep(now = new Date(), limit = decisionSweepBatchSize(), signal?: AbortSignal) {
     let resumed = 0;
     if (signal?.aborted) return { resumed };
-    const rows = await db.select({ id: decisions.id, updatedAt: decisions.updatedAt }).from(decisions)
+    const rows = await db.select({ id: decisions.id, updatedAt: sql<string>`${decisions.updatedAt}::text` }).from(decisions)
       .where(and(running, lte(decisions.updatedAt, new Date(now.getTime() - recoveryGraceMs())), cursor
-        ? sql`(${decisions.updatedAt}, ${decisions.id}) > (${cursor.updatedAt.toISOString()}::timestamptz, ${cursor.id}::uuid)` : undefined))
+        ? sql`(${decisions.updatedAt}, ${decisions.id}) > (${cursor.updatedAt}::timestamptz, ${cursor.id}::uuid)` : undefined))
       .orderBy(asc(decisions.updatedAt), asc(decisions.id)).limit(limit);
     const errors: unknown[] = [];
     for (const row of rows) {
