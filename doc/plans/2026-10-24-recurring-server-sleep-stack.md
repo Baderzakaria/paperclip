@@ -786,3 +786,11 @@ The actual deadline query with 40,000 resolved approvals uses the pending index,
 four shared buffer hits and 0.314 ms execution; test data rolled back. Migration
 replay and checks pass. Workspace types, build and tool-gateway tests remain live
 in the current verification run. This is not final acceptance.
+
+
+Slice 14 final local verification passes 317 selected tests: 20 new lifecycle,
+96 approval/attention/retention/startup/budget consumers (including the repaired
+budget case), and 201 tool-gateway cases. Workspace typecheck, production build,
+migration numbering/safety, fresh replay and idempotent index replay pass. The
+implementation is committed as `ea3dd40cdd`; remote publication, CI and review
+remain required. The earlier failures remain recorded above.
