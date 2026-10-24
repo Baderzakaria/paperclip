@@ -16,7 +16,7 @@ Do not mark an item done from a timer removal or a green check alone.
 | 02 | Remaining chat maintenance | Provider runtime discovery; voice reconciliation; milestones; wake notices; interaction continuations; terminal confirmations; GitHub recovery; Teams maintenance, separately by owner | Pending |
 | 03 | Run and task recovery | Orphan runs and active leases; shutdown workspace settlement; scheduled retries; queued runs; stranded assignments; resolved dependencies; task watchdogs; silent-run monitoring; stale locks | Pending |
 | 04 | Decision retention and notifications | Retention deadlines and notification delivery are separate reasons | Retention pending; notification delivery: [#17475](https://github.com/paperclipai/paperclip/pull/17475), all checks passed (Paperclip Review skipped), Greptile 5/5 at `692e3ee02c` |
-| 05 | Decision expiry and interrupted effects | Expiry, effect recovery, continuation recovery | Continuations: [#17478](https://github.com/paperclipai/paperclip/pull/17478), all checks passed, Greptile 5/5 at `5f96892a58`; TTL: [#17479](https://github.com/paperclipai/paperclip/pull/17479), Greptile 5/5 at `63b58cc26f`, one CI timeout retry running; effects and target invalidation pending |
+| 05 | Decision expiry and interrupted effects | Expiry, effect recovery, continuation recovery | Continuations: [#17478](https://github.com/paperclipai/paperclip/pull/17478), all checks passed, Greptile 5/5 at `5f96892a58`; TTL: [#17479](https://github.com/paperclipai/paperclip/pull/17479), all checks passed, Greptile 5/5 at `63b58cc26f`; effects: [#17482](https://github.com/paperclipai/paperclip/pull/17482), local verification passed at `a5b5994c1d`, CI/review running; target invalidation pending |
 | 06 | Tool connection health | Configuration/use activation and defined proactive health deadlines | Pending |
 | 07 | Secret proposals, tool reviews, gateway tokens | Separate expiry/scrub/recovery owners | Secret proposals: [#17446](https://github.com/paperclipai/paperclip/pull/17446), checks passed at `d41590ac0e`; gateway credentials: [#17450](https://github.com/paperclipai/paperclip/pull/17450), all checks passed, Greptile 5/5 at `c5c53fc43f`; pending tool-review expiry: [#17453](https://github.com/paperclipai/paperclip/pull/17453), all checks passed, Greptile 5/5 at `ce6a260a83`; approved recovery: [#17454](https://github.com/paperclipai/paperclip/pull/17454), all checks passed, Greptile 5/5 at `7a1cf03e62`; interrupted claims: [#17458](https://github.com/paperclipai/paperclip/pull/17458), all checks passed, Greptile 5/5 at `85003a7ac4`; projection: [#17468](https://github.com/paperclipai/paperclip/pull/17468), all checks passed, Greptile 5/5 at `0956883a84` |
 | 08 | GitHub connection events and continuity | Event discovery/replay and credential continuity separately | Pending |
@@ -512,3 +512,72 @@ The continuation parent #17478 now has passing checks and Greptile 5/5 at
 agent-history route test. All 92 route tests passed locally; one failed-job retry
 was requested. This evidence does not yet establish green TTL CI. The full
 original inventory remains in scope; no stack PR has been merged.
+
+
+Slice 11 is [#17482](https://github.com/paperclipai/paperclip/pull/17482), head
+`a5b5994c1d`, based on #17479. It is attached and Greptile review was requested.
+Its CI is active with no failure in the latest snapshot. Slice 10's one
+serialized-job retry passed; all checks now pass at `63b58cc26f`, with Greptile
+5/5 and no unresolved findings. The recorded original timeout remains part of
+its verification history.
+
+## Next owner audit: decision target invalidation
+
+Branch `codex/sleep-12-decision-target-invalidation` starts from #17482. No target
+migration is implemented or ready yet. This is the final responsibility inside
+the current combined decision sweep, separate from retention and notifications.
+
+Preserve its exact policy: only strict effect references count. A missing target
+or any cancelled target expires with `target_gone`. If all strict targets are
+done and at least one was not done in the saved proposal snapshot, expire with
+`target_completed`. Lenient decisions and proposals intentionally targeting
+already-done tasks remain open. Include secondary effect references through the
+existing `decisionEffectTargetIssueIds` helper. Do not duplicate provider/effect
+payload interpretation inside the scheduler or broaden invalidation to every
+updated timestamp. TTL validity remains separately enforced on use.
+
+The direct-writer audit found the main `issueService.update` boundary can enter
+done/cancelled and already owns an outer transaction. Release preserves an
+existing terminal status; checkout/adoption enter in-progress; conversation
+writers enter todo/in-progress/in-review; recovery writers enter blocked.
+Tree restoration explicitly excludes terminal snapshots. Administrative release
+only changes locks/assignment. Route aliases `issueRows` write source-trust or
+owner-notification metadata. Raw SQL updates found in issue/project privacy
+propagation change privacy only. These are audit findings, not a substitute for
+producer integration tests or final inspection.
+
+Three direct deletion paths need accounting: issue removal, routine dispatch
+failure cleanup, and company deletion. Routine creation is visible through its
+service while dispatch holds a separate transaction, so do not assume its failed
+issue could never have become a target. Company deletion currently encounters
+restricting decision/run references if decisions exist; do not silently fix or
+relax those foreign keys in this slice. Single-target links cascade on issue
+deletion, so an after-commit lookup through those links cannot identify deleted
+targets. Use pre-write intent and either preserve the affected decision scope or
+request a bounded startup-style scan for this rare path.
+
+A candidate design uses the existing coordinator's scoped hints: decision
+creation signals its decision ID; terminal issue writes signal their issue ID;
+deletion or unknown hints request a bounded full scan. Existing decision-target
+links select affected open rows; the domain helper computes invalidation from
+current targets and saved snapshots. Stable valid open decisions must become
+quiet after their finite reconciliation, even with long retention or no near TTL.
+No per-decision timer or new queue table is required.
+
+Keep scoped scan state in the owner, with bounded pages and fair rotation.
+Changes arriving during a scan must reset/requeue that scope without being lost
+when the admitted pass completes. Failed candidates retain retry debt while
+allowing later scopes to progress. Startup reconstructs all open targets from
+durable state; rollback and uncertain writes use the existing transaction
+protocol. `hasPending` must not perform passive SQL during drain. Shutdown must
+finish admitted expiry and leave later candidates for restart. A changed target
+can reopen before reconciliation; inspect current state rather than blindly
+expiring from the notification itself.
+
+Required tests include the actual issue update/removal producers, creation after
+cancellation, intentional done-target proposals, secondary targets, lenient
+history, no recurring SQL with valid open decisions, outer transactions,
+rollback, restart with deleted target links, failed expiry, concurrent scope
+changes, fair paging, drain/resume, and shutdown. Exercise relevant route/service
+consumers when adding notification calls to their existing transaction boundary.
+Do not remove the periodic target sweep before this coverage exists.
