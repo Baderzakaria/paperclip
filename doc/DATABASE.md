@@ -62,6 +62,12 @@ the PostgreSQL row version. Native blocked-wait repair compares that version
 against a fresh full source read before applying changes. Any intervening row
 update, including an edit outside the projection, defers repair to a fresh sweep.
 
+Execution-blocker reads select process, lifecycle, and task-binding fields rather
+than full execution rows. Context retains typed task and pre-dispatch evidence;
+Runner profiles retain the adapter type and complete native execution input and
+workspace-sync receipts. Full result evidence stays available to the existing
+retry and workspace checks. Stored context, profiles, and output are unchanged.
+
 Run-context lookups use expression indexes for both `context_snapshot.issueId`
 and `context_snapshot.paperclipIssue.id`. Task creation provenance has its own
 company-scoped expression index that follows the query's native issue ID and
