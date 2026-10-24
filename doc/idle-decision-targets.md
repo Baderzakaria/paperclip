@@ -107,3 +107,18 @@ A local query probe with 40,000 completed decisions, one open decision, and 40,0
 target links used existing indexes: scoped lookup read five buffers (0.012 ms),
 full open-page lookup two (0.003 ms). The probe was rolled back. No new schema
 index is needed for this change. Full PR CI and fresh review remain required.
+
+## Review and CI repair
+
+Review found that an absent deletion hint was dropped when the outer transaction
+also carried a scoped hint. Both delete-before-update and update-before-delete
+regressions reproduced the missing expiry after the target links cascaded away.
+Deletion now sends the explicit `all` hint, which survives alongside scoped hints.
+The repaired target suite passes 20 cases; the TTL suite passes 14 cases.
+
+The initial CI run failed the TTL worker's drain assertion. It measured SQL
+before already-admitted sweeps had finished. The test now joins those specific
+sweep promises before measuring passive SQL; unresolved-intent holds remain
+intact. Waiting for the entire idle count to reach zero was tested and rejected:
+that count correctly includes the retained recovery holds. No production drain
+or retry behavior changed for this test repair.

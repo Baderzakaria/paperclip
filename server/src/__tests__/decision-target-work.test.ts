@@ -165,6 +165,20 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
     await expired(row.id); await quiet(); expect(wake).toHaveBeenCalledTimes(1);
   });
 
+  it.each([true, false])("preserves a deletion mixed with a scoped hint in one transaction, deleteFirst=%s", async deleteFirst => {
+    const row = await create(); const otherId = randomUUID();
+    await db.insert(issues).values({ id: otherId, companyId, title: "Unrelated", status: "todo", responsibleUserId: userId });
+    await start(); await quiet();
+    await db.transaction(async tx => {
+      const scoped = issueService(tx as unknown as typeof db);
+      if (deleteFirst) await scoped.remove(targetId);
+      await scoped.update(otherId, { status: "done", actorUserId: userId });
+      if (!deleteFirst) await scoped.remove(targetId);
+    });
+    expect(await db.select().from(decisionTargetIssues).where(eq(decisionTargetIssues.decisionId, row.id))).toHaveLength(0);
+    await expired(row.id); await quiet(); expect(wake).toHaveBeenCalledTimes(1);
+  });
+
   it("retains a first target change through drain without passive SQL", async () => {
     const row = await create(); await start(); await quiet(); draining = true; await change("cancelled");
     const reads = vi.spyOn(db, "select"); await vi.advanceTimersByTimeAsync(120_000);

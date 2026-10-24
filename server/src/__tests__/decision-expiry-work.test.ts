@@ -59,8 +59,10 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
   async function start() {
     coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => !draining,
       canReconcile: () => true, onError: error => errors.push(error) });
-    await registerDecisionContinuationWork(coordinator, service(), () => !draining).ready;
-    await registerDecisionExpiryWork(coordinator, service(), () => !draining).ready;
+    const continuation = service(), expiry = service();
+    await registerDecisionContinuationWork(coordinator, continuation, () => !draining).ready;
+    await registerDecisionExpiryWork(coordinator, expiry, () => !draining).ready;
+    return { continuation, expiry };
   }
   async function quiet() {
     await vi.waitFor(async () => {
@@ -151,12 +153,14 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
   });
 
   it("keeps a failed expiry retry through drain and preserves pending state", async () => {
-    const row = await create(new Date(Date.now() + 30_000)); await start();
+    const row = await create(new Date(Date.now() + 30_000)); const workers = await start();
+    const sweeps = [vi.spyOn(workers.expiry, "sweepTtlExpiry"), vi.spyOn(workers.continuation, "sweepContinuations")];
     await db.execute(sql`create function decision_expiry_fail() returns trigger language plpgsql as $$ begin
       if NEW.status = 'expired' then raise exception 'expiry unavailable'; end if; return NEW; end $$`);
     await db.execute(sql`create trigger decision_expiry_fail before update on decisions for each row execute function decision_expiry_fail()`);
     await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(30_000); expect(errors.length).toBeGreaterThan(0); });
     draining = true; expect((await service().get(row.id))?.status).toBe("open");
+    await Promise.allSettled(sweeps.flatMap(sweep => sweep.mock.results.filter(result => result.type === "return").map(result => result.value)));
     const reads = vi.spyOn(db, "select"); await vi.advanceTimersByTimeAsync(60_000);
     expect(reads).not.toHaveBeenCalled(); reads.mockRestore();
     await db.execute(sql`drop trigger decision_expiry_fail on decisions`);
