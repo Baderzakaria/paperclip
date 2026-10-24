@@ -1,3 +1,4 @@
+import { isEntrypoint } from './entrypoint.mjs';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { lstat, mkdir, open, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises';
@@ -202,7 +203,7 @@ registerHooks({ resolve(specifier, context, nextResolve) {
   } finally { await observability?.close(); }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(await realpath(process.argv[1])).href) {
+if (await isEntrypoint(import.meta.url)) {
   const controller = new AbortController();
   const cancel = () => controller.abort();
   process.once('SIGINT', cancel); process.once('SIGTERM', cancel);

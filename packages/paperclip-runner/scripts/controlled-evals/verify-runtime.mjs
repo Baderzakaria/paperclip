@@ -1,8 +1,8 @@
+import { isEntrypoint } from './entrypoint.mjs';
 import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
-import { lstat, open, readdir, realpath } from 'node:fs/promises';
+import { lstat, open, readdir } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
 
 export const RUNTIME_MAX_BYTES = 32 * 1_048_576;
 export const RUNTIME_MAX_FILES = 4096;
@@ -32,7 +32,7 @@ export async function verifyControllerRuntime({ directory, sourceRevision, recei
   if (sha256(receiptBytes) !== receiptSha256) throw new Error('Runtime receipt digest mismatch');
   const receipt = JSON.parse(receiptBytes.toString('utf8'));
   if (receipt.schema !== 'paperclip.runner-eval.controller-runtime/v1' || receipt.sourceRevision !== sourceRevision
-      || receipt.nodeMajor !== 24 || !Number.isSafeInteger(receipt.totalBytes) || receipt.totalBytes < 1 || receipt.totalBytes + receiptBytes.length > RUNTIME_MAX_BYTES
+      || receipt.nodeMajor !== 24 || !Number.isSafeInteger(receipt.payloadBytes) || receipt.payloadBytes < 1 || receipt.payloadBytes + receiptBytes.length > RUNTIME_MAX_BYTES
       || !receipt.files || typeof receipt.files !== 'object' || Array.isArray(receipt.files)
       || !Object.keys(receipt.files).length || Object.keys(receipt.files).length >= RUNTIME_MAX_FILES) throw new Error('Invalid runtime receipt');
   const pending = new Map(Object.entries(receipt.files));
@@ -55,14 +55,14 @@ export async function verifyControllerRuntime({ directory, sourceRevision, recei
     }
   }
   await inspect(root);
-  if (pending.size || bytes !== receipt.totalBytes) throw new Error('Runtime artifact inventory mismatch');
+  if (pending.size || bytes !== receipt.payloadBytes) throw new Error('Runtime artifact inventory mismatch');
   for (const name of ['run.mjs', 'archive.mjs', 'runtime.mjs']) {
     if (!Object.hasOwn(receipt.files, `controlled-evals/${name}`)) throw new Error('Runtime entrypoint is missing');
   }
-  return { sourceRevision, receiptSha256, totalBytes: bytes, files: Object.keys(receipt.files).length };
+  return { sourceRevision, receiptSha256, totalBytes: bytes + receiptBytes.length, files: Object.keys(receipt.files).length + 1 };
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(await realpath(process.argv[1])).href) {
+if (await isEntrypoint(import.meta.url)) {
   if (process.argv.length !== 5) throw new Error('Usage: verify-runtime.mjs <directory> <source-revision> <trusted-receipt-sha256>');
   process.stdout.write(JSON.stringify(await verifyControllerRuntime({ directory: process.argv[2], sourceRevision: process.argv[3], receiptSha256: process.argv[4] })) + '\n');
 }

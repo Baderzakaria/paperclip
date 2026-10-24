@@ -1,15 +1,16 @@
+import { isEntrypoint } from './entrypoint.mjs';
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { cp, mkdir, readFile, readdir, realpath, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, relative, resolve } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { RUNTIME_MAX_BYTES, RUNTIME_MAX_FILES } from './verify-runtime.mjs';
 
 const source = dirname(fileURLToPath(import.meta.url));
 const repository = resolve(source, '../../../..');
 const require = createRequire(join(repository, 'server/package.json'));
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
-const scripts = ['archive.mjs', 'manifest.mjs', 'observability.mjs', 'report.mjs', 'run.mjs', 'verify-runtime.mjs'];
+const scripts = ['entrypoint.mjs', 'archive.mjs', 'manifest.mjs', 'observability.mjs', 'report.mjs', 'run.mjs', 'verify-runtime.mjs'];
 
 export async function buildControllerRuntime({ outputDirectory, sourceRevision }) {
   if (!/^[a-f0-9]{40}$/.test(sourceRevision)) throw new Error('Controller runtime requires an exact source revision');
@@ -67,28 +68,28 @@ export async function buildControllerRuntime({ outputDirectory, sourceRevision }
     inputs[relative(repository, absolute).split('\\').join('/')] = sha256(await readFile(absolute));
   }
   for (const file of [...scripts, 'build-runtime.mjs', 'runtime.mjs']) inputs[relative(repository, join(source, file))] = sha256(await readFile(join(source, file)));
-  const files = {}; let totalBytes = 0;
+  const files = {}; let payloadBytes = 0;
   async function inventory(directory) {
     for (const entry of await readdir(directory, { withFileTypes: true })) {
       const path = join(directory, entry.name);
       if (entry.isDirectory()) await inventory(path);
       else if (entry.isFile()) {
-        const bytes = await readFile(path); totalBytes += bytes.length;
-        if (totalBytes > RUNTIME_MAX_BYTES || Object.keys(files).length >= RUNTIME_MAX_FILES - 1) throw new Error('Controller runtime exceeds its artifact allowance');
+        const bytes = await readFile(path); payloadBytes += bytes.length;
+        if (payloadBytes > RUNTIME_MAX_BYTES || Object.keys(files).length >= RUNTIME_MAX_FILES - 1) throw new Error('Controller runtime exceeds its artifact allowance');
         files[relative(output, path).split('\\').join('/')] = { sha256: sha256(bytes), sizeBytes: bytes.length };
       } else throw new Error('Controller runtime contains a nonregular file');
     }
   }
   await inventory(output);
-  const receipt = { schema: 'paperclip.runner-eval.controller-runtime/v1', sourceRevision, nodeMajor: 24, inputs, packageInputs, totalBytes, files };
+  const receipt = { schema: 'paperclip.runner-eval.controller-runtime/v1', sourceRevision, nodeMajor: 24, inputs, packageInputs, payloadBytes, files };
   const receiptBytes = JSON.stringify(receipt, null, 2) + '\n';
-  if (totalBytes + Buffer.byteLength(receiptBytes) > RUNTIME_MAX_BYTES) throw new Error('Controller runtime receipt exceeds its artifact allowance');
+  if (payloadBytes + Buffer.byteLength(receiptBytes) > RUNTIME_MAX_BYTES) throw new Error('Controller runtime receipt exceeds its artifact allowance');
   await writeFile(join(output, 'runtime.json'), receiptBytes, { flag: 'wx', mode: 0o600 });
-  return { ...receipt, receiptSha256: sha256(receiptBytes) };
+  return { ...receipt, totalBytes: payloadBytes + Buffer.byteLength(receiptBytes), receiptSha256: sha256(receiptBytes) };
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(await realpath(process.argv[1])).href) {
+if (await isEntrypoint(import.meta.url)) {
   if (process.argv.length !== 4) throw new Error('Usage: build-runtime.mjs <new-output-directory> <source-revision>');
   const receipt = await buildControllerRuntime({ outputDirectory: process.argv[2], sourceRevision: process.argv[3] });
-  process.stdout.write(JSON.stringify({ sourceRevision: receipt.sourceRevision, totalBytes: receipt.totalBytes, receiptSha256: receipt.receiptSha256, files: Object.keys(receipt.files).length }) + '\n');
+  process.stdout.write(JSON.stringify({ sourceRevision: receipt.sourceRevision, totalBytes: receipt.totalBytes, receiptSha256: receipt.receiptSha256, files: Object.keys(receipt.files).length + 1 }) + '\n');
 }
