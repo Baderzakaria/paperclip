@@ -27,8 +27,9 @@ safe to call inside an uncommitted caller transaction; only their SQL mutation
 boundary has the existing outer-commit guarantee.
 
 `decision-continuations.ts` owns the readiness predicate, delivery, and recovery.
-It reads at most 100 IDs per page and advances past failed candidates before
-reporting failure. This avoids starving later rows behind a failing first page.
+Each worker pass attempts at most 100 candidates. A saved in-memory cursor
+advances past failed candidates between passes and wraps after the last page.
+Remaining durable work retains another pass. This avoids starving later rows behind a failing first page.
 A partial ID index contains ready pending continuations only. The predicate uses
 fixed SQL literals so a prepared generic plan can still use that index.
 
@@ -45,7 +46,9 @@ Foreground delivery remains immediate. All service instances sharing the DB
 owner coalesce a simultaneous wake for the same decision into one promise.
 Delivery re-reads durable readiness after claiming that local flight, so a late
 foreground call cannot resend a continuation already acknowledged by recovery.
-The promise is removed on success or failure. This is process-local coalescing,
+The promise is removed on success or failure. Effect execution and its final
+state write also share one local flight per decision. This prevents concurrent
+archive callers from turning a successful archive into a stale-manifest failure. This is process-local coalescing,
 not a new durable claim or an exactly-once guarantee.
 
 Effect completion requires the row to remain running. A competing completion
@@ -66,7 +69,9 @@ the existing coordinator. Failures or remaining ready debt retain a 30-second
 retry. Open/running decisions, no decisions, and delivered history have no
 recurring continuation scan or deadline. Changes during a pass retain another
 request. Drain/standby defer dispatch without consuming that request; shutdown
-waits for admitted delivery. A future process-local retry is not a Cloud alarm.
+waits for the current admitted delivery and stops before starting another.
+The shared deadline adapter forwards its existing AbortSignal to task execution;
+existing callbacks that do not consume the signal keep their behavior. A future process-local retry is not a Cloud alarm.
 
 Enabled-heartbeat startup registers this worker before the combined decision
 sweep. The main tick skips that sweep's independent continuation scan. Its public
@@ -81,7 +86,7 @@ host/database suspension or measured fleet savings.
 
 ## Verification
 
-The selected run passes 92 tests: 49 real-PostgreSQL decision cases, 39 startup
+The selected run passes 93 tests: 50 real-PostgreSQL decision cases, 39 startup
 cases, and four database work-signal unit cases. Fifteen new continuation cases
 cover real decide/cancel/dismiss/expiry producers, running-to-terminal completion,
 foreground contention, dedicated child pools, stale caller re-read, restart,
@@ -91,7 +96,7 @@ candidate. Quiet checks observe no SQL calls across an hour of controlled time.
 Nine pre-existing embedded-PostgreSQL signal tests are skipped locally because
 the embedded runtime is unavailable; CI must run that supported environment.
 Workspace typecheck and build pass. The final literal-predicate adjustment also
-passes all 49 decision tests.
+passes all 49 decision tests before the additional archive-race regression.
 
 Migration 0382 applies and replays without error. A rolled-back synthetic
 40,000-row history with one pending continuation uses the partial index under
@@ -104,3 +109,18 @@ message at the top level. The assertion now checks the original cause. No
 production retry, hold, or timeout was weakened. A recursive unit-fixture type
 initially prevented migration generation; an explicit fixture type fixed it.
 Full CI and fresh review remain required before PR readiness.
+
+
+Review found two real regressions. Before repair, a controlled concurrent archive
+reported failed after archiving successfully, and shutdown sent a second wake
+after stop was requested. Both regressions failed before the fix. Shared local
+effect ownership fixes archive completion; bounded passes and abort propagation
+fix backlog shutdown. The 93-case selection passes after repair. The paging test
+also proves a failed first candidate cannot hide the 101st candidate across
+bounded passes. A result-type alias initially made the known decision ID optional;
+the alias now matches the existing outcome contract.
+
+The existing tool-review and archive-delivery consumers also pass 124 real-DB
+tests after AbortSignal propagation. Together with the decision/startup/signal
+selection, 217 selected tests pass; the same nine older embedded-only cases
+remain locally skipped. Workspace typecheck passes after the outcome type fix.

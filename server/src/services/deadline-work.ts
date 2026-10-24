@@ -5,7 +5,7 @@ export function registerDeadlineWork(
   coordinator: ReturnType<typeof createDeliveryWorkCoordinator>,
   queue: DeliveryQueue,
   task: {
-    run: () => Promise<unknown>;
+    run: (signal: AbortSignal) => Promise<unknown>;
     next: () => Promise<number | null>;
     canRun: () => boolean;
     retryMs: number;
@@ -18,12 +18,13 @@ export function registerDeadlineWork(
     retryMs: task.retryMs,
     pausePassiveMaintenance: true,
     onSettled: () => { requested++; },
-    run: async () => {
+    run: async signal => {
       if (!task.canRun()) { requested++; return; }
       if (Date.now() < earliest) { next = earliest; return; }
       const generation = ++requested;
       earliest = Date.now() + task.retryMs;
-      await task.run();
+      await task.run(signal);
+      if (signal.aborted) return;
       const deadline = await task.next();
       next = deadline === null ? null : Math.max(earliest, deadline);
       reconciled = generation;

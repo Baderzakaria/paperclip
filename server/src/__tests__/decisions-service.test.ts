@@ -24,6 +24,7 @@ import {
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { attentionService } from "../services/attention.js";
 import { decisionService } from "../services/decisions.js";
+import * as retentionModule from "../services/decision-retention.js";
 import { hashAttentionArchiveManifest } from "../services/decision-retention.js";
 import type { AttentionArchiveManifestEntry, AttentionArchiveTargetSnapshot } from "@paperclipai/shared";
 
@@ -204,6 +205,45 @@ describePg("decisionService", () => {
     const states = await db.select().from(decisionRetention);
     expect(states.filter((row) => row.archivedAt).map((row) => row.sourceId).sort()).toEqual([extraIssueId, targetIssueId].sort());
     expect(states.find((row) => row.sourceId === unreviewedIssueId)?.archivedAt).toBeNull();
+  });
+
+  it("serializes concurrent archive completion before reporting its outcome", async () => {
+    await db.update(issues).set({ status: "in_review", assigneeUserId: decidedByUserId }).where(eq(issues.id, targetIssueId));
+    const activityAt = new Date("2026-04-01T00:00:00.000Z");
+    await db.insert(decisionRetention).values({ companyId, sourceKind: "review", sourceId: targetIssueId, sourceActivityAt: activityAt });
+    const manifest: AttentionArchiveManifestEntry[] = [{ companyId, sourceKind: "review", sourceId: targetIssueId,
+      expectedVersion: 1, activityAt: activityAt.toISOString(), reason: "Archive" }];
+    const row = await service().create({ companyId, actor: agentActor(), agentId, runId, title: "Archive?", body: "Exact set",
+      continuationPolicy: "wake_origin_agent", options: [{ id: "archive", label: "Archive", effects: [] }],
+      metadata: { kind: "attention_archive_proposal", manifestHash: hashAttentionArchiveManifest(manifest) },
+      additionalTargetSnapshots: { [`attention:review:${targetIssueId}`]: { status: "attention", assigneeAgentId: null,
+        assigneeUserId: null, updatedAt: activityAt.toISOString(), attentionArchive: manifest[0] } } });
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const original = retentionModule.decisionRetentionService;
+    let archived = false, calls = 0;
+    const factory = vi.spyOn(retentionModule, "decisionRetentionService").mockImplementation((source, options) => {
+      const actual = original(source, options);
+      return { ...actual, archiveReviewedManifest: async input => {
+        calls++;
+        const result = await actual.archiveReviewedManifest(input);
+        archived = true; await gate; return result;
+      } };
+    });
+    const decide = () => service().decide({ id: row.id, optionId: "archive", decidedByUserId, userActor: boardActor() });
+    const first = decide();
+    let second: ReturnType<typeof decide> | undefined;
+    try {
+      await vi.waitFor(() => expect(archived).toBe(true));
+      second = decide();
+      await new Promise(resolve => setTimeout(resolve, 100));
+      release();
+      const results = await Promise.all([first, second]);
+      expect(results.map(result => result.executionStatus)).toEqual(["succeeded", "succeeded"]);
+      expect(calls).toBe(1); expect(wakes).toHaveLength(1);
+      const [state] = await db.select().from(decisionRetention);
+      expect(state.archiveVersion).toBe(1); expect(state.archivedAt).not.toBeNull();
+    } finally { release(); await Promise.allSettled([first, ...(second ? [second] : [])]); factory.mockRestore(); }
   });
 
   it("skips strict stale targets and fails closed on intersection denial", async () => {
@@ -843,7 +883,8 @@ describePg("decisionService", () => {
     });
 
     it("awaits an admitted wake before completing shutdown", async () => {
-      const row = await createCommentDecision(); await markReady(row.id);
+      const row = await createCommentDecision(), other = await createCommentDecision();
+      await markReady(row.id); await markReady(other.id);
       let release!: () => void;
       const gate = new Promise<void>(resolve => { release = resolve; });
       wake.mockImplementationOnce(async () => gate);
@@ -857,7 +898,9 @@ describePg("decisionService", () => {
         expect(stopped).toBe(false);
       } finally { release(); }
       await starting; await stopping!; coordinator = undefined;
-      await delivered(row.id); expect(stopped).toBe(true);
+      expect(wake).toHaveBeenCalledTimes(1);
+      const sentId = wake.mock.calls[0][0].decisionId as string;
+      await delivered(sentId); await pending(sentId === row.id ? other.id : row.id); expect(stopped).toBe(true);
     });
 
     it("pages past a failed first candidate and preserves its retry", async () => {
@@ -867,10 +910,13 @@ describePg("decisionService", () => {
       const ids = Array.from({ length: 101 }, (_, i) => `10000000-0000-4000-8000-${String(i).padStart(12, "0")}`);
       await db.insert(decisions).values(ids.map(id => ({ ...seed, id, status: "cancelled", metadata: { continuationPending: true } })));
       wake.mockImplementation(async input => { if (input.decisionId === ids[0]) throw new Error("first unavailable"); });
-      await start();
+      const recovery = workerService();
+      await expect(recovery.sweepContinuations()).rejects.toThrow("first unavailable");
+      expect(wake).toHaveBeenCalledTimes(100); await pending(ids.at(-1)!);
+      expect(await recovery.sweepContinuations()).toEqual({ retry: true });
       expect(wake).toHaveBeenCalledTimes(101); await delivered(ids.at(-1)!); await pending(ids[0]);
-      expect(errors).toHaveLength(1); errors.length = 0; wake.mockImplementation(async () => {});
-      await quiet(); await delivered(ids[0]); expect(wake).toHaveBeenCalledTimes(102);
+      wake.mockImplementation(async () => {});
+      await start(); await quiet(); await delivered(ids[0]); expect(wake).toHaveBeenCalledTimes(102);
     });
   });
 

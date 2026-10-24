@@ -11,8 +11,8 @@ export function registerDecisionContinuationWork(
   let next: number | null = null;
   return registerDeadlineWork(coordinator, DELIVERY_QUEUES.decisionContinuation, {
     retryMs: 30_000, canRun,
-    run: async () => {
-      const result = await service.sweepContinuations();
+    run: async signal => {
+      const result = await service.sweepContinuations(100, signal);
       next = result.retry ? Date.now() + 30_000 : null;
     },
     next: async () => next,

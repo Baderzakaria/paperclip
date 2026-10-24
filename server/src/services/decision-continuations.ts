@@ -17,6 +17,7 @@ export function decisionContinuationService(db: Db, wake: DecisionContinuationWa
   let pending = flights.get(scope);
   if (!pending) flights.set(scope, pending = new Map());
   const inFlight = pending;
+  let recoveryCursor: string | undefined;
 
   function deliver(id: string): Promise<void> {
     const existing = inFlight.get(id);
@@ -37,24 +38,26 @@ export function decisionContinuationService(db: Db, wake: DecisionContinuationWa
     return attempt;
   }
 
-  async function sweep(maxRows = Infinity) {
-    let cursor: string | undefined;
+  async function sweep(maxRows = 100, signal?: AbortSignal) {
     let attempted = 0;
     const errors: unknown[] = [];
     while (attempted < maxRows) {
+      if (signal?.aborted) return { retry: true };
       const limit = Math.min(100, maxRows - attempted);
       const rows = await db.select({ id: decisions.id }).from(decisions)
-        .where(and(ready, cursor ? gt(decisions.id, cursor) : undefined))
+        .where(and(ready, recoveryCursor ? gt(decisions.id, recoveryCursor) : undefined))
         .orderBy(asc(decisions.id)).limit(limit);
       for (const row of rows) {
+        if (signal?.aborted) return { retry: true };
         try { await deliver(row.id); } catch (error) { errors.push(error); }
+        recoveryCursor = row.id;
       }
       attempted += rows.length;
-      if (rows.length < limit) break;
-      cursor = rows.at(-1)!.id;
+      if (rows.length < limit) { recoveryCursor = undefined; break; }
     }
     if (errors.length === 1) throw errors[0];
     if (errors.length) throw new AggregateError(errors, "Decision continuation delivery failed");
+    if (signal?.aborted) return { retry: true };
     const remaining = await db.select({ id: decisions.id }).from(decisions).where(ready).limit(1);
     return { retry: remaining.length > 0 };
   }
