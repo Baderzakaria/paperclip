@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { and, asc, count, desc, eq, gt, gte, inArray, lte, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { companyMemberships, decisionBundles, decisionEffectExecutions, decisionRetention, decisions, decisionTargetIssues, heartbeatRuns, issueRelations, issues } from "@paperclipai/db";
+import { databaseWorkScopeKey, companyMemberships, decisionBundles, decisionEffectExecutions, decisionRetention, decisions, decisionTargetIssues, heartbeatRuns, issueRelations, issues } from "@paperclipai/db";
 import { ATTENTION_SOURCE_KINDS, decisionEffectTargetIssueIds } from "@paperclipai/shared";
 import type { AttentionArchiveManifestEntry, DecisionEffect, DecisionInput, DecisionOption, DecisionStatsCounts, DecisionStatsResponse } from "@paperclipai/shared";
 import { conflict, forbidden, notFound, tooManyRequests, unprocessable } from "../errors.js";
@@ -23,6 +23,8 @@ type Snapshot = { status: string; assigneeAgentId: string | null; assigneeUserId
 
 export type DecisionServiceOptions = { wakeOriginAgent: DecisionContinuationWake };
 const DAY = 86_400_000;
+type DecisionOutcome = typeof decisions.$inferSelect & { executions: Array<typeof decisionEffectExecutions.$inferSelect> };
+const effectFlights = new WeakMap<object, Map<string, Promise<DecisionOutcome>>>();
 
 function targetIds(options: DecisionOption[]) {
   const result = new Set<string>();
@@ -124,6 +126,10 @@ function boardCanActDirectly(actor: AuthorizationActor, companyId: string) {
 export function decisionService(db: Db, options: DecisionServiceOptions) {
   const continuations = decisionContinuationService(db, options.wakeOriginAgent);
   const expiry = decisionExpiryService(db, continuations.deliver);
+  const scope = databaseWorkScopeKey(db);
+  let flights = effectFlights.get(scope);
+  if (!flights) effectFlights.set(scope, flights = new Map());
+  const executing = flights;
   const authz = authorizationService(db);
   let targetSweepCursor: string | null = null;
   type CreateInput = { companyId: string; actor: AuthorizationActor; agentId: string; runId: string; bundleId?: string | null;
@@ -551,7 +557,19 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
     }
   }
 
-  async function runEffects(decision: typeof decisions.$inferSelect, userActor: AuthorizationActor) {
+  function runEffects(decision: typeof decisions.$inferSelect, userActor: AuthorizationActor): Promise<DecisionOutcome> {
+    const existing = executing.get(decision.id);
+    if (existing) return existing;
+    const attempt = (async () => {
+      const current = await get(decision.id);
+      if (!current) throw notFound("Decision not found");
+      return current.executionStatus === "running" ? executeDecisionEffects(current, userActor) : outcome(current.id);
+    })().finally(() => { executing.delete(decision.id); });
+    executing.set(decision.id, attempt);
+    return attempt;
+  }
+
+  async function executeDecisionEffects(decision: typeof decisions.$inferSelect, userActor: AuthorizationActor) {
     const option = decision.options.find((item) => item.id === decision.chosenOptionId);
     if (!option || !decision.decidedByUserId) throw unprocessable("Stored decision outcome is invalid");
     const run = await db.select({ responsibleUserId: heartbeatRuns.responsibleUserId }).from(heartbeatRuns).where(eq(heartbeatRuns.id, decision.originRunId)).then((rows) => rows[0] ?? null);

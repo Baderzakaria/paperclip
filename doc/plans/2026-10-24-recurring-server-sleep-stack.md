@@ -16,7 +16,7 @@ Do not mark an item done from a timer removal or a green check alone.
 | 02 | Remaining chat maintenance | Provider runtime discovery; voice reconciliation; milestones; wake notices; interaction continuations; terminal confirmations; GitHub recovery; Teams maintenance, separately by owner | Pending |
 | 03 | Run and task recovery | Orphan runs and active leases; shutdown workspace settlement; scheduled retries; queued runs; stranded assignments; resolved dependencies; task watchdogs; silent-run monitoring; stale locks | Pending |
 | 04 | Decision retention and notifications | Retention deadlines and notification delivery are separate reasons | Retention pending; notification delivery: [#17475](https://github.com/paperclipai/paperclip/pull/17475), all checks passed (Paperclip Review skipped), Greptile 5/5 at `692e3ee02c` |
-| 05 | Decision expiry and interrupted effects | Expiry, effect recovery, continuation recovery | Pending |
+| 05 | Decision expiry and interrupted effects | Expiry, effect recovery, continuation recovery | Continuations: [#17478](https://github.com/paperclipai/paperclip/pull/17478), review repairs under verification; expiry branch in progress; effects and target invalidation pending |
 | 06 | Tool connection health | Configuration/use activation and defined proactive health deadlines | Pending |
 | 07 | Secret proposals, tool reviews, gateway tokens | Separate expiry/scrub/recovery owners | Secret proposals: [#17446](https://github.com/paperclipai/paperclip/pull/17446), checks passed at `d41590ac0e`; gateway credentials: [#17450](https://github.com/paperclipai/paperclip/pull/17450), all checks passed, Greptile 5/5 at `c5c53fc43f`; pending tool-review expiry: [#17453](https://github.com/paperclipai/paperclip/pull/17453), all checks passed, Greptile 5/5 at `ce6a260a83`; approved recovery: [#17454](https://github.com/paperclipai/paperclip/pull/17454), all checks passed, Greptile 5/5 at `7a1cf03e62`; interrupted claims: [#17458](https://github.com/paperclipai/paperclip/pull/17458), all checks passed, Greptile 5/5 at `85003a7ac4`; projection: [#17468](https://github.com/paperclipai/paperclip/pull/17468), all checks passed, Greptile 5/5 at `0956883a84` |
 | 08 | GitHub connection events and continuity | Event discovery/replay and credential continuity separately | Pending |
@@ -392,3 +392,21 @@ Parent #17475 at `692e3ee02c` now has passing checks and Greptile 5/5; the extra
 Paperclip Review check was skipped. Fresh master is `fe85fd7ac4`, still at
 migration 0377. The stack remains open and unmerged. The full inventory above
 remains the completion scope.
+
+
+Slice 09 is [#17478](https://github.com/paperclipai/paperclip/pull/17478), initially
+`66bbef521e`. Review found a concurrent archive result race and unbounded backlog
+shutdown. Both failed real-boundary regressions before repair. The local repair
+shares effect execution through completion per DB owner/decision, bounds each
+continuation pass to 100 with a fair cursor, and forwards cancellation through
+the shared deadline adapter. The repaired selection passes 217 tests, with nine
+older embedded-only signal tests skipped locally. Typecheck passes. Fresh build,
+CI, and review remain required; the initial head has no other CI failure.
+
+The separate TTL branch `codex/sleep-10-decision-expiry` contains implementation
+commit `18c11e3110`. It passed 101 selected tests, workspace typecheck and build.
+Its fault fixture initially cleared its error collector before a previous
+admitted failure finished; the assertion now verifies all errors after settled
+recovery. No hold or retry was weakened. This branch must receive the parent
+review repairs and adapt its own paged expiry worker to cancellation before PR
+publication. No tenth PR or readiness is claimed.
