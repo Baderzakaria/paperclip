@@ -68,6 +68,13 @@ Runner profiles retain the adapter type and complete native execution input and
 workspace-sync receipts. Full result evidence stays available to the existing
 retry and workspace checks. Stored context, profiles, and output are unchanged.
 
+Conversation ownership checks select process identity and full recovery result
+evidence without execution prompts or profiles. Committed native reply repair
+selects its persisted result and identity bindings plus typed presentation flags.
+It keeps its existing row locks, accepted-result digest checks, publication
+authorization, and selected-answer protections. Full execution history stays in
+storage.
+
 Run-context lookups use expression indexes for both `context_snapshot.issueId`
 and `context_snapshot.paperclipIssue.id`. Task creation provenance has its own
 company-scoped expression index that follows the query's native issue ID and
