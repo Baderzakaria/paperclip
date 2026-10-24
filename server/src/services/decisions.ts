@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, asc, count, desc, eq, gt, gte, inArray, lte, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, gt, gte, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { databaseWorkScopeKey, companyMemberships, decisionBundles, decisionEffectExecutions, decisionRetention, decisions, decisionTargetIssues, heartbeatRuns, issueRelations, issues } from "@paperclipai/db";
 import { ATTENTION_SOURCE_KINDS, decisionEffectTargetIssueIds } from "@paperclipai/shared";
@@ -15,6 +15,7 @@ import {
 import { decisionRetentionService, hashAttentionArchiveManifest } from "./decision-retention.js";
 
 import { decisionContinuationService, type DecisionContinuationWake } from "./decision-continuations.js";
+import { decisionEffectRecoveryService, decisionSweepBatchSize } from "./decision-effect-recovery.js";
 import { decisionExpiryService } from "./decision-expiry.js";
 import { notifyDecisionChange, writeDecisionChange } from "./decision-work-notifications.js";
 
@@ -126,6 +127,7 @@ function boardCanActDirectly(actor: AuthorizationActor, companyId: string) {
 export function decisionService(db: Db, options: DecisionServiceOptions) {
   const continuations = decisionContinuationService(db, options.wakeOriginAgent);
   const expiry = decisionExpiryService(db, continuations.deliver);
+  const effectRecovery = decisionEffectRecoveryService(db, recoverDecisionEffects);
   const scope = databaseWorkScopeKey(db);
   let flights = effectFlights.get(scope);
   if (!flights) effectFlights.set(scope, flights = new Map());
@@ -716,27 +718,18 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
       return { ...bundle, decisions: created }; });
   }
 
-  async function sweepExpired(now = new Date(), options: { includeContinuations?: boolean; includeExpiry?: boolean } = {}) {
-    const configuredBatchSize = Number(process.env.PAPERCLIP_DECISIONS_SWEEP_BATCH_SIZE ?? 100);
-    const batchSize = Number.isFinite(configuredBatchSize)
-      ? Math.max(1, Math.trunc(configuredBatchSize))
-      : 100;
-    const configuredRecoveryGraceMs = Number(process.env.PAPERCLIP_DECISIONS_RECOVERY_GRACE_MS ?? 60_000);
-    const recoveryGraceMs = Number.isFinite(configuredRecoveryGraceMs) && configuredRecoveryGraceMs >= 0
-      ? configuredRecoveryGraceMs
-      : 60_000;
-    const runningRows = await db.select().from(decisions)
-      .where(and(eq(decisions.status, "decided"), eq(decisions.executionStatus, "running"),
-        lte(decisions.updatedAt, new Date(now.getTime() - recoveryGraceMs))))
-      .orderBy(asc(decisions.updatedAt)).limit(batchSize);
-    let resumed = 0;
-    for (const decision of runningRows) {
-      if (!decision.decidedByUserId) continue;
-      const recovered = await runEffects(decision, await recoveryActor(decision.companyId, decision.decidedByUserId));
-      if (recovered.executionStatus === "running") continue;
-      resumed += 1;
-      await continuations.deliver(recovered.id);
-    }
+  async function recoverDecisionEffects(id: string) {
+    const current = await get(id);
+    if (!current || current.status !== "decided" || current.executionStatus !== "running" || !current.decidedByUserId) return false;
+    const recovered = await runEffects(current, await recoveryActor(current.companyId, current.decidedByUserId));
+    if (recovered.executionStatus === "running") return false;
+    await continuations.deliver(recovered.id);
+    return true;
+  }
+
+  async function sweepExpired(now = new Date(), options: { includeContinuations?: boolean; includeExpiry?: boolean; includeEffects?: boolean } = {}) {
+    const batchSize = decisionSweepBatchSize();
+    const { resumed } = options.includeEffects === false ? { resumed: 0 } : await effectRecovery.sweep(now, batchSize);
     if (options.includeContinuations !== false) await continuations.sweep(batchSize);
     const ttlRows = options.includeExpiry === false ? [] : await expiry.due(now, batchSize);
     const remaining = batchSize - ttlRows.length;
@@ -768,5 +761,6 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
   }
 
   return { create, createBundle, get, list, stats, outcome, decide, cancel, dismiss, sweepExpired, sweepContinuations: continuations.sweep,
-    sweepTtlExpiry: expiry.sweep, nextExpiryAt: expiry.next };
+    sweepTtlExpiry: expiry.sweep, nextExpiryAt: expiry.next,
+    recoverEffects: effectRecovery.sweep, nextEffectRecoveryAt: effectRecovery.next };
 }

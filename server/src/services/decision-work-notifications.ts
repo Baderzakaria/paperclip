@@ -4,6 +4,7 @@ import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notificatio
 export async function notifyDecisionChange(transaction: object) {
   await notifyDeliveryWork(transaction, DELIVERY_QUEUES.decisionContinuation);
   await notifyDeliveryWork(transaction, DELIVERY_QUEUES.decisionExpiry);
+  await notifyDeliveryWork(transaction, DELIVERY_QUEUES.decisionEffectRecovery);
 }
 
 export function writeDecisionChange<T>(db: Db, write: (transaction: Db) => Promise<T>): Promise<T> {

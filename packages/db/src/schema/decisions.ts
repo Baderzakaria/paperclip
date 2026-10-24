@@ -69,6 +69,8 @@ export const decisions = pgTable(
       table.status,
       table.expiresAt,
     ),
+    runningRecoveryIdx: index("decisions_running_recovery_idx").on(table.updatedAt, table.id)
+      .where(sql`${table.status} = 'decided' AND ${table.executionStatus} = 'running'`),
     openExpiryIdx: index("decisions_open_expiry_idx").on(table.expiresAt, table.id)
       .where(sql`${table.status} = 'open'`),
     pendingContinuationIdx: index("decisions_pending_continuation_idx").on(table.id)

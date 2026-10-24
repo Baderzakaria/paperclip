@@ -16,7 +16,7 @@ Do not mark an item done from a timer removal or a green check alone.
 | 02 | Remaining chat maintenance | Provider runtime discovery; voice reconciliation; milestones; wake notices; interaction continuations; terminal confirmations; GitHub recovery; Teams maintenance, separately by owner | Pending |
 | 03 | Run and task recovery | Orphan runs and active leases; shutdown workspace settlement; scheduled retries; queued runs; stranded assignments; resolved dependencies; task watchdogs; silent-run monitoring; stale locks | Pending |
 | 04 | Decision retention and notifications | Retention deadlines and notification delivery are separate reasons | Retention pending; notification delivery: [#17475](https://github.com/paperclipai/paperclip/pull/17475), all checks passed (Paperclip Review skipped), Greptile 5/5 at `692e3ee02c` |
-| 05 | Decision expiry and interrupted effects | Expiry, effect recovery, continuation recovery | Continuations: [#17478](https://github.com/paperclipai/paperclip/pull/17478), Greptile 5/5 at `5f96892a58`, CI running; TTL: [#17479](https://github.com/paperclipai/paperclip/pull/17479), local verification passed at `63b58cc26f`, CI/review running; effects and target invalidation pending |
+| 05 | Decision expiry and interrupted effects | Expiry, effect recovery, continuation recovery | Continuations: [#17478](https://github.com/paperclipai/paperclip/pull/17478), all checks passed, Greptile 5/5 at `5f96892a58`; TTL: [#17479](https://github.com/paperclipai/paperclip/pull/17479), Greptile 5/5 at `63b58cc26f`, one CI timeout retry running; effects and target invalidation pending |
 | 06 | Tool connection health | Configuration/use activation and defined proactive health deadlines | Pending |
 | 07 | Secret proposals, tool reviews, gateway tokens | Separate expiry/scrub/recovery owners | Secret proposals: [#17446](https://github.com/paperclipai/paperclip/pull/17446), checks passed at `d41590ac0e`; gateway credentials: [#17450](https://github.com/paperclipai/paperclip/pull/17450), all checks passed, Greptile 5/5 at `c5c53fc43f`; pending tool-review expiry: [#17453](https://github.com/paperclipai/paperclip/pull/17453), all checks passed, Greptile 5/5 at `ce6a260a83`; approved recovery: [#17454](https://github.com/paperclipai/paperclip/pull/17454), all checks passed, Greptile 5/5 at `7a1cf03e62`; interrupted claims: [#17458](https://github.com/paperclipai/paperclip/pull/17458), all checks passed, Greptile 5/5 at `85003a7ac4`; projection: [#17468](https://github.com/paperclipai/paperclip/pull/17468), all checks passed, Greptile 5/5 at `0956883a84` |
 | 08 | GitHub connection events and continuity | Event discovery/replay and credential continuity separately | Pending |
@@ -490,3 +490,25 @@ archive failure semantics, outer commit/rollback, failed retry through drain,
 changes during execution, fair bounded paging, and shutdown. Run existing
 archive and continuation regressions on the combined stack. The full original
 inventory remains the goal after this slice.
+
+
+## Slice 11: interrupted decision effects
+
+The effect-recovery owner and worker now use committed decision changes and the
+minimum running claim timestamp plus the existing recovery grace. The aggregate
+tick opts out of this duty while preserving target invalidation. Effect execution,
+current authority, claims, audit, and archive policy remain with the decision
+service. See [effect recovery](../idle-decision-effect-recovery.md).
+
+All 212 selected tests pass: 17 new recovery cases, 50 decision service cases,
+14 TTL cases, 39 startup cases, and 92 agent-history route cases. Workspace
+typecheck/build and final server typecheck pass. Migration apply/replay and a
+40,000-row completed-history query probe pass; both lookups use the new partial
+index with two buffers. PR creation and full CI/review are next.
+
+The continuation parent #17478 now has passing checks and Greptile 5/5 at
+`5f96892a58`, with both review findings resolved. TTL #17479 has Greptile 5/5 at
+`63b58cc26f` and no findings. Its first CI run timed out in the unchanged
+agent-history route test. All 92 route tests passed locally; one failed-job retry
+was requested. This evidence does not yet establish green TTL CI. The full
+original inventory remains in scope; no stack PR has been merged.
