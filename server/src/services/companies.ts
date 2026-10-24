@@ -1,4 +1,4 @@
-import { notifyRetentionWork } from "./retention-work-notifications.js";
+import { notifyCompanyRetentionWork } from "./retention-work-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { isRunnerApiResponseAsset } from "./asset-content-access.js";
 import { deleteCompany } from "./company-deletion.js";
@@ -331,7 +331,7 @@ export function companyService(db: Db, _budgetHooks: BudgetServiceHooks = {}) {
 
         if (companyPatch.status !== undefined && companyPatch.status !== existing.status) {
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillSourceSync);
-          await notifyRetentionWork(tx, "approval");
+          await notifyCompanyRetentionWork(tx);
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentLifecycle, id);
         }
         const updated = await tx
@@ -483,7 +483,7 @@ export function companyService(db: Db, _budgetHooks: BudgetServiceHooks = {}) {
 
         if (!wasAlreadyArchived) {
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillSourceSync);
-          await notifyRetentionWork(tx, "approval");
+          await notifyCompanyRetentionWork(tx);
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentLifecycle, id);
           await tx
             .update(companies)

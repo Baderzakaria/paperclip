@@ -1,3 +1,4 @@
+import { joinRequestRetentionService } from "../services/join-request-retention.js";
 import { approvalRetentionService } from "../services/approval-retention.js";
 import { logger } from "../middleware/logger.js";
 import { getStartupRecoveryState } from "../startup-recovery-state.js";
@@ -322,6 +323,11 @@ vi.mock("../realtime/live-events-ws.js", () => ({
   setupLiveEventsWebSocketServer: vi.fn(),
 }));
 
+vi.mock("../services/join-request-retention.js", async importOriginal => ({
+  ...await importOriginal<typeof import("../services/join-request-retention.js")>(),
+  joinRequestRetentionService: vi.fn(() => ({ sweep: vi.fn(async () => ({ archived: 0 })), next: vi.fn(async () => null) })),
+}));
+
 vi.mock("../services/approval-retention.js", async importOriginal => ({
   ...await importOriginal<typeof import("../services/approval-retention.js")>(),
   approvalRetentionService: vi.fn(() => ({ sweep: vi.fn(async () => ({ archived: 0 })), next: vi.fn(async () => null) })),
@@ -532,6 +538,18 @@ describe("startServer feedback export wiring", () => {
     expect(Boolean(registration)).toBe(enabled);
     if (enabled) {
       const service = vi.mocked(approvalRetentionService).mock.results.at(-1)!.value;
+      await registration![1].run(new AbortController().signal);
+      expect(service.sweep).toHaveBeenCalled(); expect(service.next).toHaveBeenCalled();
+    }
+  });
+
+  it.each([false, true])("registers join request retention only when maintenance is enabled (%s)", async enabled => {
+    loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: enabled }));
+    await startServer(); await settleStartupHousekeeping();
+    const registration = deliveryWorkRegisterMock.mock.calls.find(([queue]) => queue === DELIVERY_QUEUES.joinRequestRetention);
+    expect(Boolean(registration)).toBe(enabled);
+    if (enabled) {
+      const service = vi.mocked(joinRequestRetentionService).mock.results.at(-1)!.value;
       await registration![1].run(new AbortController().signal);
       expect(service.sweep).toHaveBeenCalled(); expect(service.next).toHaveBeenCalled();
     }

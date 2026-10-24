@@ -512,6 +512,7 @@ const MIGRATIONS_WITH_TOP_LEVEL_STATEMENTS = new Set([
   "0384_many_reaper.sql",
   "0385_normal_blindfold.sql",
   "0386_omniscient_luke_cage.sql",
+  "0387_huge_skrulls.sql",
   "0380_funny_adam_warlock.sql",
 ]);
 

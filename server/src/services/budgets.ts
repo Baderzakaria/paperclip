@@ -1,4 +1,4 @@
-import { notifyRetentionWork } from "./retention-work-notifications.js";
+import { notifyCompanyRetentionWork, notifyRetentionWork } from "./retention-work-notifications.js";
 import { addCents, compareCents, normalizeCents } from "@paperclipai/shared";
 import { and, desc, eq, inArray, sql, or, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -297,7 +297,7 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
 
     const scope = await resolveScopeRecord(db, "company", policy.scopeId);
     if (scope.paused) return;
-    await notifyRetentionWork(db, "approval");
+    await notifyCompanyRetentionWork(db);
     await notifyDeliveryWork(db, DELIVERY_QUEUES.agentLifecycle, policy.companyId);
     await notifyDeliveryWork(db, DELIVERY_QUEUES.skillSourceSync);
     await db
@@ -354,7 +354,7 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
     await notifyDeliveryWork(db, DELIVERY_QUEUES.skillSourceSync);
     const scope = await resolveScopeRecord(db, "company", policy.scopeId);
     if (scope.pauseReason !== "budget") return;
-    await notifyRetentionWork(db, "approval");
+    await notifyCompanyRetentionWork(db);
     await notifyDeliveryWork(db, DELIVERY_QUEUES.agentLifecycle, policy.companyId);
     await db
       .update(companies)

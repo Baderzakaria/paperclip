@@ -866,3 +866,25 @@ preserves cursor precision in the owning query. All 87 workspace service/worker
 cases and server typechecking pass. See
 [workspace pagination](../idle-terminal-workspace-pagination.md). Publication and
 fresh CI/review are next. Join retention remains the next new migration duty.
+
+## Join request retention implementation
+
+Terminal workspace pagination is [#17505](https://github.com/paperclipai/paperclip/pull/17505),
+head `28a197cdfd`, stacked on #17497. It has fresh 5/5 review without unresolved
+findings. The full CI matrix is running. Workspace typecheck/build and all 87
+selected service/worker tests passed locally.
+
+Join retention is implemented on `codex/sleep-15-join-retention`, based on #17505.
+The worker preserves pending request/invite/company eligibility, manual controls,
+transaction ownership, microsecond paging, and bounded recovery. All supported
+writers are audited; approved-only API-key consumption is deliberately exempt.
+See [join retention](../idle-join-request-retention.md). Seventeen new real-DB
+lifecycle cases and 139 consumers pass (156 total). Initial fixture and command
+failures are recorded in that document. Index generation, apply, replay, safety,
+numbering, and an actual-query plan with 40,000 resolved requests pass. Workspace
+typecheck/build and remote publication/CI/review remain in progress. No slice is
+claimed ready based only on local tests, and no merge is authorized.
+
+After join retention, migrate the remaining attention source owners separately:
+decisions, interactions, recovery actions, reviews, and other source kinds. Keep
+the full original server inventory and later aggregate-tick retirement in scope.

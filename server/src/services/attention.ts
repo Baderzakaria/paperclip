@@ -1375,6 +1375,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         }));
       }
 
+      if (!options.excludeSources?.includes("join_request")) {
       const pendingJoins = await db
         .select({
           id: joinRequests.id,
@@ -1434,6 +1435,8 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           relatedIssue: null,
           detail: genericDetail(label, []),
         }));
+      }
+
       }
 
       const recoveryRows = await db
