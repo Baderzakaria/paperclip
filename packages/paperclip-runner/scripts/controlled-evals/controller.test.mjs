@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:
 import { writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { canonical, costRuntime, requestBindingSha256, sha256, validateManifest } from './manifest.mjs';
+import { canonical, costRuntime, observabilityBoundConfiguration, requestBindingSha256, sha256, validateManifest } from './manifest.mjs';
 import { attemptDirectory, runControlledEval } from './run.mjs';
 import { summarizeControlledCampaign } from './report.mjs';
 import { decodeControlledEvidence, packControlledAttempt, readControlledEvidence, readAttemptControlledEvidence, summarizeControlledEvidence } from './archive.mjs';
@@ -32,11 +32,22 @@ for(let i=0;i<${options.requests ?? 3};i++){
  const response=await fetch(descriptor.baseUrl+(descriptor.provider==='openai'?'/v1/responses':'/v1/messages'),{method:'POST',headers:{authorization:'Bearer '+process.env.PAPERCLIP_RUNNER_EVAL_GATEWAY_TOKEN,'content-type':'application/json'},body:JSON.stringify({model:request.model,input:'synthetic fixture'})});
  statuses.push(response.status);await response.text();
 }
+let nativeObservability;
+if(args.has('--observability-config')) {
+ const raw=await readFile(args.get('--observability-config'),'utf8'),config=JSON.parse(raw);
+ const parent=decodeURIComponent(config.launch.environment.OTEL_EXPORTER_OTLP_TRACES_HEADERS.slice('x-bt-parent='.length));
+ for(const signal of ['logs','traces'])for(let i=0;i<${options.otelRequests ?? 1};i++) {
+  const body=signal==='logs'?{resourceLogs:[{scopeLogs:[{logRecords:[{body:{stringValue:'synthetic-native-content'}}]}]}]}:{resourceSpans:[{scopeSpans:[{spans:[{traceId:'1'.repeat(32),spanId:'2'.repeat(16),name:'synthetic-native-span'}]}]}]};
+  const response=await fetch(config.baseUrl+'/v1/'+signal,{method:'POST',headers:{authorization:'Bearer '+process.env.PAPERCLIP_RUNNER_EVAL_OTLP_TOKEN,'x-bt-parent':parent,'content-type':'application/json'},body:JSON.stringify(body)});
+  await response.arrayBuffer();
+ }
+ nativeObservability={mode:'controller_otlp',configured:true,verification:'unverified',projectId:config.projectId,traceId:config.traceId,spanId:config.spanId,descriptorSha256:createHash('sha256').update(raw).digest('hex')};
+}
 if(${Boolean(options.waitForever)})await new Promise(()=>setInterval(()=>{},1000));
 if(!${Boolean(options.missingArtifact)})await writeFile(args.get('--output'),JSON.stringify({schema:'paperclip-runner/eval-session-artifact/v1',attemptId:request.attemptId,requestedModel:request.model,
  requestRouting:${options.missingRoute ? 'null' : "{mode:'controller_gateway',provider:descriptor.provider,declaredUpstreamRoute:descriptor.upstreamRoute,campaignId:descriptor.campaignId,executionId:descriptor.executionId,attemptId:descriptor.attemptId,descriptorSha256:createHash('sha256').update(descriptorRaw).digest('hex')}"},
- snapshot:{status:'closed',process:{runnerExited:true,runnerPid:process.pid,providerPid:process.pid}},statuses,
- leaked:${options.leakToken ? 'process.env.PAPERCLIP_RUNNER_EVAL_GATEWAY_TOKEN' : 'null'}}));
+ nativeObservability, snapshot:{status:'closed',process:{runnerExited:true,runnerPid:process.pid,providerPid:process.pid}},statuses,
+ leaked:${options.leakToken ? 'process.env.PAPERCLIP_RUNNER_EVAL_GATEWAY_TOKEN' : options.leakOtlpToken ? 'process.env.PAPERCLIP_RUNNER_EVAL_OTLP_TOKEN' : 'null'}}));
 if(${Boolean(options.orphanExit)})process.exit(0);
 `;
 
@@ -68,11 +79,17 @@ async function fixture(t, { count = 1, allocation = '0.01', providerProfile = 'c
     await writeFile(requestPath, JSON.stringify(request)); requests.push({ request, requestPath, outputPath });
     manifest.attempts.push({ executionId: `execution-${index}`, attemptId: request.attemptId, requestSha256: requestBindingSha256(request), provider: request.provider, ...(request.acpxAgent ? { acpxAgent: request.acpxAgent } : {}), model: 'fixture', maxUsd: allocation, maxRequests: 2, maxConcurrent: 1, timeoutMs: 5000 });
   }
+  if (options.observability) {
+    manifest.observability = { projectId: '11111111-1111-4111-8111-111111111111',
+      capture: { userPrompts: false, assistantResponses: false, toolDetails: false, toolContent: false },
+      nativeLimits: { maxRequests: 4, maxRequestBytes: 16384, maxTotalBytes: 32768, maxConcurrent: 1, maxExpandedBytes: 65536, maxRecords: 16 } };
+    manifest.observability.provisionalBound = bound(observabilityBoundConfiguration(manifest));
+  }
   const manifestPath = join(root, 'manifest.json');
   const save = () => writeFile(manifestPath, JSON.stringify(manifest)); await save();
   const environment = { PATH: process.env.PATH, OPENAI_API_KEY: 'synthetic-upstream-private', ANTHROPIC_API_KEY: 'other-private', BRAINTRUST_API_KEY: 'other-braintrust', GH_TOKEN: 'other-github', NODE_OPTIONS: '--require must-not-inherit', PYTHONPATH: '/must-not-inherit' };
   return { root, manifest, manifestPath, requests, environment, save,
-    run: (index = 0, transport = () => success(biller), signal) => runControlledEval({ manifestPath, ...requests[index], environment, transport, signal }) };
+    run: (index = 0, transport = () => success(biller), signal) => runControlledEval({ manifestPath, ...requests[index], environment, transport, signal, otlpTransport: options.otlpTransport ?? (async () => Response.json({})) }) };
 }
 let sequence = 0;
 function success(provider = 'openai') {
@@ -91,7 +108,7 @@ test('real child requests reserve before dispatch, stop at the cap and retain on
     assert.equal(ledger.state.snapshot().inflight, 1);
     return success();
   });
-  assert.equal(calls, 2); assert.equal(result.code, 0); assert.equal(result.report.cleanupVerified, true);
+  assert.equal(calls, 2); assert.equal(result.code, 0, JSON.stringify(result.report)); assert.equal(result.report.cleanupVerified, true);
   const artifact = JSON.parse(await readFile(f.requests[0].outputPath, 'utf8'));
   assert.deepEqual(artifact.statuses, [200, 200, 429]);
   assert.equal(artifact.controllerAccounting.accounting.knownUsd, '0.000136000');
@@ -472,4 +489,101 @@ test('campaign collection retains and audits private archives, while public proj
   await writeFile(catalogPath, JSON.stringify(catalog));
   await rm(join(attempt, 'controller-evidence.json'));
   await assert.rejects(aggregateProtocolEvalCampaign(input), /Missing private controller evidence/);
+});
+
+for (const providerProfile of ['codex', 'claude']) test(`controller owns native ${providerProfile} trace routing and offline receipts after workspace deletion`, async t => {
+  const received = [];
+  const f = await fixture(t, { providerProfile, observability: true, requests: 1, otlpTransport: async (url, init) => {
+    received.push({ url: String(url), headers: new Headers(init.headers), body: JSON.parse(Buffer.from(init.body).toString()) });
+    return Response.json({});
+  } });
+  const result = await f.run();
+  assert.equal(result.code, 0); assert.equal(received.length, 3);
+  const evidence = result.report.observability;
+  assert.equal(evidence.status, 'accepted'); assert.equal(evidence.verification, 'unverified');
+  assert.equal(evidence.native.admittedRecords, 2); assert.equal(evidence.controller.admittedRecords, 1);
+  assert(received.every(item => item.headers.get('authorization') === 'Bearer other-braintrust'));
+  assert.equal(received[0].headers.get('x-bt-parent'), costRuntime.exportBraintrustAttemptParent(evidence));
+  assert.equal(received[2].headers.get('x-bt-parent'), `project_id:${f.manifest.observability.projectId}`);
+  const root = received[2].body.resourceSpans[0].scopeSpans[0].spans[0];
+  assert.equal(root.traceId, evidence.traceId); assert.equal(root.spanId, evidence.spanId);
+  assert(root.attributes.some(item => item.key === 'paperclip.eval.request_sha256' && item.value.stringValue === f.manifest.attempts[0].requestSha256));
+  assert(!JSON.stringify(root).includes('synthetic-native-content'));
+  const archive = await packControlledAttempt({ manifest: f.manifest, attemptId: 'attempt-0', environment: f.environment });
+  assert(!JSON.stringify(archive).includes('other-braintrust'));
+  await rm(f.manifest.outputDirectory, { recursive: true });
+  await rm(f.requests[0].request.session.workingDirectory, { recursive: true });
+  const summary = await summarizeControlledEvidence([archive]);
+  assert.equal(summary.incompleteAttempts, 0); assert.equal(summary.campaigns[0].attempts[0].observability.status, 'accepted');
+  assert.equal(summary.campaigns[0].operatingHeldUsd, '0.004000000');
+});
+
+test('native capacity, capture, selection and operating bound changes require new qualification', async t => {
+  const f = await fixture(t, { observability: true });
+  for (const mutate of [
+    value => { value.observability.nativeLimits.maxTotalBytes++; },
+    value => { value.observability.capture.userPrompts = true; },
+    value => { value.observability.projectId = '22222222-2222-4222-8222-222222222222'; },
+    value => { value.attempts[0].requestSha256 = 'c'.repeat(64); },
+    value => { value.overhead.components.find(item => item.component === 'observability').provisionalBound.evidenceSha256 = 'c'.repeat(64); },
+    value => { delete value.observability.provisionalBound; },
+  ]) { const manifest = structuredClone(f.manifest); mutate(manifest); assert.throws(() => validateManifest(manifest)); }
+  const noKey = { ...f.environment }; delete noKey.BRAINTRUST_API_KEY;
+  await assert.rejects(runControlledEval({ manifestPath: f.manifestPath, ...f.requests[0], environment: noKey }), /observability credential/);
+  await assert.rejects(readFile(join(f.manifest.outputDirectory, 'admission.json')), { code: 'ENOENT' });
+});
+
+for (const fault of ['partial', 'quota', 'leak']) test(`native ${fault} preserves model cost and holds the unresolved attempt`, async t => {
+  const f = await fixture(t, { observability: true, requests: 1, otelRequests: fault === 'quota' ? 3 : 1,
+    leakOtlpToken: fault === 'leak', otlpTransport: async url => fault === 'partial'
+      ? Response.json({ partialSuccess: String(url).endsWith('/logs') ? { rejectedLogRecords: 1 } : { rejectedSpans: 1 } }) : Response.json({}) });
+  const result = await f.run();
+  assert.equal(result.code, 2); assert.equal(result.report.status, 'incomplete');
+  const summary = await summarizeControlledCampaign(f.manifest);
+  assert.equal(summary.knownUsd, '0.000068000'); assert.equal(summary.committedUsd, '0.014000000');
+  const artifact = JSON.parse(await readFile(f.requests[0].outputPath, 'utf8'));
+  assert.equal(artifact.accountingFailure.retryable, false);
+  if (fault === 'leak') { assert.equal(artifact.leaked, '[redacted]'); assert.equal(result.report.secretExcluded, false); }
+});
+
+test('offline replay refuses lost receipts and forged acceptance even when file hashes are updated', async t => {
+  const f = await fixture(t, { observability: true, requests: 1 }); await f.run();
+  const root = attemptDirectory(f.manifest, 'attempt-0'), path = join(root, 'otlp-native.jsonl');
+  const original = await readFile(path);
+  await rm(path);
+  assert.equal((await summarizeControlledCampaign(f.manifest)).incompleteAttempts, 1);
+  const rows = original.toString().trim().split('\n').map(line => JSON.parse(line));
+  rows.find(row => row.type === 'outcome').outcome = 'partial';
+  const bytes = Buffer.from(rows.map(row => JSON.stringify(row)).join('\n') + '\n');
+  await writeFile(path, bytes);
+  const reportPath = join(root, 'result.json'), report = JSON.parse(await readFile(reportPath, 'utf8'));
+  report.observability.receiptHashes.native = sha256(bytes); await writeFile(reportPath, JSON.stringify(report));
+  const summary = await summarizeControlledCampaign(f.manifest);
+  assert.equal(summary.incompleteAttempts, 1); assert.equal(summary.committedUsd, '0.014000000');
+});
+
+test('cancellation aborts a pending native export and retains its uncertain receipt and model allocation', async t => {
+  const cancellation = new AbortController(); let aborted = false;
+  const f = await fixture(t, { observability: true, requests: 1, otlpTransport: async (_url, init) => {
+    queueMicrotask(() => cancellation.abort());
+    return new Promise((_resolve, reject) => init.signal.addEventListener('abort', () => { aborted = true; reject(new Error('synthetic abort')); }, { once: true }));
+  } });
+  const result = await f.run(0, () => success(), cancellation.signal);
+  assert.equal(result.code, 2); assert.equal(aborted, true); assert.equal(result.report.child.stopped, 'controller_cancelled');
+  const rows = (await readFile(join(attemptDirectory(f.manifest, 'attempt-0'), 'otlp-native.jsonl'), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+  assert.equal(rows.find(row => row.type === 'outcome').outcome, 'uncertain'); assert.equal(rows.at(-1).type, 'closed');
+  const summary = await summarizeControlledCampaign(f.manifest);
+  assert.equal(summary.knownUsd, '0.000068000'); assert.equal(summary.committedUsd, '0.014000000');
+});
+
+test('lost ledger finalization still closes both OTLP relays', async t => {
+  const f = await fixture(t, { observability: true, requests: 1 });
+  const root = attemptDirectory(f.manifest, 'attempt-0');
+  await assert.rejects(f.run(0, async () => { await rm(join(root, 'ledger.jsonl')); return success(); }), { code: 'ENOENT' });
+  for (const file of ['otlp-native.jsonl', 'otlp-controller.jsonl']) {
+    const rows = (await readFile(join(root, file), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+    assert.equal(rows.at(-1).type, 'closed');
+  }
+  const descriptor = JSON.parse(await readFile(join(root, 'observability.json'), 'utf8'));
+  await assert.rejects(fetch(descriptor.baseUrl + '/v1/logs'));
 });

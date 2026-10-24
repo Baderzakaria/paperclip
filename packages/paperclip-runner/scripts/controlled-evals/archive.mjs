@@ -12,6 +12,7 @@ const MAX_ARCHIVE_BYTES = 96 * MiB;
 const FILE_LIMITS = new Map([
   ['admission.json', MiB], ['request.json', 8 * MiB], ['gateway.json', 8192],
   ['ledger.jsonl', 16 * MiB], ['result.json', MiB], ['provider-artifact.json', 16 * MiB],
+  ['observability.json', 131_072], ['otlp-native.jsonl', 2 * MiB], ['otlp-controller.jsonl', 2 * MiB], ['otlp-root.json', 16_384],
   ['stdout.log', MiB], ['stderr.log', MiB],
 ]);
 const RECEIPT = /^receipts\/[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\.json$/;

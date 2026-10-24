@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { canonical, costRuntime, readJson, requestBindingSha256, sha256, units, usd, validateManifest } from './manifest.mjs';
+import { inspectControlledObservability } from './observability.mjs';
 import { attemptDirectory } from './run.mjs';
 
 export async function summarizeControlledCampaign(value, { filesByAttempt } = {}) {
@@ -21,7 +22,7 @@ export async function summarizeControlledCampaign(value, { filesByAttempt } = {}
       if (bytes.length > maximum) throw new Error('Controller document exceeds its byte limit');
       return JSON.parse(bytes.toString('utf8'));
     };
-    let snapshot, report, verified = false;
+    let snapshot, report, observability, verified = false;
     try {
       const ledgerBytes = await readEvidence('ledger.jsonl');
       const ledger = costRuntime.parseEvalCostLedger(ledgerBytes.toString('utf8'));
@@ -57,6 +58,11 @@ export async function summarizeControlledCampaign(value, { filesByAttempt } = {}
       const artifact = JSON.parse(artifactBytes.toString('utf8'));
       const descriptorBytes = await readEvidence('gateway.json');
       const descriptor = JSON.parse(descriptorBytes.toString('utf8'));
+      if (manifest.observability) {
+        observability = await inspectControlledObservability({ manifest, attempt: allocation, request, artifact,
+          report: { ...report, traceFinishedAt: report.observability?.traceFinishedAt, traceFailure: report.observability?.traceFailure }, deadlineAt: ledgerDeadline, readEvidence });
+        if (canonical(observability) !== canonical(report.observability) || observability.status !== 'accepted') throw new Error('Incomplete controller observability evidence');
+      } else if (artifact.nativeObservability || report.observability) throw new Error('Unallocated observability evidence');
       if (report.schema !== 'paperclip.runner-eval.control-result/v1' || report.manifestSha256 !== manifestSha256
           || report.campaignId !== manifest.campaignId || report.executionId !== allocation.executionId || report.attemptId !== allocation.attemptId
           || report.requestSha256 !== allocation.requestSha256 || report.ledgerSha256 !== sha256(ledgerBytes)
@@ -79,6 +85,7 @@ export async function summarizeControlledCampaign(value, { filesByAttempt } = {}
     const commitment = verified ? observedCommitment : observedCommitment > units(allocation.maxUsd) ? observedCommitment : units(allocation.maxUsd);
     known += cost; committed += commitment;
     attempts.push({ executionId: allocation.executionId, attemptId: allocation.attemptId, status: verified ? 'retained' : 'incomplete',
+      ...(manifest.observability ? { observability: observability ?? { status: 'incomplete', verification: 'unverified' } } : {}),
       allocationUsd: allocation.maxUsd, knownUsd: usd(cost), heldUsd: usd(commitment - cost), committedUsd: usd(commitment),
       unknownRequests: snapshot?.unknownRequests ?? null, boundedUnresolvedRequests: snapshot?.boundedUnresolvedRequests ?? null });
   }

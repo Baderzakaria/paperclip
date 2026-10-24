@@ -233,6 +233,10 @@ The manifest schema is `paperclip.runner-eval.controller/v1`. It contains:
   `requestSha256`, `provider`, optional `acpxAgent`, exact `model`, `maxUsd`,
   `maxRequests`, `maxConcurrent`, and `timeoutMs`. Native Codex and ACPX
   Claude are supported. Each execution has one explicit attempt and no retry.
+- Optional `observability`: an explicit `projectId`, four boolean `capture`
+  switches (`userPrompts`, `assistantResponses`, `toolDetails`, `toolContent`),
+  `nativeLimits`, and a reviewed full-lifecycle `provisionalBound`. When absent,
+  the controller starts no exporter or OTLP relay.
 
 Use `requestBindingSha256` from `controlled-evals/manifest.mjs` to bind the
 complete compiled request. It excludes only the temporary working directory
@@ -323,8 +327,56 @@ This local controller is not yet wired into the hosted matrix. Its durable
 attempt-directory guard applies to one shared filesystem, not independent
 GitHub workers. Hosted integration must bind unique cells to the prepared
 allocation, reject workflow/job reruns, and preserve the controller evidence
-before enabling paid work. Native OTLP routing, report integration, vendor
+before enabling paid work. Hosted tracing, destination readback, vendor
 metering bounds, and actual paid qualification remain separate gates.
+## Controller tracing allocations and retained proof
+
+The opt-in controller uses the existing native launch generator and Product E2E
+OTLP relay. `nativeLimits` must explicitly provide `maxRequests`,
+`maxRequestBytes`, `maxTotalBytes`, `maxConcurrent`, `maxExpandedBytes`, and
+`maxRecords`, each within that relay's supported ceilings. These limits apply
+to each selected attempt, including failed attempts. Each attempt additionally
+reserves one controller root request, at most 16 KiB of source JSON, 64 KiB
+expanded source size, and one record. The root relay has its own credential;
+the provider cannot consume its allocation or change its parent.
+
+Use `observabilityBoundConfiguration(manifest)` from `manifest.mjs` as the
+configuration for the observability `provisionalBound`. It binds the complete
+attempt selection, compiled-request digests, revisions, project, capture,
+native and root capacities, deadline, and operating allowance. Its evidence
+SHA-256 must match the observability operating component's evidence. Changing
+these inputs invalidates the qualification. The reviewed evidence must cover
+the sum of all attempts' native and root capacities and full retention costs;
+source bytes and receiver acceptance do not themselves establish billed bytes,
+price, or a vendor spending cap. This declaration does not activate an allowance.
+
+The controller requires `BRAINTRUST_API_KEY` even when model traffic uses a
+direct provider key. Both upstream credentials stay on the controller. The
+provider receives only its attempt's model and native OTLP tokens. Native
+headers and any payload parent must match the exact assigned attempt parent,
+including when another parent belongs to the same project. Cancellation closes
+both relays, aborts pending forwarding, and retains uncertain outcomes without
+retrying them.
+
+Private archives retain `observability.json`, body-free `otlp-native.jsonl` and
+`otlp-controller.jsonl` receipts, and the metadata-only `otlp-root.json`.
+Offline replay validates allocation, parent, descriptor, payload digests,
+admission/outcome pairs, quotas, closure totals, and the root's identity and
+content after the worker is deleted. Missing, partial, quota-exhausted, poisoned,
+or unfinished export evidence keeps the attempt incomplete with its full model
+allocation held and known model charges preserved. Operating holds remain
+reserved once per campaign. OTLP usage is never added to the model ledger.
+
+`observability.status: "accepted"` requires accepted native log and trace
+records plus the controller root. It describes the retained requests only;
+`verification: "unverified"` remains until separate Braintrust readback.
+Neither field proves complete capture, semantic grading success, or invoice
+settlement. The root links revisions, the compiled request, execution, attempt,
+provider, model, and cleanup status. Feedback persistence is explicitly
+unavailable in the Runner mock control plane; it does not report zero complaints
+or suggestions. Actual grading and provider failures remain in the immutable
+Runner artifact.
+
 ## Hosted campaign
 
 Use the `Runner Direct Live Protocol Evals` workflow. Dispatch the workflow

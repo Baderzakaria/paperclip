@@ -34,7 +34,7 @@ export async function readJson(file, maximum = 1_048_576) {
 }
 export function validateManifest(value, now = Date.now(), { admission = true } = {}) {
   fields(value, ['schema', 'campaignId', 'maxUsd', 'deadlineAt', 'pricingVerifiedAt', 'pricingExpiresAt', 'overhead',
-    'sourceRevision', 'definitionsRevision', 'runnerCli', 'runnerPackage', 'runnerd', 'outputDirectory', 'route', 'projectId', 'models', 'attempts']);
+    'sourceRevision', 'definitionsRevision', 'runnerCli', 'runnerPackage', 'runnerd', 'outputDirectory', 'route', 'projectId', 'models', 'attempts', 'observability']);
   const deadline = Date.parse(value.deadlineAt);
   const verified = Date.parse(value.pricingVerifiedAt), expires = Date.parse(value.pricingExpiresAt);
   if (value.schema !== 'paperclip.runner-eval.controller/v1' || !id(value.campaignId)
@@ -81,6 +81,7 @@ export function validateManifest(value, now = Date.now(), { admission = true } =
     attempts.add(attempt.attemptId); executions.add(attempt.executionId); allocated += units(attempt.maxUsd);
   }
   if (allocated > units(value.maxUsd)) throw new Error('Controlled allocations exceed the campaign budget');
+  validateObservability(value);
   return { manifest: structuredClone(value), manifestSha256: sha256(canonical(value)), allocatedUsd: usd(allocated), overheadUsd: usd(overhead) };
 }
 export function bindRequest(manifest, request) {
@@ -90,4 +91,29 @@ export function bindRequest(manifest, request) {
       || request.model !== attempt.model || request.runnerd.sha256.replace(/^sha256:/, '') !== manifest.runnerd.sha256
       || request.runnerd.path !== manifest.runnerd.path) throw new Error('Controlled request does not match its allocated identity');
   return attempt;
+}
+
+export const ROOT_OTLP_LIMITS = Object.freeze({ maxRequests: 1, maxRequestBytes: 16_384, maxTotalBytes: 16_384,
+  maxConcurrent: 1, maxExpandedBytes: 65_536, maxRecords: 1 });
+export function observabilityBoundConfiguration(manifest) {
+  const policy = manifest.observability;
+  return { schema: 'paperclip.runner-eval.observability-bound/v1', campaignId: manifest.campaignId, deadlineAt: manifest.deadlineAt,
+    sourceRevision: manifest.sourceRevision, definitionsRevision: manifest.definitionsRevision,
+    projectId: policy.projectId, capture: policy.capture, nativeLimits: policy.nativeLimits, rootLimits: ROOT_OTLP_LIMITS,
+    attempts: manifest.attempts.map(({ executionId, attemptId, requestSha256 }) => ({ executionId, attemptId, requestSha256 })),
+    overhead: manifest.overhead };
+}
+function validateObservability(manifest) {
+  const policy = manifest.observability;
+  if (policy === undefined) return;
+  fields(policy, ['projectId', 'capture', 'nativeLimits', 'provisionalBound']);
+  fields(policy.capture, ['userPrompts', 'assistantResponses', 'toolDetails', 'toolContent']);
+  if (!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(policy.projectId ?? '')
+      || manifest.route === 'braintrust' && policy.projectId !== manifest.projectId
+      || Object.keys(policy.capture).length !== 4 || Object.values(policy.capture).some(value => typeof value !== 'boolean')
+      || canonical(Object.keys(policy.nativeLimits ?? {}).sort()) !== canonical(Object.keys(costRuntime.EVAL_OTLP_LIMITS).sort())
+      || Object.entries(costRuntime.EVAL_OTLP_LIMITS).some(([key, max]) => !Number.isSafeInteger(policy.nativeLimits[key]) || policy.nativeLimits[key] < 1 || policy.nativeLimits[key] > max)) throw new Error('Invalid controller observability allocation');
+  const operating = manifest.overhead.components.find(item => item.component === 'observability');
+  if (!operating || policy.provisionalBound?.evidenceSha256 !== operating.provisionalBound?.evidenceSha256) throw new Error('Observability capacity requires its operating bound evidence');
+  costRuntime.reservationBound('operating_allowance', policy.provisionalBound, observabilityBoundConfiguration(manifest));
 }
