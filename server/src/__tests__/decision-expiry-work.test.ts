@@ -244,4 +244,24 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
     await start(); await quiet(); expect(wake).toHaveBeenCalledTimes(2);
   });
 
+
+  it("pages past a full failed batch using database timestamp precision", async () => {
+    const seed = await create(); await db.delete(decisions).where(eq(decisions.id, seed.id));
+    const ids = Array.from({ length: 101 }, (_, i) => `20000000-0000-4000-8000-${String(i).padStart(12, "0")}`);
+    await db.insert(decisions).values(ids.map(id => ({ ...seed, id })));
+    await db.execute(sql`update decisions set expires_at = date_trunc('milliseconds', now() - interval '1 minute') + interval '456 microseconds'`);
+    await db.execute(sql`create function decision_expiry_fail() returns trigger language plpgsql as $$ begin
+      if NEW.id <> '20000000-0000-4000-8000-000000000100' and NEW.status = 'expired' then raise exception 'expiry unavailable'; end if;
+      return NEW; end $$`);
+    await db.execute(sql`create trigger decision_expiry_fail before update on decisions for each row execute function decision_expiry_fail()`);
+    const recovery = service();
+    await expect(recovery.sweepTtlExpiry()).rejects.toThrow("Decision expiry failed");
+    expect(await recovery.sweepTtlExpiry()).toEqual({ expired: 1 });
+    expect((await service().get(ids.at(-1)!))?.status).toBe("expired");
+    await db.execute(sql`drop trigger decision_expiry_fail on decisions`);
+    expect(await recovery.sweepTtlExpiry()).toEqual({ expired: 100 });
+    expect(await recovery.sweepTtlExpiry()).toEqual({ expired: 0 });
+    expect(wake).toHaveBeenCalledTimes(101);
+  });
+
 });
