@@ -54,9 +54,11 @@ import {
   type NativeExecutionInput,
   type PrpEvent,
 } from "@paperclipai/paperclip-runner";
+import { existsSync } from "node:fs";
 import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { nativeSha256 } from "./canonical.js";
+import { resolveRemoteProviderPackAuthority } from "./remote-provider-pack-authority.js";
 import { RemoteRunnerRecoveryError, readRemoteRunnerRecoveryError } from "./remote-runner-recovery-diagnostics.js";
 import { agentDirectoryWorkingCopyService } from "../agent-directory-working-copies.js";
 import { probeAgentDirectory } from "../agent-directory-probe.js";
@@ -1432,7 +1434,7 @@ describe("remote provider pack manifest", () => {
       productionLock: "pnpm-lock.yaml", opencodeCommand: "node_modules/.bin/opencode",
       opencodeExecutable: "node_modules/opencode-ai/bin/opencode.exe",
       opencodeProxy: "dist/cli/opencode-app-server-proxy.cjs", acpxSidecar: "dist/cli/acpx-runtime-sidecar.cjs",
-    }).map(([key, path]) => [key, { path, sha256: digest }]));
+    }).map(([key, path]) => [key, { path, sha256: digest }])) as Record<"nodeCommand" | "opencodeCommand", { path: string; sha256: string }>;
     const payload = {
       target: { platform: "linux", architecture }, runnerSourceRevision: "a".repeat(40),
       pins: { nodeMinimum: "24.11.0", codex: QUALIFIED_ACPX_PROFILES.codex.agentRuntimeVersion,
@@ -1484,6 +1486,43 @@ describe("remote provider pack manifest", () => {
         sourcePath: state.bundledRunnerBinary, targetPath: "/workspace/.paperclip-runtime/paperclip-runner/bin/paperclip-runnerd",
       })] })]);
       expect(execute.mock.calls.some(([call]) => call.args?.[1] === "uname -s; uname -m")).toBe(false);
+      expect(existsSync(join(transport.stateDirectory!, "provider-pack-authority.json"))).toBe(false);
+      if (provider === "claude-x64") {
+        const identity = transport.prpIdentity!;
+        const artifact = { version: "0.0.0", digest: "sha256:" + createHash("sha256").update(daemon).digest("hex") };
+        resolveRemoteProviderPackAuthority({ stateDirectory: transport.stateDirectory!,
+          binding: { companyId: remoteExecution.binding.companyId, agentId: remoteExecution.binding.agentId,
+            workspaceId: remoteExecution.binding.executionWorkspaceId, sessionId: remoteExecution.session.normalizedSessionId!,
+            runnerInstanceId: identity.runnerInstanceId, environmentLeaseId: identity.environmentLeaseId,
+            remoteCwd: "/workspace", providerDigest: nativeSha256(remoteExecution.provider) },
+          reattach: false, current: () => manifest, runnerArtifact: () => artifact }).verified();
+        await mkdir(join(transport.stateDirectory!, "control-plane"), { recursive: true });
+        await writeFile(join(transport.stateDirectory!, "control-plane", "control-plane-state.json"), JSON.stringify(durableControlPlaneState(identity)));
+        const next = structuredClone(manifest);
+        next.payload.runnerSourceRevision = "b".repeat(40);
+        next.digest = "sha256:" + createHash("sha256").update(canonical(next.payload)).digest("hex");
+        await writeFile(state.bundledPackManifestPath!, JSON.stringify(next));
+        await writeFile(state.bundledRunnerBinary!, Buffer.concat([daemon, Buffer.from("new release")]));
+        const recoveryExecute = vi.fn(async (request: { args: string[] }) => {
+          const script = request.args[1];
+          const stdout = script.includes("base64") ? Buffer.from(JSON.stringify({ ...identity, lifecycle: "running" })).toString("base64")
+            : script.includes("cat --") ? `nonce\n123\n2026-09-19T10:00:00.000Z\n${identity.runnerInstanceId}\nlinux:abcd-1234:100\n` : "";
+          return { stdout, stderr: "", exitCode: 0, timedOut: false };
+        });
+        await createRunnerdBackend({ db: leaseDb(remoteExecution), execution: remoteExecution,
+          runnerInstanceId: identity.runnerInstanceId,
+          runnerExecutionTarget: { kind: "remote", transport: "sandbox", remoteCwd: "/workspace",
+            environmentId: "environment", leaseId: "lease", providerKey: "daytona", runner: { execute: recoveryExecute },
+            sandboxLeaseAcquisition: { outcome: "resumed", providerLeaseId: "sandbox" } } as never,
+          restartRecovery: { kind: "reattach_remote_runner", runId: remoteExecution.binding.runId,
+            leaseOwner: "controller", controllerGeneration: 2, providerAttempt: 1, restartKind: "graceful", recoveryRequestId: null,
+            remote: { providerLeaseId: "sandbox", remoteCwd: "/workspace" } },
+        });
+        state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
+        expect(state.createTransport.mock.calls.at(-1)![0]).toMatchObject({
+          providerPackAuthorityDigest: manifest.digest, runnerArtifact: artifact, adoptExistingRunner: { pid: 123 },
+        });
+      }
     } finally {
       state.bundledPackManifestPath = null; state.bundledRunnerBinary = null;
       await rm(root, { recursive: true, force: true });
