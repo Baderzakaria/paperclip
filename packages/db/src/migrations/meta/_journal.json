@@ -2682,6 +2682,13 @@
       "when": 1792873408795,
       "tag": "0384_many_reaper",
       "breakpoints": true
+    },
+    {
+      "idx": 385,
+      "version": "7",
+      "when": 1792875344101,
+      "tag": "0385_normal_blindfold",
+      "breakpoints": true
     }
   ]
 }
