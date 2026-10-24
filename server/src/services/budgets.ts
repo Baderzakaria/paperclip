@@ -1,4 +1,5 @@
-import { notifyCompanyRetentionWork, notifyRetentionWork } from "./retention-work-notifications.js";
+import { notifyApprovalWork } from "./approval-work-notifications.js";
+import { notifyCompanyRetentionWork } from "./retention-work-notifications.js";
 import { addCents, compareCents, normalizeCents } from "@paperclipai/shared";
 import { and, desc, eq, inArray, sql, or, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -259,7 +260,7 @@ async function markApprovalStatus(
   decidedByUserId: string,
 ) {
   if (!approvalId) return;
-  await notifyRetentionWork(db, "approval");
+  await notifyApprovalWork(db);
   await db
     .update(approvals)
     .set({
@@ -457,7 +458,7 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
       windowEnd: end,
     });
 
-    if (thresholdType === "hard") await notifyRetentionWork(db, "approval");
+    if (thresholdType === "hard") await notifyApprovalWork(db);
     const approval = thresholdType === "hard"
       ? await db
         .insert(approvals)

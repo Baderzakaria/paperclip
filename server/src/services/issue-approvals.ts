@@ -1,4 +1,4 @@
-import { writeApprovalChange } from "./retention-work-notifications.js";
+import { writeApprovalChange } from "./approval-work-notifications.js";
 import { and, desc, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { approvals, issueApprovals, issues } from "@paperclipai/db";

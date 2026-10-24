@@ -1,4 +1,4 @@
-import { writeApprovalChange } from "./retention-work-notifications.js";
+import { writeApprovalChange } from "./approval-work-notifications.js";
 import { toolReviewProjectionService } from "./tool-review-projection.js";
 import { toolReviewInterruptionService } from "./tool-review-interruption.js";
 import { claimToolTestApproval, persistToolTestOutcome, startToolTestInvocation, type ToolTestApprovalClaim } from "./tool-test-approval.js";

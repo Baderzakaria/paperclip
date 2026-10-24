@@ -888,3 +888,29 @@ claimed ready based only on local tests, and no merge is authorized.
 After join retention, migrate the remaining attention source owners separately:
 decisions, interactions, recovery actions, reviews, and other source kinds. Keep
 the full original server inventory and later aggregate-tick retirement in scope.
+
+## Slice 16: approval PR-queue membership
+
+The source audit found automatic seeded-queue materialization hidden inside the
+attention retention scan. A PostgreSQL regression failed after approval exclusion:
+queue API readers saw no PR queue despite a pending linked approval and PR work
+product. This is a separate obligation from retention, not grounds to leave a
+new permanent scan or to put queue policy into retention.
+
+The new approval queue worker uses existing durable records and the queue service's
+normalized seed writer. It gets committed signals from all approval/link producers,
+issue/company visibility changes, work-product writes, and queue-rule changes.
+Missing membership is recovery debt; existing membership and disabled rules are
+quiet. Twenty real-database lifecycle cases and 115 existing consumer/startup
+tests pass, as do workspace typechecks and the production build. See
+[approval queue seeding](../idle-approval-queue-seeding.md). Fresh CI/review
+remain required before readiness. This slice is a correctness dependency of
+approval retention #17497; do not accept that migration as functionally complete
+without preserving queue population. Other source seeding remains to be migrated.
+
+#17505 now has all latest-head checks accepted at `28a197cdfdab7977eecf591df39612009d725e17`
+(Paperclip Review skipped), with Greptile 5/5. #17508 at
+`9c5c4fbf65628589b466ce5650e8969388213716` has Greptile 5/5 and no unresolved
+threads. Its unchanged login-cleanup consume test failed in CI; all 16 local
+login-cleanup tests pass. One justified retry of failed run 40139410144 was
+requested. Do not mark that PR green until the retry completes successfully.

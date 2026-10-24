@@ -1,4 +1,4 @@
-import { writeApprovalChange } from "./retention-work-notifications.js";
+import { writeApprovalChange } from "./approval-work-notifications.js";
 import { approvalResolutionRecords, resolvableApprovalStatuses as resolvableStatuses } from "../lib/approval-records.js";
 import { notifyHireApproved } from "./hire-hook.js";
 
