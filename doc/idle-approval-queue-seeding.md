@@ -92,7 +92,7 @@ other source owners.
 - Before the fix, the PostgreSQL regression found no PR queue after the normal
   maintenance path excluded approvals. After the fix, the queue API finds it
   without a full attention read.
-- Twenty real-database worker tests cover empty-to-active-to-quiet behavior,
+- Twenty-one real-database worker tests cover empty-to-active-to-quiet behavior,
   startup and completed history, actual approval/link/work-product producers,
   batch import, first-link selection, company isolation, hidden targets, queue
   rule enablement, company activation, resubmission, outer commit and rollback,
@@ -112,3 +112,9 @@ omitted required creator attribution, and a failure test expected no idle hold
 while committed projection work was still unresolved. The corrected test waits
 for the active attempt to finish and checks passive SQL directly while preserving
 that required hold. Neither required weakening the worker's recovery contract.
+
+Review found a queue/item lock inversion between seeded insertion and manual
+membership changes. A two-connection PostgreSQL regression reproduced `deadlock
+detected`. Manual add/remove now lock the queue before touching its items, matching
+the seed writer. The regression and the existing queue route suite pass (27 cases).
+Server typecheck and build pass after the repair. Fresh-head CI/review is required.

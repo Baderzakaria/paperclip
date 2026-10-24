@@ -914,3 +914,20 @@ without preserving queue population. Other source seeding remains to be migrated
 threads. Its unchanged login-cleanup consume test failed in CI; all 16 local
 login-cleanup tests pass. One justified retry of failed run 40139410144 was
 requested. Do not mark that PR green until the retry completes successfully.
+
+
+Slice 16 is [#17510](https://github.com/paperclipai/paperclip/pull/17510).
+Greptile identified a queue/item lock-order inversion. A real PostgreSQL test
+reproduced a deadlock; the common queue-before-item order repairs manual add/remove
+and seeding. The worker and queue route suites pass 27 cases after the fix, with
+server typecheck/build passing. Other selected consumers passed on the initial
+head (136 unique local cases including the new regression). Fresh-head checks are
+required; the initial head also hit an unchanged environment cleanup paging test.
+Embedded PostgreSQL is unsupported on this host, so its first local run skipped;
+this is not counted as a pass.
+
+#17508 now has all checks accepted at `9c5c4fbf65628589b466ce5650e8969388213716`
+after its single justified retry. The duplicate cancelled workflows for #17490
+and #17497 were each rerun once to clear stale cancelled contexts. The #17490
+retry has a new E2E shard 3 failure under investigation; do not call it green or
+rerun again without a repair. #17497's retry was still running at this observation.

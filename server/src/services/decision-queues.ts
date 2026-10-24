@@ -376,6 +376,12 @@ export function decisionQueueService(db: Db) {
       .then((rows) => rows[0] ?? null);
   }
 
+  async function lockQueue(database: Db, companyId: string, id: string) {
+    const [queue] = await database.select({ id: decisionQueues.id }).from(decisionQueues)
+      .where(and(eq(decisionQueues.companyId, companyId), eq(decisionQueues.id, id))).for("update");
+    if (!queue) throw notFound("Decision queue not found");
+  }
+
   async function visibleItems(companyId: string, queueId: string, authActor: AuthorizationActor) {
     const rows = await db.select().from(decisionQueueItems)
       .where(and(eq(decisionQueueItems.companyId, companyId), eq(decisionQueueItems.queueId, queueId)))
@@ -600,6 +606,7 @@ export function decisionQueueService(db: Db) {
       await requireSourceRead(db, input.authActor, input.companyId, input.sourceKind, input.sourceId);
       return db.transaction(async (tx) => {
         const txDb = tx as unknown as Db;
+        await lockQueue(txDb, input.companyId, queue.id);
         const inserted = await txDb.insert(decisionQueueItems).values({
           companyId: input.companyId,
           queueId: queue.id,
@@ -665,6 +672,7 @@ export function decisionQueueService(db: Db) {
       }
       return db.transaction(async (tx) => {
         const txDb = tx as unknown as Db;
+        await lockQueue(txDb, input.companyId, queue.id);
         if (input.key === "prs" && input.sourceKind === "approval") await notifyApprovalQueueWork(txDb);
         const removed = await txDb.delete(decisionQueueItems).where(and(
           eq(decisionQueueItems.companyId, input.companyId),
