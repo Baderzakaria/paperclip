@@ -829,3 +829,16 @@ existing feed item. Preserve that policy. Retention controls and company status
 changes must notify this owner. Decision retention remains separately pending;
 its visibility dependencies differ, and normal decisions already have a
 maximum 30-day TTL before the 90-day archive threshold.
+
+Latest slice-14 head is `a29ce265b0c00678ada3f29f533d79f80fe25654`.
+The precision finding was replied to (4368650634) and its thread resolved.
+Fresh Greptile review was requested (6390004743). CI run **40136197148** is
+confirmed in progress on this head; commit review run 40136193928 succeeded.
+The previous-head CI run 40135489716 succeeded. Do not treat that as evidence
+for the new head. No local test/build process remains active.
+
+Next actions: finish fresh #17497 CI/review; reproduce and repair precision
+paging in the earlier TTL and effect-recovery owners, propagating parent changes
+through later PRs; qualify the terminal-workspace cursor; then implement the
+join-request retention audit on this branch. Every original inventory item and
+remaining retention source remains required. No merge is authorized.
