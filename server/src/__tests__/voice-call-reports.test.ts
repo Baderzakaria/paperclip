@@ -141,8 +141,13 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
   });
   it("retains committed work during drain and ignores rolled-back nested writes", async () => {
     await start(); await flush(); enabled = false;
-    const call = await session(); await quiet(60_000); expect(await report(call.id)).toBeUndefined();
-    enabled = true; await flush(); expect(fetchReport).toHaveBeenCalledOnce();
+    const call = await session(); await flush();
+    const drained = idleWorkSnapshot();
+    await quiet(60_000); expect(idleWorkSnapshot()).toEqual(drained); expect(await report(call.id)).toBeUndefined();
+    const resumeAt = coordinator!.nextWakeAt(); expect(resumeAt).not.toBeNull();
+    enabled = true; await vi.advanceTimersByTimeAsync(Math.max(0, resumeAt! - Date.now()));
+    await vi.waitFor(async () => { await flush(); expect(fetchReport).toHaveBeenCalledOnce(); });
+    expect(await report(call.id)).toMatchObject({ status: "available" });
     await expect(db.transaction(async tx => { await session({}, tx as unknown as typeof db); throw new Error("rollback"); })).rejects.toThrow("rollback");
     await flush(); expect(fetchReport).toHaveBeenCalledOnce(); await quiet();
   });

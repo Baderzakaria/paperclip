@@ -151,8 +151,13 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
   });
   it("keeps the first write during drain and runs it on resume", async () => {
     await start(); await flush(); enabled = false;
-    const call = await admission(); await quiet(60_000); expect(await row(call.id)).toBeDefined();
-    enabled = true; await flush(); expect(await row(call.id)).toBeUndefined(); await quiet();
+    const call = await admission(); await flush();
+    const drained = idleWorkSnapshot();
+    await quiet(60_000); expect(idleWorkSnapshot()).toEqual(drained); expect(await row(call.id)).toBeDefined();
+    const resumeAt = coordinator!.nextWakeAt(); expect(resumeAt).not.toBeNull();
+    enabled = true; await vi.advanceTimersByTimeAsync(Math.max(0, resumeAt! - Date.now()));
+    await vi.waitFor(async () => { await flush(); expect(await row(call.id)).toBeUndefined(); });
+    expect(coordinator!.nextWakeAt()).toBeNull(); await quiet();
   });
   it("pages through more than one batch of history across companies", async () => {
     for (let i = 0; i < 104; i++) await admission();
