@@ -1,5 +1,5 @@
 import { reconcileDatabaseWork } from "@paperclipai/db";
-import { DELIVERY_QUEUES } from "./delivery-work-notifications.js";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { discordCommandSchedule } from "./chat-channels/discord/command-schedule.js";
 import { registerDiscordCommandWork } from "./chat-channels/discord/command-work.js";
 import { notifyDiscordCommandRegistration } from "./chat-channels/discord/command-work-notifications.js";
@@ -839,6 +839,50 @@ suite("Discord command ownership store (real PostgreSQL, no network)", () => {
     expect(check).toHaveBeenCalledTimes(25);
     expect(check.mock.calls.map(call => call[0])).toContain("quiet");
     expect(errors).toEqual([]);
+  });
+
+  it("drains a large due backlog without a thirty-second delay between bounded batches", async () => {
+    await reconcileDatabaseWork(db, DELIVERY_QUEUES.chatCommandRegistration);
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    const entries = Array.from({ length: 300 }, (_, index) => ({
+      id: `command-${index}`, companyId: `company-${index % 10}`, connectionId: `connection-${index}`, dueAt: 0,
+    }));
+    const check = vi.fn(async (id: string) => ({ ...entries.find(entry => entry.id === id)!, dueAt: Date.now() + 300_000 }));
+    const errors: unknown[] = [];
+    coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+    await registerDiscordCommandWork(coordinator, { load: async () => entries, check }, () => true).ready;
+    expect(check).toHaveBeenCalledTimes(25);
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(check).toHaveBeenCalledTimes(300);
+    expect(new Set(check.mock.calls.map(([id]) => id)).size).toBe(300);
+    await sqlQuiet(120_000);
+    expect(check).toHaveBeenCalledTimes(300);
+    expect(errors).toEqual([]);
+  });
+
+  it("recovers queued scopes after an unknown hint instead of dropping the wake", async () => {
+    await reconcileDatabaseWork(db, DELIVERY_QUEUES.chatCommandRegistration);
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    const entry = { id: "endpoint", companyId: "company", connectionId: "connection", dueAt: 0 };
+    let owed = false;
+    const check = vi.fn(async () => { owed = false; return null; });
+    const errors: unknown[] = [];
+    coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+    await registerDiscordCommandWork(coordinator, { load: async () => owed ? [entry] : [], check }, () => true).ready;
+    await db.transaction(async tx => {
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.chatCommandRegistration, "unknown:legacy");
+      await notifyDiscordCommandRegistration(tx, { kind: "endpoint", id: entry.id });
+      owed = true;
+    });
+    await vi.waitFor(async () => {
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(errors).toHaveLength(1);
+    }, { timeout: 5_000 });
+    await vi.advanceTimersByTimeAsync(31_000);
+    await vi.waitFor(() => expect(check).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(coordinator!.nextWakeAt()).toBeNull());
+    await sqlQuiet(120_000);
+    expect(errors).toHaveLength(1);
   });
 
 });

@@ -54,8 +54,9 @@ export function registerDiscordCommandWork(
           return;
         }
         const hint = requested[index];
-        const scope = decodeScope(hint);
+        let scope: CommandRegistrationScope | undefined;
         try {
+          scope = decodeScope(hint);
           const rows = await service.load(scope, signal);
           for (const entry of deadlines.values()) if (matches(entry, scope)) deadlines.delete(entry.id);
           for (const entry of rows) deadlines.set(entry.id, entry);
@@ -63,7 +64,7 @@ export function registerDiscordCommandWork(
             const entry = deadlines.get(id);
             if (!entry || entry.dueAt > Date.now()) failures.delete(id);
           }
-        } catch (error) { dirty.add(hint); unavailable.push(scope); errors.push(error); }
+        } catch (error) { dirty.add(scope ? hint : "*"); unavailable.push(scope); errors.push(error); }
       }
       const due = [...deadlines.values()]
         .filter(entry => !unavailable.some(scope => matches(entry, scope)) &&
@@ -84,6 +85,7 @@ export function registerDiscordCommandWork(
           errors.push(error);
         }
       }
+      if (due.length > batch.entries.length) earliest = Date.now() + 1_000;
       if (errors.length) throw new AggregateError(errors, "Discord command registration could not settle");
     },
     hasPending: async () => dirty.size > 0,

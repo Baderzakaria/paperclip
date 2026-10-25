@@ -1,3 +1,5 @@
+import { configureAgentLifecycle } from "../services/agent-lifecycle.js";
+import { deleteCompany } from "../services/company-deletion.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
 import { readFreshWorkspaceReadiness } from "../services/fresh-workspace-continuation.js";
 import { requestTaskRetry } from "../services/task-retry.js";
@@ -6778,6 +6780,60 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       } finally {
         await coordinator.stop(); vi.useRealTimers();
         await retireRegistrationFixture(f.service, f.endpoint.id);
+      }
+    });
+
+    it.each(["credential rotation", "company deletion"] as const)("updates scheduled registration after real %s", async (mutation) => {
+      const f = await registrationFixture();
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+      const onError = vi.fn();
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError });
+      let deleted = false;
+      let lifecycle: ReturnType<typeof configureAgentLifecycle> | undefined;
+      try {
+        await f.service.registerCommandWork(coordinator, () => true).ready;
+        await f.configure();
+        await vi.advanceTimersByTimeAsync(31_000);
+        await vi.waitFor(() => expect(coordinator.nextWakeAt()).toBeGreaterThan(Date.now()));
+        const before = coordinator.nextWakeAt()!;
+        const owners = await db.select().from(chatDiscordCommandOwners)
+          .where(eq(chatDiscordCommandOwners.endpointId, f.endpoint.id));
+        if (mutation === "credential rotation") {
+          await f.service.configure(f.endpoint.id, {
+            action: "reconnect", credentials: { ...f.credentials, botToken: "discord-rotated-secret" },
+          }, "owner-user");
+          const [saved] = await db.select().from(chatActions).where(and(
+            eq(chatActions.endpointId, f.endpoint.id), eq(chatActions.kind, "discord_command_registration"),
+          ));
+          const expected = Date.parse(String(saved.result!.retryAt));
+          expect(expected).toBeGreaterThan(before);
+          await vi.advanceTimersByTimeAsync(31_000);
+          await vi.waitFor(() => expect(coordinator.nextWakeAt()).toBe(expected));
+          expect(f.calls).toEqual(["GET", "POST", "GET"]);
+        } else {
+          lifecycle = configureAgentLifecycle(db, {
+            requiredPluginIds: async () => [], runHost: async () => "complete", runPlugin: async () => "complete",
+          });
+          await deleteCompany(db, f.fixture.companyId);
+          deleted = true;
+          await vi.advanceTimersByTimeAsync(31_000);
+          await vi.waitFor(() => expect(coordinator.nextWakeAt()).toBeNull());
+          expect(await db.select().from(chatDiscordCommandOwners)
+            .where(eq(chatDiscordCommandOwners.endpointId, f.endpoint.id))).toEqual(owners);
+          await f.service.shutdown();
+          const reads = vi.spyOn(db, "select"), writes = vi.spyOn(db, "transaction");
+          try {
+            await vi.advanceTimersByTimeAsync(120_000);
+            expect(reads).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled();
+          } finally { reads.mockRestore(); writes.mockRestore(); }
+          expect(f.calls).toEqual(["GET", "POST"]);
+        }
+        expect(onError).not.toHaveBeenCalled();
+      } finally {
+        await lifecycle?.stop();
+        await coordinator.stop(); vi.useRealTimers();
+        if (deleted) await f.service.shutdown();
+        else await retireRegistrationFixture(f.service, f.endpoint.id);
       }
     });
 

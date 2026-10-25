@@ -1119,3 +1119,16 @@ batching cases pass; server types pass. Propagate the parent and apply the same
 bounded continuation to Discord, with its own regression. The Discord review also
 requests preserving queued scopes after malformed hints and broader producer
 coverage. Its initial head has Greptile 5/5 but these findings remain open.
+
+
+Discord review repairs are in progress. Both new worker regressions failed before
+repair: the 300-command backlog did not drain promptly, and an unknown hint lost
+later scopes. Bounded backlog continuations and full reconstruction after malformed
+scope parsing repair them; all 62 combined command/health/batching cases pass.
+Real credential rotation also passes. The company-deletion producer test exposed
+an existing dependency-order failure: agents are deleted before chat endpoints
+whose assigned-agent foreign key is RESTRICT. Configuring the fixture lifecycle
+removed the initial missing-worker failure but reproduced this actual SQL failure.
+Keep the failing producer test; repair the deletion dependency in its own stack
+PR before publishing the Discord follow-up. Current local changes are not final
+acceptance. The original full inventory and remaining CI gates are still open.
