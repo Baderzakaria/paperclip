@@ -1265,3 +1265,10 @@ consumers, plus workspace typecheck/build. See the reply audit for retained
 fixture failures and local full-suite infrastructure limitations. Publication and
 latest-head review/check acceptance remain outstanding. Inbound admission cleanup,
 inbound history retention, and call reports remain separate next slices.
+
+Voice reply delivery is [#17578](https://github.com/paperclipai/paperclip/pull/17578),
+head 439d0a86eb75c129c30742a8cc24bf18e2a6ebf3, stacked on #17576. Local selected
+checks pass; remote acceptance is pending. Slice 23 starts the inbound admission
+cleanup audit in `2026-10-25-voice-inbound-cleanup-sleep-audit.md`. It explicitly
+separates retention and reports and requires proof of approval/cleanup handoff,
+termination confirmation, and protection against deleting unfinished cleanup.
