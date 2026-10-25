@@ -1,3 +1,4 @@
+import { githubReviewCheckService } from "./chat-github-checks.js";
 import { leasedChatProvider } from "./chat-channels/runtime/receiver-policy.js";
 import { chatReceiverSchedule } from "./chat-channels/runtime/receiver-schedule.js";
 import { registerChatReceiverWork } from "./chat-channels/runtime/receiver-work.js";
@@ -3507,6 +3508,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   const { getPublicationBatchStatus, publishComment, publishBoardMessage } = createChatPublicationRequests(db, { endpointRecord, stageTeamsBoardFileIntent, processPendingSlackBoardMessages, processPendingPublications, prepareTeamsBoardSend });
 return {
     registerInteractionContinuationWork,
+    registerGitHubReviewCheckWork: githubReviewCheckService(db, fetchImpl).registerCheckWork,
     registerGitHubTerminalResponseWork: githubResponseCommentService(db, fetchImpl).registerTerminalResponseWork,
     registerGitHubAcknowledgementWork: githubResponseCommentService(db, fetchImpl).registerAcknowledgementWork,
     registerTerminalConfirmationWork,

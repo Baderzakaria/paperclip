@@ -6612,6 +6612,232 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         runId: run.id,
       }, "read_pull_request", { section: "metadata" })).rejects.toThrow("older pull request head");
     });
+    async function reviewCheckWorkerFixture(status: "running" | "failed" = "failed") {
+      const f = await toolReplyFixture("github:paperclipai/paperclip:418");
+      const config = await f.management.configuration(f.endpoint.id, "owner-user");
+      const event = githubAutomaticReviewEvent({ action: "opened", repository: { id: 97531, full_name: "paperclipai/paperclip" }, sender: { id: 42, login: "octocat" },
+        pull_request: { number: 418, title: "Review", body: "", draft: false, base: { sha: "a".repeat(40), ref: "master" }, head: { sha: "b".repeat(40) }, user: { id: 42, login: "octocat" }, labels: [] } }, randomUUID())!;
+      const [review] = await db.insert(chatGitHubReviews).values({ companyId: f.companyId, endpointId: f.endpoint.id,
+        issueId: f.conversation.issueId!, runId: f.run.id, repositoryId: "97531", repository: event.repository, pullNumber: 418, headSha: event.headSha,
+        deliveryId: event.deliveryId, configurationRevision: config.revision, policySnapshot: config.configuration.defaults, event }).returning();
+      await db.update(heartbeatRuns).set({ status }).where(eq(heartbeatRuns.id, f.run.id));
+      const writes: Record<string, unknown>[] = [], requests: string[] = [];
+      let remoteHead = event.headSha, unavailable = false;
+      f.setSupplementalProviderFetch(async (input, init) => {
+        const url = String(input);
+        if (url.endsWith("/pulls/418")) { requests.push(url); return Response.json({ head: { sha: remoteHead } }); }
+        if (url.includes("/check-runs?")) { requests.push(url); return Response.json({ check_runs: [] }); }
+        if (url.endsWith("/check-runs") && init?.method === "POST") {
+          requests.push(url);
+          if (unavailable) return Response.json({ message: "injected check outage" }, { status: 503 });
+          writes.push(JSON.parse(String(init.body)));
+          return Response.json({ id: 418, html_url: "https://github.com/checks/418" });
+        }
+        return undefined;
+      });
+      const checks = githubReviewCheckService(db, f.providerFetch);
+      const [endpoint] = await readChatEndpointsById(f.endpoint.id);
+      const action = async () => (await db.select().from(chatActions).where(and(eq(chatActions.endpointId, endpoint.id), eq(chatActions.kind, "github_review_check"))))[0];
+      return { ...f, event, review, endpoint, checks, writes, requests, action,
+        enqueue: () => checks.enqueue(endpoint, event, true, "authorized"),
+        setRemoteHead: (value: string) => { remoteHead = value; }, setUnavailable: (value: boolean) => { unavailable = value; } };
+    }
+
+    it("keeps GitHub review check history quiet and wakes from the real enqueue producer", async () => {
+      const f = await reviewCheckWorkerFixture();
+      const errors: unknown[] = [];
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+      try {
+        await f.checks.registerCheckWork(coordinator, () => true).ready;
+        expect(coordinator.nextWakeAt()).toBeNull();
+        await f.enqueue();
+        await expect.poll(async () => (await f.action())?.status, { timeout: 5000 }).toBe("processed");
+        await expect.poll(() => coordinator.nextWakeAt(), { timeout: 5000 }).toBeNull();
+        expect(f.writes).toEqual([expect.objectContaining({ status: "completed" })]);
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+        const reads = vi.spyOn(db, "select"), transactions = vi.spyOn(db, "transaction");
+        const count = f.requests.length;
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(reads).not.toHaveBeenCalled(); expect(transactions).not.toHaveBeenCalled();
+        expect(f.requests).toHaveLength(count);
+        reads.mockRestore(); transactions.mockRestore();
+        expect(errors).toEqual([]);
+      } finally { await coordinator.stop(); vi.useRealTimers(); }
+    });
+
+    it("defers GitHub review check enqueue until outer commit and discards rollback", async () => {
+      const f = await reviewCheckWorkerFixture();
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
+      const enqueue = (tx: Parameters<Parameters<Db["transaction"]>[0]>[0]) =>
+        githubReviewCheckService(tx as unknown as Db, f.providerFetch).enqueue(f.endpoint, f.event, true, "authorized");
+      try {
+        await f.checks.registerCheckWork(coordinator, () => true).ready;
+        await expect(db.transaction(async tx => { await enqueue(tx); throw new Error("rollback check"); })).rejects.toThrow("rollback check");
+        expect(await f.action()).toBeUndefined(); expect(f.writes).toEqual([]);
+        let entered!: () => void, release!: () => void;
+        const ready = new Promise<void>(resolve => { entered = resolve; }), hold = new Promise<void>(resolve => { release = resolve; });
+        const pending = db.transaction(async tx => { await enqueue(tx); entered(); await hold; });
+        try { await ready; expect(f.writes).toEqual([]); } finally { release(); await pending; }
+        await expect.poll(async () => (await f.action())?.status, { timeout: 5000 }).toBe("processed");
+        expect(f.writes).toHaveLength(1);
+      } finally { await coordinator.stop(); }
+    });
+
+    it("recovers a missed GitHub head webhook only while a review check remains unresolved", async () => {
+      const f = await reviewCheckWorkerFixture("running");
+      await f.enqueue();
+      const errors: unknown[] = [];
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+      try {
+        await f.checks.registerCheckWork(coordinator, () => true).ready;
+        await expect.poll(() => f.writes.length, { timeout: 5000 }).toBe(1);
+        expect(f.writes[0].status).toBe("in_progress");
+        const saved = await f.action();
+        expect(Date.parse(String(saved.result?.retryAt))).toBeGreaterThan(Date.now());
+        f.setRemoteHead("c".repeat(40));
+        await vi.advanceTimersByTimeAsync(6000);
+        await expect.poll(async () => (await f.action()).status, { timeout: 5000 }).toBe("cancelled");
+        await expect.poll(() => coordinator.nextWakeAt(), { timeout: 5000 }).toBeNull();
+        expect((await db.select().from(chatGitHubReviews).where(eq(chatGitHubReviews.id, f.review.id)))[0].state).toBe("superseded");
+        const reads = vi.spyOn(db, "select"), count = f.requests.length;
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(reads).not.toHaveBeenCalled(); expect(f.requests).toHaveLength(count); reads.mockRestore();
+        expect(f.writes).toHaveLength(1); expect(errors).toEqual([]);
+      } finally { await coordinator.stop(); vi.useRealTimers(); }
+    });
+
+    it.each(["restart", "drain", "standby"] as const)("retains GitHub review check work across %s", async mode => {
+      const f = await reviewCheckWorkerFixture();
+      let canRun = true;
+      const errors: unknown[] = [];
+      let coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => canRun,
+        canReconcile: () => mode !== "standby" || canRun, onError: error => errors.push(error) });
+      let worker = f.checks.registerCheckWork(coordinator, () => canRun);
+      try {
+        await worker.ready;
+        if (mode === "restart") await coordinator.stop(); else canRun = false;
+        await f.enqueue(); expect(f.writes).toEqual([]);
+        if (mode === "restart") {
+          coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+          worker = f.checks.registerCheckWork(coordinator, () => true); await worker.ready;
+        } else { canRun = true; worker.wake(); }
+        await expect.poll(async () => (await f.action())?.status, { timeout: 5000 }).toBe("processed");
+        await expect.poll(() => coordinator.nextWakeAt(), { timeout: 5000 }).toBeNull();
+        expect(f.writes).toHaveLength(1); expect(errors).toEqual([]);
+      } finally { await coordinator.stop(); }
+    });
+
+    it("retains the saved GitHub review check retry through restart without an early provider call", async () => {
+      const f = await reviewCheckWorkerFixture();
+      f.setUnavailable(true); await f.enqueue(); await f.checks.processPending();
+      const failed = await f.action();
+      expect(failed).toMatchObject({ status: "failed", result: { attempts: 1, retryable: true } });
+      const future = new Date(Date.now() + 60_000).toISOString();
+      await db.update(chatActions).set({ result: { ...failed.result, retryAt: future } }).where(eq(chatActions.id, failed.id));
+      f.setUnavailable(false);
+      const errors: unknown[] = [];
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+      try {
+        const count = f.requests.length;
+        await f.checks.registerCheckWork(coordinator, () => true).ready;
+        expect(coordinator.nextWakeAt()).toBe(Date.parse(future)); expect(f.requests).toHaveLength(count);
+        await vi.advanceTimersByTimeAsync(61_000);
+        await expect.poll(async () => (await f.action()).status, { timeout: 5000 }).toBe("processed");
+        expect(f.writes).toHaveLength(1); expect(errors).toEqual([]);
+      } finally { await coordinator.stop(); vi.useRealTimers(); }
+    });
+
+    it("waits for and wakes from the actual GitHub review check publication lease", async () => {
+      const f = await reviewCheckWorkerFixture();
+      const errors: unknown[] = [];
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+      let entered!: () => void, release!: () => void;
+      const ready = new Promise<void>(resolve => { entered = resolve; }), hold = new Promise<void>(resolve => { release = resolve; });
+      let lease: Promise<unknown> | undefined;
+      try {
+        await f.checks.registerCheckWork(coordinator, () => true).ready;
+        lease = withGitHubPublicationLease(db, { companyId: f.companyId, endpointId: f.endpoint.id, repositoryId: "97531", number: 418 }, f.providerFetch,
+          async () => { entered(); await hold; });
+        await ready; await f.enqueue();
+        await expect.poll(() => coordinator.nextWakeAt(), { timeout: 5000 }).not.toBeNull();
+        expect(f.writes).toEqual([]); release(); await lease;
+        await expect.poll(async () => (await f.action())?.status, { timeout: 5000 }).toBe("processed");
+        expect(f.writes).toHaveLength(1); expect(errors).toEqual([]);
+      } finally { release(); await lease; await coordinator.stop(); }
+    });
+
+    it("wakes a GitHub review check from committed run identity before its future head deadline", async () => {
+      const f = await reviewCheckWorkerFixture("running");
+      await f.enqueue(); await f.checks.processPending();
+      const action = await f.action(), future = new Date(Date.now() + 60_000).toISOString();
+      await db.update(chatActions).set({ result: { ...action.result, retryAt: future } }).where(eq(chatActions.id, action.id));
+      const errors: unknown[] = [];
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+      try {
+        await f.checks.registerCheckWork(coordinator, () => true).ready;
+        expect(coordinator.nextWakeAt()).toBe(Date.parse(future));
+        const change = async (tx: Parameters<Parameters<Db["transaction"]>[0]>[0]) => {
+          await tx.update(heartbeatRuns).set({ status: "failed", updatedAt: new Date() }).where(eq(heartbeatRuns.id, f.run.id));
+          await initializeRunIdentity(tx as unknown as Db, { companyId: f.companyId, runId: f.run.id, issueId: f.conversation.issueId!,
+            responsibleUserId: "owner-user", messageIds: [String(f.run.contextSnapshot?.wakeCommentId)], cause: "instruction" });
+        };
+        await expect(db.transaction(async tx => { await change(tx); throw new Error("rollback run check"); })).rejects.toThrow("rollback run check");
+        expect(f.writes).toHaveLength(1);
+        await db.transaction(change);
+        await expect.poll(async () => (await f.action()).status, { timeout: 5000 }).toBe("processed");
+        expect(f.writes).toHaveLength(2); expect(f.writes[1].status).toBe("completed");
+        expect(Date.now()).toBeLessThan(Date.parse(future)); expect(errors).toEqual([]);
+      } finally { await coordinator.stop(); }
+    });
+
+    it("finds a GitHub review check after a full page of revoked work and ignores settled history", async () => {
+      const f = await reviewCheckWorkerFixture();
+      await f.enqueue(); const original = await f.action();
+      const pageKey = randomUUID().replaceAll("-", "").slice(0, 9);
+      const prefix = Array.from({ length: 101 }, (_, index) => ({ ...original,
+        id: `00000000-0000-4000-8000-${pageKey}${String(index + 1).padStart(3, "0")}`,
+        providerActionId: `revoked-check-${index}`, payload: { ...original.payload, runtimeGeneration: -1 } }));
+      await db.insert(chatActions).values(prefix);
+      await db.insert(chatActions).values(Array.from({ length: 101 }, (_, index) => ({ ...original,
+        id: randomUUID(), providerActionId: `settled-check-${index}`, status: "processed" })));
+      const errors: unknown[] = [];
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+      try {
+        await f.checks.registerCheckWork(coordinator, () => true).ready;
+        await expect.poll(async () => (await db.select().from(chatActions).where(and(eq(chatActions.id, original.id))))[0].status,
+          { timeout: 15_000 }).toBe("processed");
+        await expect.poll(() => coordinator.nextWakeAt(), { timeout: 15_000 }).toBeNull();
+        expect(f.writes).toHaveLength(1);
+        const cancelled = await db.select().from(chatActions).where(and(eq(chatActions.endpointId, f.endpoint.id), eq(chatActions.status, "cancelled")));
+        expect(cancelled).toHaveLength(101); expect(errors).toEqual([]);
+      } finally { await coordinator.stop(); }
+    });
+
+    it("stops GitHub review check HTTP after shutdown admission and recovers its durable action", async () => {
+      const f = await reviewCheckWorkerFixture();
+      await f.enqueue();
+      let entered!: () => void, release!: () => void;
+      const ready = new Promise<void>(resolve => { entered = resolve; }), hold = new Promise<void>(resolve => { release = resolve; });
+      const guardedProvider: typeof fetch = async (input, init) => {
+        if (String(input).endsWith("/pulls/418")) { entered(); await hold; }
+        return f.providerFetch(input, init);
+      };
+      const errors: unknown[] = [];
+      let coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+      try {
+        const starting = githubReviewCheckService(db, guardedProvider).registerCheckWork(coordinator, () => true).ready;
+        await ready;
+        const stopped = coordinator.stop(); release(); await stopped; await starting;
+        expect(f.writes).toEqual([]); expect((await f.action()).status).toBe("received");
+        coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+        await f.checks.registerCheckWork(coordinator, () => true).ready;
+        await expect.poll(async () => (await f.action()).status, { timeout: 5000 }).toBe("processed");
+        expect(f.writes).toHaveLength(1); expect(errors).toEqual([]);
+      } finally { release(); await coordinator.stop(); }
+    });
+
     it("supersedes a late review projection after its check already rejected the old head", async () => {
       const f = await reviewBotFixture();
       const deliveryId = randomUUID();

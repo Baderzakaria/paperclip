@@ -1,3 +1,4 @@
+import { notifyGitHubReviewChecks } from "./chat-channels/github/review-check-work.js";
 import { notifyChatResponseAvailability } from "./chat-response-availability.js";
 import { githubRunReplyState } from "./chat-run-publications.js";
 import { stageReceiptReactionRemovals } from "./chat-receipt-reactions.js";
@@ -350,16 +351,20 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
       .limit(1);
     if (prior && prior.runId === source.run.id) return prior;
     if (prior && !prior.runId && prior.deliveryId === source.delivery.id) {
-      const [claimed] = await db
-        .update(chatGitHubReviews)
-        .set({ runId: source.run.id, state: "running", updatedAt: new Date() })
-        .where(
-          and(
-            eq(chatGitHubReviews.id, prior.id),
-            isNull(chatGitHubReviews.runId),
-          ),
-        )
-        .returning();
+      const [claimed] = await db.transaction(async tx => {
+        await notifyGitHubReviewChecks(tx, { companyId: source.endpoint.companyId, endpointId: source.endpoint.id,
+          repositoryId: source.repositoryId, number: source.number });
+        return tx
+          .update(chatGitHubReviews)
+          .set({ runId: source.run.id, state: "running", updatedAt: new Date() })
+          .where(
+            and(
+              eq(chatGitHubReviews.id, prior.id),
+              isNull(chatGitHubReviews.runId),
+            ),
+          )
+          .returning();
+      });
       if (claimed) return claimed;
       return reviewForHead(source, pull);
     }
@@ -407,26 +412,30 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
       labels: pull.labels.map((l) => l.name),
       ...(automatic ? automatic.context : {}),
     };
-    const [review] = await db
-      .insert(chatGitHubReviews)
-      .values({
-        companyId: source.endpoint.companyId,
-        endpointId: source.endpoint.id,
-        issueId: source.issue.id,
-        runId: source.run.id,
-        repositoryId: source.repositoryId,
-        repository: source.repository,
-        pullNumber: source.number,
-        headSha: pull.head.sha,
-        deliveryId: `run:${source.run.id}:${pull.head.sha}`,
-        configurationRevision:
-          manual?.revision ?? automatic?.revision ?? source.config.revision,
-        policySnapshot: manual?.policy ?? automatic?.policy ?? source.policy,
-        event: context,
-        state: "running",
-      })
-      .onConflictDoNothing()
-      .returning();
+    const [review] = await db.transaction(async tx => {
+      await notifyGitHubReviewChecks(tx, { companyId: source.endpoint.companyId, endpointId: source.endpoint.id,
+        repositoryId: source.repositoryId, number: source.number });
+      return tx
+        .insert(chatGitHubReviews)
+        .values({
+          companyId: source.endpoint.companyId,
+          endpointId: source.endpoint.id,
+          issueId: source.issue.id,
+          runId: source.run.id,
+          repositoryId: source.repositoryId,
+          repository: source.repository,
+          pullNumber: source.number,
+          headSha: pull.head.sha,
+          deliveryId: `run:${source.run.id}:${pull.head.sha}`,
+          configurationRevision:
+            manual?.revision ?? automatic?.revision ?? source.config.revision,
+          policySnapshot: manual?.policy ?? automatic?.policy ?? source.policy,
+          event: context,
+          state: "running",
+        })
+        .onConflictDoNothing()
+        .returning();
+    });
     if (review) {
       await githubReviewCheckService(db, fetchImpl).enqueue(
         source.endpoint,

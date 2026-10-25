@@ -1289,6 +1289,7 @@ export async function createApp(
   chatChannels.registerTeamsConsentExpiryWork(deliveryWork, () => !isWarmStandby() && !isIdleTaskDrainActive());
   chatChannels.registerTeamsAttemptRecoveryWork(deliveryWork, () => !isWarmStandby() && !isIdleTaskDrainActive());
   chatChannels.registerInteractionContinuationWork(deliveryWork, () => !isWarmStandby() && !isIdleTaskDrainActive());
+  chatChannels.registerGitHubReviewCheckWork(deliveryWork, () => !isWarmStandby() && !isIdleTaskDrainActive());
   chatChannels.registerGitHubTerminalResponseWork(deliveryWork, () => !isWarmStandby() && !isIdleTaskDrainActive());
   chatChannels.registerGitHubAcknowledgementWork(deliveryWork, () => !isWarmStandby() && !isIdleTaskDrainActive());
   chatChannels.registerTerminalConfirmationWork(deliveryWork, () => !isWarmStandby() && !isIdleTaskDrainActive());

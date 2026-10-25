@@ -115,6 +115,7 @@ export async function withGitHubPublicationLease<T>(
     clearInterval(timer);
     await renewal;
     await db.transaction(async tx => {
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.chatGitHubReviewChecks, JSON.stringify(scope));
       await notifyDeliveryWork(tx, DELIVERY_QUEUES.chatGitHubPublications);
       await notifyDeliveryWork(tx, DELIVERY_QUEUES.chatGitHubTerminalResponses, JSON.stringify(scope));
       await notifyDeliveryWork(tx, DELIVERY_QUEUES.chatGitHubAcknowledgements, JSON.stringify(scope));

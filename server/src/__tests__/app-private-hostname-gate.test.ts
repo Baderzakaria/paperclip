@@ -99,6 +99,8 @@ describe("createChatReconciliationCoordinator", () => {
     expect(github).not.toContain("githubResponseCommentService(db, fetchImpl).processPending()");
     expect(github).not.toContain("githubResponseCommentService(db, fetchImpl).processTerminalResponses()");
     expect(source).toContain("chatChannels.registerGitHubTerminalResponseWork(deliveryWork,");
+    expect(source).toContain("chatChannels.registerGitHubReviewCheckWork(deliveryWork,");
+    expect(github).not.toContain("githubReviewCheckService(db, fetchImpl).processPending()");
     expect(source).toContain("chatChannels.registerTerminalConfirmationWork(deliveryWork,");
     expect(source).toContain("chatFailedRetryNoticeWork(chatChannels).register(deliveryWork,");
   });
