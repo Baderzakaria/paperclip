@@ -1262,7 +1262,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     withCredentialMutationLease, teamsFileRetryAfter, isShuttingDown: () => shuttingDown,
     get teamsFileUploadRequest() { return options.teamsFileUploadRequest; },
   });
-  const { enqueueInboundWakeupPublications, authorizeInboundWakePublication } = createInboundWakeNotices(db, { authorizeInboundWakeup, enqueueFailedChatRetryPublications, authorizeRetainedChatSourcePublication, isExternalActionAuthorizationChange, isShuttingDown: () => shuttingDown });
+  const { enqueueInboundWakeupPublications, loadInboundWakeNoticeScopes, reconcileInboundWakeNotices, authorizeInboundWakePublication } = createInboundWakeNotices(db, { authorizeInboundWakeup, enqueueFailedChatRetryPublications, authorizeRetainedChatSourcePublication, isExternalActionAuthorizationChange, isShuttingDown: () => shuttingDown });
 
   async function authorizeRetainedChatSourcePublication(
     tx: DbOrTransaction,
@@ -3554,6 +3554,8 @@ return {
     reconcileProviderRuntimes,
     processPendingPublications,
     enqueueInboundWakeupPublications,
+    loadInboundWakeNoticeScopes,
+    reconcileInboundWakeNotices,
     schedulePendingPublications,
     processPendingDeliveries,
     processQueuedDeliveries: () => processPendingDeliveries(25, undefined, false),

@@ -1,3 +1,4 @@
+import { notifyChatInboundWakeNotices } from "./chat-inbound-wake-notice-notifications.js";
 import { notifyChatRunMilestones } from "./chat-run-milestone-notifications.js";
 import { notifyApprovalWork } from "./approval-work-notifications.js";
 import { notifyDecisionTargetWork } from "./decision-target-work.js";
@@ -12485,6 +12486,11 @@ export function issueService(db: Db) {
       };
 
       return db.transaction(async (tx) => {
+        const [source] = await tx.select({ companyId: issueComments.companyId, issueId: issueComments.issueId })
+          .from(issueComments).where(and(eq(issueComments.id, commentId), isNull(issueComments.deletedAt)))
+          .for("update");
+        if (!source) return null;
+        await notifyChatInboundWakeNotices(tx, source);
         const now = new Date();
         const [comment] = await tx
           .update(issueComments)

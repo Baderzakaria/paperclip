@@ -127,3 +127,47 @@ fixture database. Production typecheck passes in
 `/tmp/sleep30-cursor-typecheck.log`. The new test deletes its artificial candidates
 so they cannot starve later tests. Scoped worker ownership and complete producer
 coverage remain unimplemented; this is groundwork, not a polling-removal claim.
+
+## Scoped owner and first producers (2026-10-25)
+
+Parent notification repair `3447973f6f` is merged into this local branch.
+The owner now exposes scoped candidate reconstruction and normal-notice-only
+reconciliation. Each scoped pass has its own microsecond-precise keyset cursor,
+advances past suppressed pages, and reports actual lock contention separately
+from settled authorization denial. The manual API retains its bounded cursor
+and combined failed-run retry behavior. The new scoped-deadline worker is
+implemented but **not yet wired into production startup**; the periodic backstop
+remains until all producer and lifecycle coverage is complete.
+
+The existing lifecycle/authority notification boundary now also invalidates
+normal inbound notices. Real chat admission wakes the worker after a quiet
+startup, and settled/published history becomes quiet again. Removing that
+notification makes the acceptance case fail (no queued publication), proving
+the case exercises the producer rather than a manual scan.
+
+Task-tree cancellation and source-comment tombstoning each reproduced a missed
+retirement wake. Tree cancellation now registers intent inside its transaction;
+caller-owned transactions retain outer commit/rollback semantics. Tombstoning
+reads and locks the still-live comment's company/task binding before registering
+intent and updating it; already deleted/missing comments remain no-ops. These
+changes preserve existing notice text and current authorization. Tests deliver
+the queued publication with maintenance disabled, perform real service mutations
+inside a rolled-back outer transaction and then a committed transaction, and
+observe the existing provider message being edited once. Two minutes of fake
+idle time cause no further root select/transaction calls.
+
+29 scoped/manual/admission/retirement integration cases passed in
+`/tmp/sleep30-notice-producer-acceptance.log`. Producer regression evidence:
+`/tmp/sleep30-notice-worker-before-producer.log`,
+`/tmp/sleep30-notice-tree-cancel-before.log`, and
+`/tmp/sleep30-notice-source-removal-before.log`. Initial worker-test failures
+were missing `canRun` in its coordinator fixture and a wait that checked only
+the timer while a sweep was still running; the corrected wait also requires
+idle-work settlement. These fixture failures are not production defects.
+Server typecheck passed in `/tmp/sleep30-notice-producer-typecheck.log`.
+
+Still required: remaining receipt/cancellation writers (including budget, agent,
+company and Slack stop paths), admission-failure settlement, authority changes
+not already covered by shared notifications, batching/scoping/lifecycle tests,
+production registration, and removal of only this duty from the maintenance
+loop. Fresh PR creation and all checks remain outstanding for slice 30.

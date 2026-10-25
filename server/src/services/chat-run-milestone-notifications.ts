@@ -1,3 +1,4 @@
+import { notifyChatInboundWakeNotices } from "./chat-inbound-wake-notice-notifications.js";
 import { notifyChatNativeProgress } from "./chat-native-progress-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 
@@ -10,4 +11,6 @@ export async function notifyChatRunMilestones(tx: object, scope: ChatRunMileston
   // Lifecycle and coarse native progress share lineage and authority. Extend
   // this eligibility boundary once rather than adding wrappers to its callers.
   await notifyChatNativeProgress(tx, scope);
+  // Admission and current chat authority also govern saved queue notices.
+  await notifyChatInboundWakeNotices(tx, scope);
 }
