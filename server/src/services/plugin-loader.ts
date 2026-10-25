@@ -1,3 +1,4 @@
+import { finishServiceShutdown } from "../shutdown.js";
 /**
  * PluginLoader — discovery, installation, and runtime activation of plugins.
  *
@@ -2143,11 +2144,7 @@ export function pluginLoader(
 
       const { workerManager, jobScheduler } = runtimeServices;
 
-      // 1. Stop the job scheduler tick loop
-      await jobScheduler.stop();
-
-      // 2. Stop all worker processes
-      await workerManager.stopAll();
+      await finishServiceShutdown(() => jobScheduler.stop(), () => workerManager.stopAll());
 
       log.info("plugin-loader: all plugins shut down");
     },

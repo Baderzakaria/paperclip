@@ -45,7 +45,7 @@ function nextCron(schedule: string, now: Date): Date | null {
 }
 
 export function createPluginJobScheduler(options: PluginJobSchedulerOptions): PluginJobScheduler {
-  const { db, jobStore, workerManager, tickIntervalMs = 1_000,
+  const { db, jobStore, workerManager, tickIntervalMs = 30_000,
     jobTimeoutMs = 5 * 60_000, maxConcurrentJobs = 10 } = options;
   const log = logger.child({ service: "plugin-job-scheduler" });
   const activeJobs = new Set<string>();
