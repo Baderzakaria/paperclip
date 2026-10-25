@@ -435,3 +435,51 @@ Queued-comment changes, raw queue cancellation and wake-receipt writers, native
 review admission acceptance, and remaining dependency producers are still open.
 The periodic combined projector remains in production; this checkpoint does
 not claim slice publication, full-suite/PR acceptance, or instance sleep.
+
+
+## Native wake dispatch receipt checkpoint
+
+`dispatchPendingNativeStatusWakeups` now registers milestone intent when it
+repairs an interrupted dispatch receipt, coalesces another same-scope intent,
+or records the result of fresh admission. Each receipt UPDATE has a narrow
+transaction; enqueue/provider execution remains outside it. Existing status,
+claim, provenance, and update guards are unchanged. The parsed issue identity
+already owned by this dispatcher scopes the notification (company fallback
+when absent). Claims, retry timestamps, and rejected targets do not acquire
+milestone intent just because they were inspected.
+
+The existing continuation reader requires both the delivered decision effect
+and the coalesced original wake plus matching dispatch receipt. Consequently,
+the run-admission notification alone is insufficient: it can be consumed while
+the original intent is still claimed. The new normal-dispatch regression forces
+that ordering using the dispatch suppression callback, then verifies the final
+receipt reactivates projection without starting provider execution.
+
+Evidence and limitations:
+
+- `/tmp/sleep28-native-wake-receipt-before.log`: interrupted dispatch recovery
+  linked the run successfully but its queued notice remained absent.
+- `/tmp/sleep28-native-wake-fresh-without-signal.log`: removing only the final
+  receipt notification reproduced a missing notice after the early admission
+  sweep. The production signal was restored in a finally block.
+- `/tmp/sleep28-native-wake-restored-tests.log`: all 56 milestone/queue cases
+  pass (31 milestone cases, 25 existing queue cases), including normal and
+  recovered receipts, repeat recovery quiet, and drain-held dispatch.
+- `/tmp/sleep28-native-wake-dependency-tests.log`: all 13 existing dependency
+  scheduling cases pass on a new isolated PostgreSQL database. The suite logs
+  responsible-user setup denial for some existing fixture paths; this is not
+  evidence of successful provider execution or full product acceptance.
+- The dependency suite now accepts guarded `PAPERCLIP_DEPENDENCY_TEST_DATABASE_URL`
+  and removes its fixed fixture user/closes its client during teardown. Its
+  existing broad cleanup must run only on a dedicated database. Initial reuse
+  retained the old fixture user; a manual cleanup command used the wrong physical
+  table name, and the following run failed in setup with duplicate `user_pkey`:
+  `/tmp/sleep28-native-wake-dependency-final.log`. Corrected teardown removed the
+  fixture; a fresh read confirmed zero rows before the successful four native
+  cases in `/tmp/sleep28-native-wake-dependency-clean.log` (nine unselected).
+- Server production typecheck passes: `/tmp/sleep28-native-wake-typecheck.log`.
+  Test files remain outside that typecheck. No whole-slice PR acceptance claimed.
+
+Raw queue cancellation, queued-comment/lineage changes, native reviewer claim
+acceptance, and the remaining dependency producer audit still prevent retiring
+the production periodic projector. All original stack scope remains required.

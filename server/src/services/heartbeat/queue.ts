@@ -4659,6 +4659,13 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     >();
 
     for (const candidate of candidates) {
+      const payload = parseObject(candidate.payload);
+      const wakeContext = parseObject(payload._paperclipWakeContext);
+      const issueId =
+        readNonEmptyString(payload.issueId) ??
+        readNonEmptyString(payload.taskId) ??
+        readNonEmptyString(wakeContext.issueId) ??
+        null;
       const dispatchActorId = `native-status-wake-dispatch:${candidate.id}`;
       const existingDispatch = await db
         .select()
@@ -4680,24 +4687,27 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           : existingDispatch.status === "deferred_issue_execution"
             ? "coalesced"
             : existingDispatch.status;
-        await db
-          .update(agentWakeupRequests)
-          .set({
-            status: recoveredStatus,
-            runId: existingDispatch.runId,
-            finishedAt:
-              (existingDispatch.runId ?? existingDispatch.finishedAt)
-                ? (existingDispatch.finishedAt ?? now)
-                : null,
-            error: existingDispatch.error,
-            updatedAt: now,
-          })
-          .where(
-            and(
-              eq(agentWakeupRequests.id, candidate.id),
-              isNull(agentWakeupRequests.runId),
-            ),
-          );
+        await db.transaction(async tx => {
+          await notifyChatRunMilestones(tx, { companyId: candidate.companyId, issueId: issueId ?? undefined });
+          await tx
+            .update(agentWakeupRequests)
+            .set({
+              status: recoveredStatus,
+              runId: existingDispatch.runId,
+              finishedAt:
+                (existingDispatch.runId ?? existingDispatch.finishedAt)
+                  ? (existingDispatch.finishedAt ?? now)
+                  : null,
+              error: existingDispatch.error,
+              updatedAt: now,
+            })
+            .where(
+              and(
+                eq(agentWakeupRequests.id, candidate.id),
+                isNull(agentWakeupRequests.runId),
+              ),
+            );
+        });
         recovered += 1;
         continue;
       }
@@ -4731,13 +4741,6 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         .returning({ id: agentWakeupRequests.id });
       if (claimed.length === 0) continue;
 
-      const payload = parseObject(candidate.payload);
-      const wakeContext = parseObject(payload._paperclipWakeContext);
-      const issueId =
-        readNonEmptyString(payload.issueId) ??
-        readNonEmptyString(payload.taskId) ??
-        readNonEmptyString(wakeContext.issueId) ??
-        null;
       const scopeKey = issueId
         ? `${candidate.companyId}:${candidate.agentId}:${issueId}:${readNativeReviewAssignmentContext(wakeContext)?.nativeReviewInteractionId ?? ""}`
         : null;
@@ -4745,16 +4748,19 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         ? deliveredByIssueScope.get(scopeKey)
         : null;
       if (priorDelivery) {
-        await db
-          .update(agentWakeupRequests)
-          .set({
-            status: "coalesced",
-            runId: priorDelivery.runId,
-            finishedAt: new Date(),
-            error: null,
-            updatedAt: new Date(),
-          })
-          .where(eq(agentWakeupRequests.id, candidate.id));
+        await db.transaction(async tx => {
+          await notifyChatRunMilestones(tx, { companyId: candidate.companyId, issueId: issueId ?? undefined });
+          await tx
+            .update(agentWakeupRequests)
+            .set({
+              status: "coalesced",
+              runId: priorDelivery.runId,
+              finishedAt: new Date(),
+              error: null,
+              updatedAt: new Date(),
+            })
+            .where(eq(agentWakeupRequests.id, candidate.id));
+        });
         recovered += 1;
         continue;
       }
@@ -4853,21 +4859,24 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         // promote both rows (the original has no nativeStatusWakeIntentId
         // provenance and would otherwise run once before the dispatch receipt).
         const deliveredStatus = delivered?.status ?? "queued";
-        await db
-          .update(agentWakeupRequests)
-          .set({
-            status: wakeRun || deliveredStatus === "deferred_issue_execution"
-              ? "coalesced"
-              : deliveredStatus,
-            runId: wakeRun?.id ?? delivered?.runId ?? null,
-            finishedAt:
-              wakeRun || delivered?.finishedAt
-                ? (delivered?.finishedAt ?? new Date())
-                : null,
-            error: delivered?.error ?? null,
-            updatedAt: new Date(),
-          })
-          .where(eq(agentWakeupRequests.id, candidate.id));
+        await db.transaction(async tx => {
+          await notifyChatRunMilestones(tx, { companyId: candidate.companyId, issueId: issueId ?? undefined });
+          await tx
+            .update(agentWakeupRequests)
+            .set({
+              status: wakeRun || deliveredStatus === "deferred_issue_execution"
+                ? "coalesced"
+                : deliveredStatus,
+              runId: wakeRun?.id ?? delivered?.runId ?? null,
+              finishedAt:
+                wakeRun || delivered?.finishedAt
+                  ? (delivered?.finishedAt ?? new Date())
+                  : null,
+              error: delivered?.error ?? null,
+              updatedAt: new Date(),
+            })
+            .where(eq(agentWakeupRequests.id, candidate.id));
+        });
 
         if (scopeKey) {
           deliveredByIssueScope.set(scopeKey, {

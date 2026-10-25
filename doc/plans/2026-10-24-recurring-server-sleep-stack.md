@@ -1442,3 +1442,14 @@ server production types pass. The slice audit preserves the initial invalid
 staleness fixture and corrected causal evidence. Periodic projection remains
 until all supported producers are covered. Remaining original inventory, open
 PR gates/findings and final master reconciliation are unchanged.
+
+
+Slice 28 native wake receipt checkpoint: interrupted recovery, same-scope
+coalescence and fresh admission receipt writes now notify from narrow database
+transactions. Both missed-recovery and admission-before-receipt races were
+reproduced. All 56 milestone/queue cases, 13 existing dependency cases and server
+production types pass; four native cases were rerun after fixing external-test
+fixture cleanup. The audit preserves setup failures and provider-acceptance
+limits. No periodic projector has been removed yet. Fresh remote inspection
+still finds #17590 Paperclip Review queued, #17592 neutral, and #17490 E2E shard
+3 plus aggregate failing. Those gates and all remaining original scope stay open.

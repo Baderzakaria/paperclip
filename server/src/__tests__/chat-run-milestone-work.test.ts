@@ -373,6 +373,55 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await expect(dispatchPendingNativeStatusEffects({ db, ...input, decisionId: decision.id })).resolves.toEqual([]);
     await quiet();
   });
+  it("wakes an admitted continuation when native wake dispatch repairs its original receipt", async () => {
+    const input = await continuationDecisionFixture();
+    await commitNativeStatusDecision({ db, ...input });
+    const [intent] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId));
+    const target = await run(f, { status: "queued", contextSnapshot: {
+      issueId: f.issueId, source: "native_status_decision", nativeStatusWakeIntentId: intent.id,
+    } });
+    await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agentId, source: "automation",
+      reason: "issue_status_changed", requestedByActorType: "system", requestedByActorId: `native-status-wake-dispatch:${intent.id}`,
+      runId: target.id, status: "queued", idempotencyKey: intent.idempotencyKey, payload: { issueId: f.issueId },
+    });
+    await start(); await flush();
+    expect((await publications()).some(row => row.idempotencyKey.startsWith(`run:${target.id}:`))).toBe(false);
+    await quiet();
+    const { service, dependencies } = await queue();
+    await expect(service.dispatchPendingNativeStatusWakeups({ companyId: f.companyId })).resolves.toMatchObject({ recovered: 1, dispatched: 0 });
+    await flush();
+    expect((await publications()).map(row => row.idempotencyKey)).toContain(`run:${target.id}:queued:${f.endpointId}`);
+    expect(dependencies.executeRun).not.toHaveBeenCalled();
+    await quiet();
+    await expect(service.dispatchPendingNativeStatusWakeups({ companyId: f.companyId })).resolves.toMatchObject({ scanned: 0 });
+    await quiet();
+  });
+  it("rechecks a fresh native continuation after admission finishes its wake receipt", async () => {
+    const input = await continuationDecisionFixture();
+    await commitNativeStatusDecision({ db, ...input });
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, input.runId));
+    await start(); await flush(); await quiet();
+    const { service, dependencies } = await queue();
+    let admittedId: string | undefined;
+    dependencies.getSchedulingSuppression.mockImplementation(async () => {
+      const rows = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId));
+      const admitted = rows.find(row => row.id !== input.runId);
+      if (admitted && !admittedId) {
+        admittedId = admitted.id;
+        // Admission already committed and signalled, but the original wake
+        // receipt is still claimed. Let that first projection finish now.
+        await flush();
+        expect((await publications()).some(row => row.idempotencyKey.startsWith(`run:${admittedId}:`))).toBe(false);
+      }
+      return { suppressed: true, reason: "task_drain" };
+    });
+    await expect(service.dispatchPendingNativeStatusWakeups({ companyId: f.companyId })).resolves.toMatchObject({ dispatched: 1 });
+    expect(admittedId).toBeDefined();
+    await flush();
+    expect((await publications()).map(row => row.idempotencyKey)).toContain(`run:${admittedId}:queued:${f.endpointId}`);
+    expect(dependencies.executeRun).not.toHaveBeenCalled();
+    await quiet();
+  });
   it("projects a continuation only after the real question delivery receipt commits", async () => {
     const source = await run(f, { status: "succeeded" });
     const interactions = issueThreadInteractionService(db);
