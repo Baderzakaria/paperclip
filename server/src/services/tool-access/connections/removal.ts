@@ -539,7 +539,7 @@ async function removeConnection(
 
     const archived = await db.transaction(async (tx) => {
       if (connection.transport === "chat_sdk") await notifyChatEndpointWork(tx, connection.id);
-      await notifyToolConnectionHealth(tx, connection.companyId);
+      await notifyToolConnectionHealth(tx, connection);
       await tx.select({ id: toolApplications.id }).from(toolApplications)
         .where(and(eq(toolApplications.id, connection.applicationId), eq(toolApplications.companyId, connection.companyId)))
         .for("update");

@@ -332,7 +332,7 @@ export function createDirectOAuthCallback(db: Db, dependencies: Dependencies) {
             },
           },
         };
-        await notifyToolConnectionHealth(tx, connection.companyId);
+        await notifyToolConnectionHealth(tx, connection);
         const [updatedConnection] = await tx
           .update(toolConnections)
           .set({
@@ -612,7 +612,7 @@ export function createDirectOAuthCallback(db: Db, dependencies: Dependencies) {
           },
         },
       };
-      await notifyToolConnectionHealth(tx, connection.companyId);
+      await notifyToolConnectionHealth(tx, connection);
       const [updatedConnection] = await tx
         .update(toolConnections)
         .set({

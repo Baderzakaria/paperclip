@@ -394,7 +394,7 @@ export function createOAuthGrantRefresh(db: Db, { now, store, leases, currentClo
                 connection.id,
                 connection.companyId,
               );
-              const [reauthorizationRequired] = await writeToolConnectionHealthChange(db, latestConnection.companyId, tx => tx
+              const [reauthorizationRequired] = await writeToolConnectionHealthChange(db, latestConnection, tx => tx
                 .update(toolConnections)
                 .set({
                   status: "draft",

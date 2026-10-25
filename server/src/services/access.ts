@@ -328,7 +328,7 @@ export function accessService(db: Db) {
             && grant.credentialSecretRefs.every((ref) => !connectionSecretIdsToRemove.has(ref.secretId)),
           );
           if (connection.transport === "chat_sdk") await notifyChatEndpointWork(tx, connection.id);
-          if (!hasUnaffectedActiveGrant) await notifyToolConnectionHealth(tx, companyId);
+          if (!hasUnaffectedActiveGrant) await notifyToolConnectionHealth(tx, { companyId, id: connection.id });
           await tx.update(toolConnections).set({
             credentialRefs,
             credentialSecretRefs,

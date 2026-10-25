@@ -113,7 +113,7 @@ async function finalizeOAuthAccess(
       ) {
         throw conflict("This connection already uses a company identity");
       }
-      connection = await writeToolConnectionHealthChange(db, companyId, async tx => {
+      connection = await writeToolConnectionHealthChange(db, connection, async tx => {
         const [updated] = await tx
           .update(toolConnections)
           .set({
@@ -328,7 +328,7 @@ async function finalizeOAuthAccess(
               updatedAt: nowAt,
             })
             .where(eq(connectionGrants.id, personalGrant.id));
-          await notifyToolConnectionHealth(tx, companyId);
+          await notifyToolConnectionHealth(tx, connection);
           [connection] = await tx
             .update(toolConnections)
             .set({

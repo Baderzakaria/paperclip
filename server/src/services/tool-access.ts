@@ -1219,7 +1219,7 @@ export function toolAccessService(
       safeDefault: true,
     };
     if (existing) {
-      const [updated] = await writeToolConnectionHealthChange(db, companyId, tx => tx
+      const [updated] = await writeToolConnectionHealthChange(db, { companyId, applicationId: existing.id }, tx => tx
         .update(toolApplications)
         .set({
           name: definition.applicationName,
@@ -1262,7 +1262,7 @@ export function toolAccessService(
       quarantineNewEntries: true,
     };
     if (existing) {
-      const updated = await writeToolConnectionHealthChange(db, companyId, async tx => {
+      const updated = await writeToolConnectionHealthChange(db, existing, async tx => {
         const [updated] = await tx
           .update(toolConnections)
           .set({
@@ -1288,7 +1288,7 @@ export function toolAccessService(
       return { row: updated, created: false };
     }
     const connectionId = randomUUID();
-    const created = await writeToolConnectionHealthChange(db, companyId, async tx => {
+    const created = await writeToolConnectionHealthChange(db, { companyId, id: connectionId }, async tx => {
       const [created] = await tx
         .insert(toolConnections)
         .values({
@@ -2486,7 +2486,7 @@ export function toolAccessService(
         personalIdentityUserId || dedicatedAgentId ? [] : credentialSecretRefs;
       if (revivedConnectionPrevious) {
         forgetMcpHttpSessions(revivedConnectionPrevious.id);
-        [connectionRow] = await writeToolConnectionHealthChange(db, companyId, tx => tx
+        [connectionRow] = await writeToolConnectionHealthChange(db, revivedConnectionPrevious, tx => tx
           .update(toolConnections)
           .set({
             name,
@@ -2931,7 +2931,7 @@ export function toolAccessService(
                 connectionSetupMutationFingerprint(attemptedConnection),
             );
             if (connectionMutationIsStillCurrent) {
-              await notifyToolConnectionHealth(tx, companyId);
+              await notifyToolConnectionHealth(tx, revivedConnectionPrevious);
               await tx
                 .update(toolConnections)
                 .set({
@@ -3007,7 +3007,7 @@ export function toolAccessService(
           // surface the restoration failure instead of returning only the
           // original provider error.
           try {
-            await writeToolConnectionHealthChange(db, companyId, tx => tx
+            await writeToolConnectionHealthChange(db, revivedConnectionPrevious, tx => tx
               .update(toolConnections)
               .set({
                 status: "draft",
@@ -3033,7 +3033,7 @@ export function toolAccessService(
         }
       } else if (connectionRow) {
         const failedConnectionId = connectionRow.id;
-        await writeToolConnectionHealthChange(db, companyId, tx => tx
+        await writeToolConnectionHealthChange(db, { companyId, id: failedConnectionId }, tx => tx
           .delete(toolConnections)
           .where(eq(toolConnections.id, failedConnectionId)))
           .catch(() => undefined);
@@ -3148,7 +3148,7 @@ export function toolAccessService(
         await tx.select({ id: toolApplications.id }).from(toolApplications)
           .where(and(eq(toolApplications.id, connection.applicationId), eq(toolApplications.companyId, companyId)))
           .for("update");
-        await notifyToolConnectionHealth(tx, companyId);
+        await notifyToolConnectionHealth(tx, connection);
         const [row] = await tx.update(toolConnections).set({ config, transportConfig: config, status: "active", enabled: true, ...(input.agentInstructions !== undefined ? { agentInstructions: input.agentInstructions } : {}), updatedAt: new Date() })
           .where(and(eq(toolConnections.id, connection.id), eq(toolConnections.companyId, companyId))).returning();
         await tx.update(toolApplications).set({ status: "active", updatedAt: new Date() }).where(and(eq(toolApplications.id, connection.applicationId), eq(toolApplications.companyId, companyId)));
@@ -3505,7 +3505,7 @@ export function toolAccessService(
         },
         tx,
       );
-      await notifyToolConnectionHealth(tx, companyId);
+      await notifyToolConnectionHealth(tx, connection);
       const [updatedConnection] = await tx
         .update(toolConnections)
         .set({ status: "active", enabled: true, ...(input.agentInstructions !== undefined ? { agentInstructions: input.agentInstructions } : {}), updatedAt: new Date() })
@@ -4526,7 +4526,7 @@ export function toolAccessService(
       }
       const connectionId = randomUUID();
       const binding = actorBinding(actor);
-      const row = await writeToolConnectionHealthChange(db, companyId, async tx => {
+      const row = await writeToolConnectionHealthChange(db, { companyId, id: connectionId }, async tx => {
         const [row] = await tx
           .insert(toolConnections)
           .values({
@@ -4648,7 +4648,7 @@ export function toolAccessService(
             await syncCredentialBindings(rows[0]!, [], tx);
             return rows;
           })
-        : await writeToolConnectionHealthChange(db, existing.companyId, async tx => {
+        : await writeToolConnectionHealthChange(db, existing, async tx => {
             const rows = await write(tx);
             await syncCredentialBindings(rows[0]!, [], tx);
             await createToolRuntimeSlots(tx, runtimeSupervisor).ensureRuntimeSlot(rows[0]!);

@@ -163,3 +163,19 @@ the intended regression and passes. Producer/chat consumers, query-plan evidence
 build, and remote gates remain pending. Master was refreshed to `8415f4a679`;
 this uncommitted health branch remains based on the open migration stack, so
 final stack reconciliation with master is still required. No merge is authorized.
+
+
+## Security follow-up: individual refreshes
+
+The company-hint design amplified ordinary connection writes into full company
+reads. The current contract scopes individual producers (API/example creation,
+setup/rollback, OAuth, gateway, health/catalog, email, voice, GitHub events, access
+removal, and Smoke Lab) by company plus connection ID. Existing application
+updates in example setup and Smoke Lab use application scopes. Company deletion
+and instance feature-settings changes retain broad invalidation. Startup and
+broad loads use bounded UUID pages. The health owner still defines eligibility
+and provider policy; the shared notification/coordinator layers remain generic.
+
+See `doc/idle-tool-connection-health.md` for the failing amplification baseline,
+changed contract, scope-cancellation tests, and verification results. The older
+company-hint observations in this audit describe the superseded implementation.

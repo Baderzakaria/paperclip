@@ -48,7 +48,7 @@ export function createConnectionHealth(db: Db, { now, audit, getConnectionRow, d
     message: string | null,
   ) {
     const now = new Date();
-    const [updated] = await writeToolConnectionHealthChange(db, connection.companyId, async tx => {
+    const [updated] = await writeToolConnectionHealthChange(db, connection, async tx => {
       await notifyChatConnectionCommandRegistration(tx, connection.id, connection.transport);
       return tx.update(toolConnections)
       .set({
