@@ -147,3 +147,28 @@ Fetched master is `19ec787e5b` (not replayed into this stack yet). Newly landed
 #17616 expands native-harness backup expiration to continuity/quarantine evidence
 and adds its evidence signal. Its interval remains. Preserve that newer contract
 when migrating its separate retention owner.
+
+## CI repair: narrow notification payload (2026-10-25)
+
+CI at `34df8b0d01` failed native status/finalization consumers across server,
+chat, Runner, and serialized suites. Local reproduction of the existing
+same-run Slack response-recovery test failed before the repair. Its persisted
+`native_run_finalizations.failure_detail.message` identified circular JSON
+serialization of a Drizzle table through the caller's database handle.
+
+The new native-progress notifier serialized the entire structurally compatible
+scope argument. Existing lifecycle callers legitimately pass wider domain inputs
+(including `db`) through that typed boundary. Serialize only `companyId` and
+`issueId`, as the lifecycle notifier already does; do not constrain every caller
+or serialize domain/private fields into work hints.
+
+After repair, 15 existing chat finalization/response-recovery/authority cases
+passed against external PostgreSQL, all 32 native-progress worker/startup cases
+passed, and server typecheck passed. The attempted broader native-finalization
+and session-resumption selection failed during local embedded PostgreSQL
+initialization (bootstrap exit 1), before tests could run; it is not acceptance
+evidence. Fresh CI must verify those native consumers. Before/after logs:
+`/tmp/sleep29-finalization-repro.log`, `/tmp/sleep29-finalization-fixed.log`,
+`/tmp/sleep29-notification-fix-workers.log`,
+`/tmp/sleep29-notification-fix-typecheck.log`, and
+`/tmp/sleep29-native-finalization-acceptance.log`.
