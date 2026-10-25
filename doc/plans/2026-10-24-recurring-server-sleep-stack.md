@@ -1496,3 +1496,11 @@ producer regressions failed before the added intent signals. All 169 cases acros
 the worker and interaction-service suites pass, as does production server
 typechecking. The draft remains incomplete: other producers and production
 registration/polling removal are still pending. See the milestone audit for logs.
+
+
+Slice 28 creation/sibling replacement now registers intent before the first
+interaction write. Both question and confirmation replacement failed before the
+fix; all 184 milestone/integration/unit interaction cases and production server
+typechecking pass. Remaining terminal-interaction writers are document-target
+expiry, deleted-addressee cancellation and startup supersession; other producer
+audits and production migration remain pending.

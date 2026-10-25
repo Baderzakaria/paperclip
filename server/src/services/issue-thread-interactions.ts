@@ -3697,6 +3697,9 @@ export function issueThreadInteractionService(
                 eq(chatVoiceSessions.callerAuthority, "guest_intake"))).limit(1);
             if (guest) throw unprocessable("Ask this unverified caller a clarification in a task comment; submit_request will deliver their spoken follow-up. Protected human-input questions require authenticated access.", {code: "voice_guest_use_task_comment"});
           }
+          if (data.kind === "ask_user_questions" || data.kind === "request_confirmation") {
+            await notifyChatRunMilestones(tx, { companyId: issue.companyId, issueId: issue.id });
+          }
           const [row] = await tx
             .insert(issueThreadInteractions)
             .values({

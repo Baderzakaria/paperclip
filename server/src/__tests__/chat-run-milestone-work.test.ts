@@ -640,20 +640,23 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     ["confirmation", "withdraw"], ["confirmation", "expire"],
     ["question", "comment"], ["question", "historical comment"],
     ["confirmation", "comment"], ["confirmation", "historical comment"],
+    ["question", "replacement"], ["confirmation", "replacement"],
   ] as const)("rechecks an unsent %s after %s", async (kind, action) => {
     const source = await run(f, { status: "failed", errorCode: "test_run_failed" });
     const interactions = issueThreadInteractionService(db);
     const issue = { id: f.issueId, companyId: f.companyId, status: "in_progress" };
-    const interaction = await interactions.create(issue, kind === "confirmation" ? {
-      kind: "request_confirmation", continuationPolicy: "wake_assignee", sourceRunId: source.id,
+    const createInteraction = (sourceRunId: string) => interactions.create(issue, kind === "confirmation" ? {
+      kind: "request_confirmation", continuationPolicy: "wake_assignee", sourceRunId,
       title: "Confirm", payload: { version: 1, prompt: "Continue?", supersedeOnUserComment: true },
     } : {
-      kind: "ask_user_questions", continuationPolicy: "wake_assignee", sourceRunId: source.id,
+      kind: "ask_user_questions", continuationPolicy: "wake_assignee", sourceRunId,
       title: "Choose", payload: { version: 1, title: "Choose", supersedeOnUserComment: true, questions: [{
         id: "choice", prompt: "Continue?", selectionMode: "single", required: true,
         options: [{ id: "yes", label: "Yes" }],
       }] },
-    }, { agentId: f.agentId, runId: source.id });
+    }, { agentId: f.agentId, runId: sourceRunId });
+    const interaction = await createInteraction(source.id);
+    const replacement = action === "replacement" ? await run() : null;
     if (action === "historical answer") {
       await interactions.dismissInteraction(issue, interaction.id, { userId: f.userId });
       await db.update(issues).set({ status: "done" }).where(eq(issues.id, f.issueId));
@@ -661,7 +664,10 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await start(); await flush();
     expect((await publications()).some(row => row.idempotencyKey.startsWith(`run:${source.id}:`))).toBe(false);
     await quiet();
-    if (action === "comment" || action === "historical comment") {
+    if (action === "replacement") {
+      await createInteraction(replacement!.id);
+      expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interaction.id)))[0].status).toBe("expired");
+    } else if (action === "comment" || action === "historical comment") {
       const [comment] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId,
         authorType: "user", authorUserId: f.userId, origin: "comment", body: "Ignore the earlier request" }).returning();
       const expired = action === "comment"

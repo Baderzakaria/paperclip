@@ -809,3 +809,34 @@ Remaining interaction producers include document-target invalidation, deleted
 addressees, startup supersession and creation/replacement. Provider receipt,
 conversation/configuration and alternate recovery audits also remain. Production
 worker registration and lifecycle polling removal are still intentionally pending.
+
+
+## Creation and sibling replacement
+
+Creating a question or confirmation can expire a prior card from the same agent,
+release the prior run's provider response slot, and cancel its unsent prompt.
+The creation transaction now registers a single issue-scoped milestone intent
+before inserting the new row. This precedes both sibling invalidation and prompt
+publication changes. Existing idempotent reuse and validation return/throw before
+this boundary; unrelated interaction kinds remain outside it. Provider policy
+and sibling-supersession semantics are unchanged.
+
+The replacement regressions create two runs before worker startup, suppress the
+older failed run with its pending card, let the worker become quiet, then create
+the replacement through the actual service. They verify that the old card is
+expired and its failure notice appears without another run transition or poll.
+
+- `/tmp/sleep28-interaction-replacement-before.log`: question and confirmation
+  replacement both fail the missing-notice assertion before the creation signal.
+- `/tmp/sleep28-interaction-replacement-tests.log`: all 184 cases pass across
+  the 65 milestone worker, 106 interaction-service integration and 13 interaction
+  service unit cases. PostgreSQL suites use separate isolated databases.
+- `/tmp/sleep28-interaction-replacement-typecheck.log`: production server
+  typecheck passes; test files are excluded. `git diff --check` passes.
+
+The remaining direct terminal-interaction writers are document-target expiry
+(the resolution-time helper and explicit document-change method), deletion of
+an addressed agent, and startup supersession. Document-change callers are in
+`routes/issues.ts`; the owning state mutation is in the interaction service.
+Audit those before removing the lifecycle poll. This checkpoint still does not
+register the worker in production or establish final CI/review acceptance.
