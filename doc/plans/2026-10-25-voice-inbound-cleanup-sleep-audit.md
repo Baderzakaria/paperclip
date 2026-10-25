@@ -218,3 +218,30 @@ Database typecheck and migration numbering/safety checks also pass. Local logs:
 `/tmp/sleep23-migrator-before.log`, `/tmp/sleep23-migrator-after.log`, and
 `/tmp/sleep23-migrator-types.log`. Fresh remote checks remain required; the
 original CI failure is not classified as a flake.
+
+## Denial request latency review repair
+
+Review finding 4370459974 correctly identified that denial awaited account
+verification, provider inspection and endSession, despite already committing the
+rejection and its cleanup notification. The request now returns the saved denial;
+the registered worker owns physical termination and persists its retry. No detached
+promise or second dispatch path is added. Per-attempt account verification stays
+with the provider boundary, protecting rotated credentials from a different
+account. This patch does not cache provider authority indefinitely.
+
+A new real-producer regression holds verifyAgent unresolved, proves the committed
+denial returns, checks that cleanup is still unconfirmed with a saved retry, then
+releases the provider and verifies confirmed termination. It failed before the
+fix (`/tmp/sleep23-denial-before.log`) and passed after
+(`/tmp/sleep23-denial-after.log`). Existing explicit one-shot tests now invoke
+that one-shot path rather than relying on the HTTP decision to do cleanup.
+All 130 full voice and app wiring cases pass on a fresh migrated PostgreSQL DB;
+production server typecheck passes. Logs: `/tmp/sleep23-denial-acceptance.log`
+and `/tmp/sleep23-denial-types.log`.
+
+Finding 4370459800 about company deletion remains separately unresolved. Missing
+credentials and account mismatch retain cleanup debt. There is a tested recovery
+path through restoring the original account, but a permanently unavailable
+provider needs a deliberate ownership/product policy. A retry cap, elapsed time,
+or ambiguous 404 is not evidence that a billable call ended. Do not manufacture
+cleanup confirmation or silently discard the obligation to unblock deletion.
