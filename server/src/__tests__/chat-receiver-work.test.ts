@@ -96,7 +96,12 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
   });
   it("preserves the first receiver written during drain without passive SQL", async () => {
     await start(); await settled(); enabled = false; const row = await endpoint();
-    await quiet(60_000); expect(reconcile).not.toHaveBeenCalled();
+    await vi.waitFor(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(idleWorkSnapshot().active).toBe(0);
+    });
+    const drained = idleWorkSnapshot();
+    await quiet(60_000); expect(idleWorkSnapshot()).toEqual(drained); expect(reconcile).not.toHaveBeenCalled();
     enabled = true; await settled(); expect(reconcile).toHaveBeenCalledWith(row.id);
   });
   it("reconstructs after standby becomes primary without restarting the worker", async () => {
