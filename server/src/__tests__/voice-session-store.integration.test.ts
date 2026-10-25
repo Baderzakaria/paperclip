@@ -24,6 +24,7 @@ import { chatActions, instanceUserRoles, principalPermissionGrants, environments
 import { configureSpekoSessionTools } from "../services/voice/speko-tool-setup.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { chatChannelService } from "../services/chat-channels.js";
+import { voiceInboundService } from "../services/voice/voice-inbound-service.js";
 import { voiceSessionService } from "../services/voice/voice-session-service.js";
 import { captureVoiceDeliveryDiagnostics } from "../services/voice/voice-delivery-diagnostics.js";
 import { parseSpekoDeliveryDiagnostics } from "../services/voice/speko-delivery-diagnostics.js";
@@ -1255,6 +1256,40 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     const repeated = await docs.getIssueDocumentByKey(f.call.intakeIssueId!, key);
     expect(repeated?.latestRevisionId).toBe(first?.latestRevisionId);
     expect(await docs.listIssueDocuments(f.call.intakeIssueId!)).toHaveLength(1);
+  });
+  it.each([false, true])("hands inbound cleanup ownership to the authorized session atomically (guest=%s)", async guest => {
+    const f = await inboundFixture(guest);
+    if (guest) await f.tool("submit_request", { text: "A public request before private approval" });
+    let release!: () => void, bound!: () => void;
+    const bindingReached = new Promise<void>(resolve => { bound = resolve; });
+    const releaseApproval = new Promise<void>(resolve => { release = resolve; });
+    const inbound = voiceInboundService(db, {
+      allowLocalBoard: false, credentials: f.credentials, provider: () => f.transport,
+      voicePrompt: "Test voice", lowTrustVoicePrompt: "Test guest voice",
+      start: async input => {
+        const result = await f.service.start(input);
+        bound(); await releaseApproval;
+        return result;
+      },
+    });
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const approval = inbound.decide(f.companyId, f.endpointId, f.call.id, f.input.caller,
+      { approve: true, approvalCode: f.call.approvalCode, issueId: f.issueId });
+    try {
+      await Promise.race([bindingReached, approval.then(() => { throw new Error("Approval did not reach session binding"); })]);
+      // The session has committed but its caller has not received the result.
+      // Expiry or process death here must not leave two cleanup owners.
+      vi.setSystemTime(f.call.expiresAt.getTime() + 1);
+      await inbound.reconcile(1000);
+      expect(f.transport.endSession).not.toHaveBeenCalledWith(f.call.providerSessionId);
+      const [call] = await db.select().from(chatVoiceInboundCalls).where(eq(chatVoiceInboundCalls.id, f.call.id));
+      expect(call).toMatchObject({ state: "approved" });
+      expect(call.sessionId).not.toBeNull();
+      const [session] = await db.select().from(chatVoiceSessions).where(eq(chatVoiceSessions.id, call.sessionId!));
+      expect(session).toMatchObject({ providerSessionId: f.call.providerSessionId, callerId: f.callerId, issueId: f.issueId });
+      release();
+      await expect(approval).resolves.toMatchObject({ state: "approved", sessionId: session.id });
+    } finally { release(); await approval.catch(() => undefined); vi.useRealTimers(); }
   });
   it("requires approval of the specific incoming call before delivering any private work", async () => {
     const f = await inboundFixture();

@@ -1272,3 +1272,17 @@ checks pass; remote acceptance is pending. Slice 23 starts the inbound admission
 cleanup audit in `2026-10-25-voice-inbound-cleanup-sleep-audit.md`. It explicitly
 separates retention and reports and requires proof of approval/cleanup handoff,
 termination confirmation, and protection against deleting unfinished cleanup.
+
+
+Voice reply review repairs are published at #17578 head `90caaf3fa9`: shared scoped
+worker, actual authority-restoration wiring regression, 191 overlapping selected
+consumer tests and workspace types/build passing. Removing the real notification
+reproduces the lost reply. Both review threads are resolved; fresh CI/review remain.
+
+Inbound cleanup slice 23 now makes approval/session handoff atomic, after a real
+expiry regression reproduced termination of an already authorized call. All 110
+voice integration cases and server typechecking pass. This slice is not published:
+locked cleanup claims, legacy handoff recovery, bound-guest ownership, termination
+confirmation, retention protection and scheduler/producer migration remain required.
+The full original inventory, older #17490 E2E failure, and stack/master reconciliation
+remain outstanding. No stack PR has been merged by this work.

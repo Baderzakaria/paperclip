@@ -2,7 +2,7 @@
 
 Baseline: voice reply PR #17578, head 439d0a86eb75c129c30742a8cc24bf18e2a6ebf3.
 Branch: codex/sleep-23-voice-inbound-cleanup.
-Status: owner audit; implementation and verification remain required.
+Status: atomic approval handoff implemented and verified; cleanup worker, remaining ownership cases, and publication remain required.
 
 ## One reason in this slice
 
@@ -112,3 +112,39 @@ live at publication; no check failure was present at the latest inspection.
 Latest-head checks, Greptile score and review findings still require acceptance.
 No stack PR is authorized for merge by the active goal. The remaining original
 ledger, older #17490 failure, and final master reconciliation remain required.
+
+
+## Atomic handoff checkpoint
+
+The parent reply review repairs are published at `90caaf3fa929141a13cc17f54d6be846d6e93217`
+and merged into this branch. Both voice workers now share the scoped deadline
+mechanism; the next inbound worker should reuse it rather than copy a third loop.
+Parent CI run 40180022971 is live; no failure was present at the latest inspection.
+Its old 439d head passed CI/Greptile, but fresh-head acceptance remains required.
+
+A real-service regression paused after inbound session reservation committed but
+before its result reached `decide`, then advanced beyond the admission expiry.
+The original sweep called provider termination on that authorized session. This
+failed in `/tmp/sleep23-handoff-before.log`. The reservation now writes admission
+state=approved and sessionId in the same transaction as insertion or guest
+promotion. `decide` reads that binding after start, rather than creating it in a
+second transaction. No provider call is moved inside the transaction.
+
+Both ordinary admission and guest-to-private promotion are covered. All 110 voice
+integration cases pass on a fresh PostgreSQL database, and server typechecking
+passes. An initial full run passed 109 and failed the guest test's assertion of
+no termination calls globally: advancing ten minutes also expired unrelated
+retained fixture admissions. The assertion now checks the exact provider call
+whose handoff is under test, preserving legitimate unrelated cleanup. The full
+rerun passes. No broad workspace/remote verification is claimed for this child.
+
+This is a prerequisite, not the complete cleanup migration. Still required:
+- Recheck and claim a discovered admission under its row lock before provider I/O;
+  atomic new handoff alone does not protect a stale discovery snapshot.
+- Reconstruct legacy interrupted handoffs written before this atomic change.
+- Define one termination owner for bound guest sessions, and settlement signals.
+- Preserve unconfirmed/failed termination debt and credential/account isolation.
+- Prevent history retention from deleting unfinished cleanup.
+- Wire all producer notifications, actual deadlines, scoped worker registration,
+  lifecycle tests and remove only the cleanup portion of periodic reconciliation.
+- Keep history retention and call reports as separate forthcoming PRs.

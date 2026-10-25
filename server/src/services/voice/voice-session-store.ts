@@ -175,9 +175,18 @@ export function voiceSessionStore(db: Db, options: { allowLocalBoard: boolean; n
       const context = await endpointContext(tx, input.companyId, input.endpointId);
       await authorizeConnection(tx, context, input.caller);
       if (context.generation < 1 || input.maxDurationSeconds < 30 || input.maxDurationSeconds > 1800 || !Number.isInteger(input.maxDurationSeconds)) throw conflict("Voice setup or duration is invalid");
+      let inboundAdmissionId: string | undefined;
+      async function bindInboundSession(sessionId: string) {
+        if (!inboundAdmissionId) return;
+        // Admission expiry must relinquish cleanup in the same commit that
+        // establishes an authorized owner for the existing provider call.
+        await tx.update(chatVoiceInboundCalls).set({ state: "approved", sessionId, updatedAt: new Date() })
+          .where(eq(chatVoiceInboundCalls.id, inboundAdmissionId));
+      }
       if (input.mode === "inbound_phone") {
         const [admission] = await tx.select().from(chatVoiceInboundCalls).where(and(eq(chatVoiceInboundCalls.companyId, input.companyId), eq(chatVoiceInboundCalls.endpointId, input.endpointId), eq(chatVoiceInboundCalls.providerSessionId, input.providerSessionId ?? ""))).for("update");
         if (!admission || admission.state !== "approving" || admission.approvedByUserId !== input.caller.id || admission.callerAuthority !== input.caller.authority || admission.expiresAt.getTime() <= Date.now() || admission.generation !== context.generation || admission.credentialFingerprint !== context.fingerprint || admission.toolTokenHash !== voiceTokenHash(input.toolToken ?? "") || input.idempotencyKey !== `inbound:${admission.id}`) throw forbidden("This live call has not been approved for private work");
+        inboundAdmissionId = admission.id;
       }
       const binding = await input.prepareBinding(tx);
       const task = await authorizeTask(tx, input.companyId, binding.issueId, input.caller);
@@ -197,6 +206,7 @@ export function voiceSessionStore(db: Db, options: { allowLocalBoard: boolean; n
           await notifyVoiceChange(tx, { kind: "session", id: guest.id });
           const [promoted] = await tx.update(chatVoiceSessions).set({...binding, callerId: input.caller.id, callerAuthority: input.caller.authority, approvedByUserId: input.caller.id, idempotencyKey: input.idempotencyKey, requestFingerprint: input.requestFingerprint, updatedAt: new Date()}).where(eq(chatVoiceSessions.id, guest.id)).returning();
           await tx.insert(activityLog).values({companyId: input.companyId, actorType: "user", actorId: input.caller.id, action: "voice.guest.private_call_approved", entityType: "voice_session", entityId: guest.id, details: {issueId: binding.issueId}});
+          await bindInboundSession(promoted.id);
           return {session: promoted, created: false as const};
         }
       }
@@ -207,6 +217,7 @@ export function voiceSessionStore(db: Db, options: { allowLocalBoard: boolean; n
         callerId: input.caller.id, callerAuthority: input.caller.authority, mode: input.mode ?? "browser", state: input.providerSessionId ? "connecting" : "reserved", providerSessionId: input.providerSessionId ?? null, approvedByUserId: input.mode === "inbound_phone" ? input.caller.id : null, generation: context.generation, credentialFingerprint: context.fingerprint,
         toolTokenHash: voiceTokenHash(token), idempotencyKey: input.idempotencyKey, requestFingerprint: input.requestFingerprint, createdAt, expiresAt: new Date(createdAt.getTime() + input.maxDurationSeconds * 1000) }).returning();
       await tx.insert(activityLog).values({ companyId: input.companyId, actorType: "user", actorId: input.caller.id, action: "voice.session.requested", entityType: "voice_session", entityId: session.id, details: { endpointId: input.endpointId, issueId: session.issueId, mode: input.mode ?? "browser" } });
+      await bindInboundSession(session.id);
       return { session, created: true as const, token };
     });
   }

@@ -244,7 +244,7 @@ export function voiceInboundService(db: Db, options: {
     if (!input.approve) { await client.endSession(admission.providerSessionId).catch(() => undefined); return projection(admission); }
     if ((await client.inspectSession(admission.providerSessionId)).endedAt) { await db.update(chatVoiceInboundCalls).set({state: "ended", updatedAt: new Date()}).where(eq(chatVoiceInboundCalls.id, callId)); throw conflict("The caller already hung up"); }
     const result = await options.start({companyId, endpointId, issueId: admission.requestedIssueId ?? undefined, caller, idempotencyKey: `inbound:${admission.id}`, maxDurationSeconds: 600, mode: "inbound_phone", providerSessionId: admission.providerSessionId, toolToken: token(row, admission.providerSessionId, admission.generation, credentials.signingSecret)});
-    [admission] = await db.update(chatVoiceInboundCalls).set({state: "approved", sessionId: result.session.id, updatedAt: new Date()}).where(and(eq(chatVoiceInboundCalls.id, callId), eq(chatVoiceInboundCalls.state, "approving"))).returning();
+    [admission] = await db.select().from(chatVoiceInboundCalls).where(and(eq(chatVoiceInboundCalls.id, callId), eq(chatVoiceInboundCalls.state, "approved"), eq(chatVoiceInboundCalls.sessionId, result.session.id)));
     if (!admission) throw conflict("This call ended during approval");
     return projection(admission);
   }
