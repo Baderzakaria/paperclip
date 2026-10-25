@@ -69,6 +69,7 @@ export function registerToolConnectionHealthWork(
           errors.push(error);
         }
       }
+      if (due.length > batch.entries.length) earliest = Date.now() + 1_000;
       if (errors.length) throw new AggregateError(errors, "Tool connection health checks could not settle");
     },
     hasPending: async () => dirty.size > 0,

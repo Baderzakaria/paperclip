@@ -1062,3 +1062,13 @@ the fair company selector, request fresh review, and propagate to Discord #17557
 The Discord initial head has Greptile 5/5; its CI and Paperclip review were still
 running when inspected. The remaining original inventory and #17490 failure
 remain open; no stack PR is merged or declared fully accepted.
+
+
+Discord's first Paperclip review (4/5) identified a dispatch-capacity issue shared
+by health: 25 checks per 30 seconds delays a large already-due backlog. Health's
+actual-probe timestamp regression failed with a 30.7-second gap, then passed when
+only a remaining due batch receives a one-second continuation. All 22 health and
+batching cases pass; server types pass. Propagate the parent and apply the same
+bounded continuation to Discord, with its own regression. The Discord review also
+requests preserving queued scopes after malformed hints and broader producer
+coverage. Its initial head has Greptile 5/5 but these findings remain open.

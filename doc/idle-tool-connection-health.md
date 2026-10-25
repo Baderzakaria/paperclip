@@ -21,7 +21,9 @@ company status are not new filters: this migration preserves the old policy.
 An unchecked row is due immediately. Otherwise its deadline is `healthCheckedAt`
 plus 15 minutes. A company hint refreshes that company's cache. Startup and an
 instance feature-settings change can refresh the whole instance. Refreshes are
-coalesced with a 30-second minimum spacing. There is no scheduled refresh when
+coalesced with a 30-second minimum spacing when no due backlog remains.
+Batches retain at most 25 checks and continue after one second while already due
+rows remain, so the batch limit does not cap dispatch at 50 checks per minute. There is no scheduled refresh when
 there are no eligible rows or unresolved changes. Future checks cause no SQL
 before their deadline. Each pass checks at most 25 due connections, taking turns
 across companies and preserving due order within each company. The company cursor
@@ -152,3 +154,13 @@ changing application behavior or weakening assertions. All 66 access/email/GitHu
 cases pass on the final run. Server typecheck/build pass. Cumulative selected
 coverage is 776 unique tests; full-suite and fresh remote review/checks remain
 acceptance gates. No whole-instance sleep or provider suspension is claimed.
+
+
+The Discord child review also exposed fixed-batch throughput as a risk for health.
+A probe-timestamp regression measured a 30.7-second gap before the 26th already
+owed check. The worker now schedules a one-second continuation only when the due
+selection exceeds its bounded batch. Failed work retains backoff; an empty or
+fully future-dated inventory has no continuation. This is scheduling concrete
+backlog, not a periodic idle scan. The initial deadline-only assertion passed
+incorrectly because a pending transaction notification temporarily reported an
+immediate coordinator wake; acceptance measures actual probe timestamps instead.

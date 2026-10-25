@@ -136,7 +136,10 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
   });
   it("drains more than one due page without repeatedly checking completed rows", async () => {
     for (let i = 0; i < 30; i++) await connection();
+    const probedAt: number[] = [], performProbe = probe.getMockImplementation()!;
+    probe.mockImplementation(async (id: string) => { probedAt.push(Date.now()); return performProbe(id); });
     await start(); await checked(30);
+    expect(probedAt[25] - probedAt[24]).toBeLessThan(5_000);
     expect(new Set(probe.mock.calls.map(([id]) => id)).size).toBe(30);
   });
   it("checks the first connection created by the real API service after setup commits", async () => {
