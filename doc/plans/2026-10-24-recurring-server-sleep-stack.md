@@ -1504,3 +1504,13 @@ fix; all 184 milestone/integration/unit interaction cases and production server
 typechecking pass. Remaining terminal-interaction writers are document-target
 expiry, deleted-addressee cancellation and startup supersession; other producer
 audits and production migration remain pending.
+
+
+Slice 28 covers the remaining direct terminal-interaction writers in the
+interaction service: document-target expiry, deleted addressees and startup
+supersession. Seven real-producer regressions failed before the fix; all 191
+worker/integration/unit cases and production server typechecking pass. Database
+fixture setup/cleanup moved to a cohesive helper, keeping the worker test file
+below 1,000 lines. The broader raw-writer audit still includes external services
+(secret proposals, tool reviews, conversation reset and native review retirement),
+plus the previously listed publication/configuration/recovery dependencies.

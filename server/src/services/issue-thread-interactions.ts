@@ -1898,6 +1898,7 @@ async function expireStaleRequestConfirmationTarget(
     snapshot,
   });
   const expireInTransaction = async (tx: Db | any) => {
+    if (args.row.kind === "request_confirmation") await notifyChatRunMilestones(tx, args.row);
     const [updated] = await tx
       .update(issueThreadInteractions)
       .set({
@@ -3251,6 +3252,7 @@ export function issueThreadInteractionService(
       const cancelled: IssueThreadInteraction[] = [];
       for (const row of rows) {
         const updated = await db.transaction(async (tx) => {
+          if (["ask_user_questions", "request_confirmation"].includes(row.kind)) await notifyChatRunMilestones(tx, row);
           if (row.kind === "request_confirmation") await notifyDeliveryWork(tx, DELIVERY_QUEUES.toolReviewProjection);
           const [resolved] = await tx
             .update(issueThreadInteractions)
@@ -3336,6 +3338,7 @@ export function issueThreadInteractionService(
       const expired: IssueThreadInteraction[] = [];
       for (const { row, replacementInteractionId } of supersededRows) {
         const updated = await db.transaction(async (tx) => {
+          if (["ask_user_questions", "request_confirmation"].includes(row.kind)) await notifyChatRunMilestones(tx, row);
           if (row.kind === "request_confirmation") await notifyDeliveryWork(tx, DELIVERY_QUEUES.toolReviewProjection);
           const [updatedRow] = await tx
             .update(issueThreadInteractions)
@@ -4724,6 +4727,7 @@ export function issueThreadInteractionService(
           document,
         });
         const updated = await db.transaction(async (tx) => {
+          if (row.kind === "request_confirmation") await notifyChatRunMilestones(tx, row);
           const [resolved] = await tx
             .update(issueThreadInteractions)
             .set({

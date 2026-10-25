@@ -1,8 +1,9 @@
+import { documentService } from "../services/documents.js";
+import { createChatMilestoneFixtures } from "./helpers/chat-milestone-fixtures.js";
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { activityLog, agents, agentWakeupRequests, authUsers, caseHandoffs, cases, companyMemberships, chatActions, chatConversations, chatEndpoints, chatMessageLinks, chatPublications, companies, completionContracts, createDb, nativeRunFinalizations, nativeRunResults, statusDecisions, statusDecisionEffects, workAssessments, subscribeDatabaseWork,
-  heartbeatRunEvents, heartbeatRuns, issueComments, issueQuestionResponseDeliveries, issueThreadInteractions, issues, toolApplications, toolConnections } from "@paperclipai/db";
+import { agents, agentWakeupRequests, caseHandoffs, cases, chatConversations, chatEndpoints, chatPublications, completionContracts, createDb, nativeRunFinalizations, nativeRunResults, statusDecisions, statusDecisionEffects, workAssessments, subscribeDatabaseWork, heartbeatRuns, issueComments, issueQuestionResponseDeliveries, issueThreadInteractions, issues } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
@@ -37,68 +38,23 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
   let coordinator: ReturnType<typeof createDeliveryWorkCoordinator> | undefined;
   let enabled = true;
   const errors: unknown[] = [];
-  const fixtureCompanies: string[] = [];
-  const fixtureUsers: string[] = [];
+  let fixtures: ReturnType<typeof createChatMilestoneFixtures>;
   type Fixture = Awaited<ReturnType<typeof fixture>>;
   let f: Fixture;
 
   beforeAll(async () => {
     if (!external) temporary = await startEmbeddedPostgresTestDatabase("chat-milestones-");
     db = createDb(external ?? temporary!.connectionString, { maxConnections: 6, idleTimeoutSeconds: 0, maxLifetimeSeconds: 0 });
+    fixtures = createChatMilestoneFixtures(db);
   }, 60_000);
-  async function fixture(companyId = randomUUID()) {
-    const agentId = randomUUID(), issueId = randomUUID(), endpointId = randomUUID(), conversationId = randomUUID(), commentId = randomUUID(), userId = randomUUID();
-    if (!fixtureCompanies.includes(companyId)) {
-      fixtureCompanies.push(companyId);
-      await db.insert(companies).values({ id: companyId, name: "Milestones", issuePrefix: `M${companyId.slice(0, 7)}` });
-    }
-    fixtureUsers.push(userId);
-    await db.insert(authUsers).values({ id: userId, name: "Owner", email: `${userId}@example.test`, createdAt: new Date(), updatedAt: new Date() });
-    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: userId, status: "active", membershipRole: "owner" });
-    await db.insert(agents).values({ id: agentId, companyId, name: "Maya", adapterType: "paperclip_runner" });
-    await db.insert(issues).values({ id: issueId, companyId, title: "Chat task", status: "in_progress", assigneeAgentId: agentId, responsibleUserId: userId });
-    const applicationId = randomUUID(), connectionId = randomUUID();
-    await db.insert(toolApplications).values({ id: applicationId, companyId, name: `Chat ${applicationId}`, type: "chat" });
-    await db.insert(toolConnections).values({ id: connectionId, companyId, applicationId, name: "Chat", uid: connectionId, transport: "chat_sdk", connectionPurpose: "channel", enabled: true, status: "active" });
-    await db.insert(chatEndpoints).values({ id: endpointId, companyId, connectionId, assignedAgentId: agentId, publicId: endpointId, provider: "slack", status: "active" });
-    await db.insert(chatConversations).values({ id: conversationId, companyId, endpointId, issueId, externalConversationId: conversationId, externalThreadId: conversationId, externalLabel: "Chat" });
-    await db.insert(issueComments).values({ id: commentId, companyId, issueId, authorType: "user", body: "Start work" });
-    await db.insert(chatMessageLinks).values({ companyId, endpointId, conversationId, commentId, providerMessageId: commentId, direction: "inbound" });
-    return { companyId, agentId, issueId, endpointId, conversationId, commentId, userId };
-  }
+  const fixture = (companyId?: string) => fixtures.create(companyId);
   beforeEach(async () => {
     enabled = true; errors.length = 0; f = await fixture();
     vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
   });
   afterEach(async () => {
     await coordinator?.stop(); coordinator = undefined; vi.useRealTimers(); vi.restoreAllMocks();
-    for (const companyId of fixtureCompanies.splice(0)) {
-      await db.delete(activityLog).where(eq(activityLog.companyId, companyId));
-      await db.delete(caseHandoffs).where(eq(caseHandoffs.companyId, companyId));
-      await db.delete(cases).where(eq(cases.companyId, companyId));
-      await db.delete(chatActions).where(eq(chatActions.companyId, companyId));
-      await db.delete(chatMessageLinks).where(eq(chatMessageLinks.companyId, companyId));
-      await db.delete(chatPublications).where(eq(chatPublications.companyId, companyId));
-      await db.delete(chatConversations).where(eq(chatConversations.companyId, companyId));
-      await db.delete(chatEndpoints).where(eq(chatEndpoints.companyId, companyId));
-      await db.delete(issueQuestionResponseDeliveries).where(eq(issueQuestionResponseDeliveries.companyId, companyId));
-      await db.delete(issueThreadInteractions).where(eq(issueThreadInteractions.companyId, companyId));
-      await db.delete(issueComments).where(eq(issueComments.companyId, companyId));
-      await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.companyId, companyId));
-      await db.delete(nativeRunFinalizations).where(eq(nativeRunFinalizations.companyId, companyId));
-      await db.delete(statusDecisionEffects).where(eq(statusDecisionEffects.companyId, companyId));
-      await db.delete(statusDecisions).where(eq(statusDecisions.companyId, companyId));
-      await db.delete(workAssessments).where(eq(workAssessments.companyId, companyId));
-      await db.delete(nativeRunResults).where(eq(nativeRunResults.companyId, companyId));
-      await db.delete(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId));
-      await db.delete(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId));
-      await db.delete(completionContracts).where(eq(completionContracts.companyId, companyId));
-      await db.delete(issues).where(eq(issues.companyId, companyId));
-      await db.delete(agents).where(eq(agents.companyId, companyId));
-      await db.delete(companyMemberships).where(eq(companyMemberships.companyId, companyId));
-      await db.delete(companies).where(eq(companies.id, companyId));
-    }
-    for (const userId of fixtureUsers.splice(0)) await db.delete(authUsers).where(eq(authUsers.id, userId));
+    await fixtures.cleanup();
     expect(errors).toEqual([]);
   });
   afterAll(async () => { await db?.$client.end({ timeout: 1 }); await temporary?.cleanup(); });
@@ -640,23 +596,30 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     ["confirmation", "withdraw"], ["confirmation", "expire"],
     ["question", "comment"], ["question", "historical comment"],
     ["confirmation", "comment"], ["confirmation", "historical comment"],
-    ["question", "replacement"], ["confirmation", "replacement"],
+    ["question", "replacement"], ["confirmation", "replacement"], ["confirmation", "startup supersession"],
+    ["question", "addressee deletion"], ["confirmation", "addressee deletion"],
   ] as const)("rechecks an unsent %s after %s", async (kind, action) => {
     const source = await run(f, { status: "failed", errorCode: "test_run_failed" });
     const interactions = issueThreadInteractionService(db);
     const issue = { id: f.issueId, companyId: f.companyId, status: "in_progress" };
-    const createInteraction = (sourceRunId: string) => interactions.create(issue, kind === "confirmation" ? {
-      kind: "request_confirmation", continuationPolicy: "wake_assignee", sourceRunId,
+    const addressee = action === "addressee deletion"
+      ? (await db.insert(agents).values({ companyId: f.companyId, name: "Reviewer", adapterType: "paperclip_runner" }).returning())[0] : null;
+    const createInteraction = (sourceRunId: string, supersedePendingSiblingInteractions = true) => interactions.create(issue, kind === "confirmation" ? {
+      kind: "request_confirmation", continuationPolicy: "wake_assignee", sourceRunId, addresseeAgentId: addressee?.id,
       title: "Confirm", payload: { version: 1, prompt: "Continue?", supersedeOnUserComment: true },
     } : {
-      kind: "ask_user_questions", continuationPolicy: "wake_assignee", sourceRunId,
+      kind: "ask_user_questions", continuationPolicy: "wake_assignee", sourceRunId, addresseeAgentId: addressee?.id,
       title: "Choose", payload: { version: 1, title: "Choose", supersedeOnUserComment: true, questions: [{
         id: "choice", prompt: "Continue?", selectionMode: "single", required: true,
         options: [{ id: "yes", label: "Yes" }],
       }] },
-    }, { agentId: f.agentId, runId: sourceRunId });
+    }, { agentId: f.agentId, runId: sourceRunId }, { supersedePendingSiblingInteractions });
     const interaction = await createInteraction(source.id);
-    const replacement = action === "replacement" ? await run() : null;
+    const replacement = action === "replacement" || action === "startup supersession" ? await run() : null;
+    if (action === "startup supersession") {
+      await createInteraction(replacement!.id, false);
+      await db.update(issueThreadInteractions).set({ createdAt: new Date(Date.now() - 1000) }).where(eq(issueThreadInteractions.id, interaction.id));
+    }
     if (action === "historical answer") {
       await interactions.dismissInteraction(issue, interaction.id, { userId: f.userId });
       await db.update(issues).set({ status: "done" }).where(eq(issues.id, f.issueId));
@@ -664,7 +627,11 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await start(); await flush();
     expect((await publications()).some(row => row.idempotencyKey.startsWith(`run:${source.id}:`))).toBe(false);
     await quiet();
-    if (action === "replacement") {
+    if (action === "addressee deletion") {
+      expect((await interactions.cancelPendingForDeletedAddressee(f.companyId, addressee!.id)).map(row => row.id)).toContain(interaction.id);
+    } else if (action === "startup supersession") {
+      expect(await interactions.sweepSupersededPendingRequestConfirmations()).toMatchObject({ expired: 1 });
+    } else if (action === "replacement") {
       await createInteraction(replacement!.id);
       expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interaction.id)))[0].status).toBe("expired");
     } else if (action === "comment" || action === "historical comment") {
@@ -696,6 +663,37 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     if (action === "historical answer") {
       expect(await db.select().from(issueQuestionResponseDeliveries).where(eq(issueQuestionResponseDeliveries.interactionId, interaction.id))).toEqual([]);
     }
+    await quiet();
+  });
+  it.each(["change", "delete", "accept", "reject"] as const)("rechecks a document confirmation after %s detects a stale target", async mode => {
+    const source = await run(f, { status: "failed", errorCode: "test_run_failed" });
+    const interactions = issueThreadInteractionService(db), docs = documentService(db);
+    const issue = { id: f.issueId, companyId: f.companyId, status: "in_progress", projectId: null, goalId: null };
+    const input = { issueId: f.issueId, key: "plan", format: "markdown", body: "First plan", createdByUserId: f.userId };
+    const { document } = await docs.upsertIssueDocument(input);
+    const interaction = await interactions.create(issue, {
+      kind: "request_confirmation", continuationPolicy: "wake_assignee", sourceRunId: source.id,
+      payload: { version: 1, prompt: "Apply this plan?", target: { type: "issue_document", issueId: f.issueId,
+        documentId: document.id, key: document.key, revisionId: document.latestRevisionId!, revisionNumber: document.latestRevisionNumber } },
+    }, { agentId: f.agentId, runId: source.id });
+    await start(); await flush();
+    expect((await publications()).some(row => row.idempotencyKey.startsWith(`run:${source.id}:`))).toBe(false);
+    await quiet();
+    const changed = mode === "delete"
+      ? { ...(await docs.deleteIssueDocument(f.issueId, document.key))!, latestRevisionId: null, latestRevisionNumber: null }
+      : (await docs.upsertIssueDocument({ ...input, body: "Revised plan", baseRevisionId: document.latestRevisionId })).document;
+    await flush(); await quiet();
+    if (mode === "accept" || mode === "reject") {
+      await expect(mode === "accept"
+        ? interactions.acceptInteraction(issue, interaction.id, {}, { userId: f.userId })
+        : interactions.rejectInteraction(issue, interaction.id, {}, { userId: f.userId }))
+        .rejects.toMatchObject({ status: 409, details: { code: "interaction_stale_target" } });
+    } else {
+      expect((await interactions.expireStaleRequestConfirmationsForIssueDocument(issue, changed, { userId: f.userId })).map(row => row.id)).toContain(interaction.id);
+    }
+    expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interaction.id)))[0].status).toBe("expired");
+    await flush();
+    expect((await publications()).map(row => row.idempotencyKey)).toContain(`run:${source.id}:failed:${f.endpointId}`);
     await quiet();
   });
   it("wakes a question continuation after its in-flight prompt receipt commits", async () => {

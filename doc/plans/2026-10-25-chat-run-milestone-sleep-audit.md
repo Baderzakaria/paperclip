@@ -840,3 +840,48 @@ an addressed agent, and startup supersession. Document-change callers are in
 `routes/issues.ts`; the owning state mutation is in the interaction service.
 Audit those before removing the lifecycle poll. This checkpoint still does not
 register the worker in production or establish final CI/review acceptance.
+
+
+## Remaining terminal transitions in the interaction service
+
+The resolution-time stale-document helper, explicit document-target invalidation,
+deleted-addressee cancellation and startup supersession now register milestone
+intent before their first interaction write. The guards follow the existing
+response-slot policy: question/confirmation for addressee cancellation, and
+confirmation for document targets. No validity, permission, locking, publication,
+or expiry behavior changes. Existing transactions own the notification.
+
+New regressions use actual document creation/update/deletion and the interaction
+service's document-invalidation/accept/reject entry points. An early document
+write is allowed to settle before interaction expiry, proving that the last
+state transition still wakes projection. Deleted-addressee cases use another
+agent, so the source run and its chat endpoint remain valid. Startup supersession
+creates both pending cards before startup with ordinary sibling replacement
+explicitly disabled; the actual repair selects and expires the older one.
+
+- `/tmp/sleep28-fixture-extraction-tests.log`: all 65 existing worker cases pass
+  after extracting only shared fixture creation/cleanup into
+  `__tests__/helpers/chat-milestone-fixtures.ts`. Worker, clock and quiet assertions
+  remain in the tests; cleanup still occurs after coordinator shutdown. The
+  helper tracks only fixture company/user IDs and now cleans fixture documents.
+- `/tmp/sleep28-terminal-interactions-before.log`: all seven new cases reach
+  the correct terminal interaction state but fail to produce the eligible
+  failure notice: document change/deletion, stale accept/reject, two deleted-
+  addressee variants and startup supersession. There are no setup failures.
+- `/tmp/sleep28-terminal-interactions-tests.log`: all 191 cases pass across
+  72 worker, 106 service integration and 13 service unit cases. The two real-DB
+  suites use their separate existing isolated databases.
+- `/tmp/sleep28-terminal-interactions-typecheck.log`: production server
+  typecheck passes; tests are excluded. `git diff --check` passes.
+
+The raw interaction-writer audit also found owners outside this service. These
+must be reconciled with their outer transaction signals before removing polling:
+`agent-conversations.ts`, `secret-proposals.ts`, `tool-action-review.ts`,
+`tool-gateway.ts`, native automatic/obsolete review retirement, and native
+external-review supersession. Result/summary-only writes, connection-intent-only
+writes, and writes already covered by an outer status-decision/run transaction
+need explicit disposition rather than indiscriminate new notifications.
+
+Provider receipts, conversation/configuration changes and alternate recovery
+writers remain under audit. This checkpoint does not register the new worker
+in production or remove lifecycle polling, and is not final PR acceptance.
