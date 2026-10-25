@@ -860,6 +860,27 @@ suite("Discord command ownership store (real PostgreSQL, no network)", () => {
     expect(errors).toEqual([]);
   });
 
+  it("drains healthy commands promptly while one entry remains in failure backoff", async () => {
+    await reconcileDatabaseWork(db, DELIVERY_QUEUES.chatCommandRegistration);
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    const entries = Array.from({ length: 300 }, (_, index) => ({
+      id: `command-${index}`, companyId: `company-${index % 10}`, connectionId: `connection-${index}`, dueAt: 0,
+    }));
+    const check = vi.fn(async (id: string) => {
+      if (id === "command-0") throw new Error("Unavailable credential");
+      return { ...entries.find(entry => entry.id === id)!, dueAt: Date.now() + 300_000 };
+    });
+    const onError = vi.fn();
+    coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError });
+    await registerDiscordCommandWork(coordinator, { load: async () => entries, check }, () => true).ready;
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(new Set(check.mock.calls.map(([id]) => id)).size).toBe(300);
+    expect(check.mock.calls.filter(([id]) => id === "command-0")).toHaveLength(1);
+    expect(onError).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(45_000);
+    expect(check.mock.calls.filter(([id]) => id === "command-0")).toHaveLength(2);
+    expect(check.mock.calls.filter(([id]) => id !== "command-0")).toHaveLength(299);
+  });
   it("recovers queued scopes after an unknown hint instead of dropping the wake", async () => {
     await reconcileDatabaseWork(db, DELIVERY_QUEUES.chatCommandRegistration);
     vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });

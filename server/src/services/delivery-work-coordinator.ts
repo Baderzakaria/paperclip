@@ -78,9 +78,16 @@ export function createDeliveryWorkCoordinator(input: {
           }
         }).catch(error => {
           schedule(task.retryMs);
+          let failure = error;
+          try {
+            const next = input.canRun() ? task.nextRunAt?.() : null;
+            if (next != null && next > Date.now()) schedule(0, next);
+          } catch (deadlineError) {
+            failure = new AggregateError([error, deadlineError], "Delivery failure deadline could not be read");
+          }
           // Logging must never turn a recoverable sweep failure into an
           // unhandled rejection or prevent other queues from running.
-          try { if (!workerStopped) input.onError(error, queue); } catch { /* Recovery remains scheduled. */ }
+          try { if (!workerStopped) input.onError(failure, queue); } catch { /* Recovery remains scheduled. */ }
         }).finally(() => {
           running = null;
           controller = null;

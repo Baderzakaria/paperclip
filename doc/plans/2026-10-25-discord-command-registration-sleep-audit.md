@@ -174,3 +174,14 @@ Next gates: publish the stacked PR, complete all remote checks
 and reviews, repair the health parent's fairness and producer-coverage findings,
 and propagate its changes. Full original inventory and earlier unresolved CI
 remain required. No merge is authorized.
+
+
+Review at 58a1ac7595 identified a failed-item capacity regression in the shared
+coordinator and a quiet-window test that leaked spies on assertion failure. The
+300-entry failure-backlog test reproduced 25 attempts; the repair honors future
+worker deadlines while preserving fallback/backoff and drain. The integration
+fixture now waits for active-work settlement as well as an empty scheduler and
+always restores spies. Verification: 87 worker/coordinator/health, eight producer
+and affected Slack, 57 existing lifecycle/startup tests; server types/build pass.
+The health security parent is inherited through company cleanup. See the owning
+Discord document for failure evidence and exact scope. Fresh remote gates remain.

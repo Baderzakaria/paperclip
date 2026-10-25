@@ -131,3 +131,37 @@ producer integrations and six expanded deletion cases pass after propagation;
 rollback restores conversation/publication history. The finding remains recorded
 in the prerequisite document rather than treating the earlier endpoint-only
 fixture as sufficient evidence.
+
+
+## Failure-path capacity and CI isolation repair
+
+Required CI at 58a1ac7595 found one command-inventory select after the removal test
+had observed `nextWakeAt() === null`. That scheduler observation can occur during
+an admitted reload; it does not prove notification settlement. The assertion then
+threw before restoring DB spies and contaminated a later Slack grant-transaction
+test with recursive spies. The quiet-window tests now wait for both no tracked
+active work and no deadline, and restore spies in `finally`. The downstream Slack
+test is included in verification. The CI failure, rather than a local reproducer,
+is the evidence for the original race; no timeout or SQL-quiet assertion was relaxed.
+
+Review also identified a genuine failed-item throughput bug: the shared
+coordinator ignored `nextRunAt` after a thrown sweep and always waited its fallback
+retry. A controlled 300-command regression with one persistent credential failure
+reproduced only 25 attempted commands within 15 seconds. The coordinator now keeps
+its fallback scheduled, then allows an explicitly future worker deadline to
+preempt it while dispatch is admitted. An overdue/null/unreadable deadline cannot
+cause a tight error retry loop; drain retains the ordinary fallback. A failed
+deadline reader is reported together with the original failure. Workers without
+a deadline keep their existing behavior. Domain retry/backoff remains owned by
+the worker; no provider policy enters the coordinator.
+
+After repair, all 300 commands are attempted within 15 seconds, the failed entry
+is attempted once in that window, and its later retry does not recheck the 299
+healthy entries. Five coordinator cases verify future deadlines and fallback
+behavior for overdue, later, unreadable, and drain states. All 87 command,
+coordinator, and health cases pass; eight real automatic-registration/Slack cases
+pass (1,412 other integration cases deselected); 57 delivery/warm-standby/startup
+cases pass. Server typecheck/build pass. The health parent is propagated through
+company cleanup, retaining both notification paths in the three overlapping
+producer sites. The six prerequisite cleanup cases pass. Remote acceptance of
+the new Discord head remains required.

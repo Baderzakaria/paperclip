@@ -6770,11 +6770,16 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         expect(deadline).toBeGreaterThan(Date.now() + 200_000);
         await f.service.configure(f.endpoint.id, { action: "remove" }, "owner-user");
         await vi.advanceTimersByTimeAsync(31_000);
-        await vi.waitFor(() => expect(coordinator.nextWakeAt()).toBeNull());
+        await vi.waitFor(async () => {
+          await vi.advanceTimersByTimeAsync(1000);
+          expect(idleWorkSnapshot().active).toBe(0);
+          expect(coordinator.nextWakeAt()).toBeNull();
+        });
         const reads = vi.spyOn(db, "select"), writes = vi.spyOn(db, "transaction");
-        await vi.advanceTimersByTimeAsync(120_000);
-        expect(reads).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled();
-        reads.mockRestore(); writes.mockRestore();
+        try {
+          await vi.advanceTimersByTimeAsync(120_000);
+          expect(reads).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled();
+        } finally { reads.mockRestore(); writes.mockRestore(); }
         expect(f.calls).toEqual(["GET", "POST"]);
         expect(onError).not.toHaveBeenCalled();
       } finally {
@@ -6817,7 +6822,11 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           await deleteCompany(db, f.fixture.companyId);
           deleted = true;
           await vi.advanceTimersByTimeAsync(31_000);
-          await vi.waitFor(() => expect(coordinator.nextWakeAt()).toBeNull());
+          await vi.waitFor(async () => {
+            await vi.advanceTimersByTimeAsync(1000);
+            expect(idleWorkSnapshot().active).toBe(0);
+            expect(coordinator.nextWakeAt()).toBeNull();
+          });
           expect(await db.select().from(chatDiscordCommandOwners)
             .where(eq(chatDiscordCommandOwners.endpointId, f.endpoint.id))).toEqual(owners);
           await f.service.shutdown();

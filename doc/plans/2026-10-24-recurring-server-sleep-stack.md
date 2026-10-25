@@ -1180,3 +1180,15 @@ targeted health/producer/consumer cases and server typecheck/build pass. Publish
 the repair to #17554, propagate through company-deletion #17561 into Discord
 #17557, and require fresh remote gates. No PR in this stack is merged. The next
 new owner remains chat runtime discovery; the full remaining ledger is unchanged.
+
+
+Published health security repair is 9ef6e4f4c8; fresh security and Greptile checks
+pass, with Actions still running at inspection. Company cleanup inherits it at
+e8febb30eb; six cleanup tests pass. Discord inherits it at fe1c886a3d, preserving
+both command and scoped health intents. Its previous-head CI exposed a flaky
+quiet-window/spying fixture and review reproduced failure-path backlog throttling.
+The repaired coordinator honors actual future deadlines without zero-delay error
+loops or changing domain backoff. All 152 selected command/coordinator/health,
+producer/Slack, delivery/standby/startup cases and server types/build pass. Publish
+for fresh CI/review. The full inventory, #17490 CI failure, and stack/master
+reconciliation remain open; no merge authority is implied.

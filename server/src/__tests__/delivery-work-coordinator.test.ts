@@ -59,6 +59,32 @@ describe("delivery work coordinator", () => {
       expect(s.onError).not.toHaveBeenCalled();
     } finally { clock.mockRestore(); }
   });
+  it("honors a future backlog deadline after failure while preserving the fallback retry", async () => {
+    const s = setup(), t = task();
+    let next: number | null = Date.now() + 1000;
+    t.run.mockRejectedValueOnce(new Error("One item failed"));
+    await s.coordinator.register(DELIVERY_QUEUES.feedback, { ...t, nextRunAt: () => next }).ready;
+    expect(s.coordinator.nextWakeAt()).toBe(next);
+    expect(s.onError).toHaveBeenCalledOnce();
+    next = null;
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(t.run).toHaveBeenCalledTimes(2);
+    expect(s.coordinator.nextWakeAt()).toBeNull();
+  });
+  it.each(["overdue", "later", "unreadable", "draining"])("keeps failure backoff for a %s deadline", async mode => {
+    const s = setup(), t = task(), now = Date.now();
+    t.run.mockImplementation(async () => {
+      if (mode === "draining") { s.canRun.mockReturnValue(false); s.canReconcile.mockReturnValue(true); }
+      throw new Error("Unavailable");
+    });
+    await s.coordinator.register(DELIVERY_QUEUES.feedback, { ...t, nextRunAt: () => {
+      if (mode === "unreadable") throw new Error("Deadline unavailable");
+      return mode === "overdue" ? now : now + (mode === "later" ? 60_000 : 1000);
+    } }).ready;
+    expect(s.coordinator.nextWakeAt()).toBe(now + 5000);
+    await vi.advanceTimersByTimeAsync(4999);
+    expect(t.run).toHaveBeenCalledOnce();
+  });
   it("schedules maintenance without holding idle intent, and lets new work preempt it", async () => {
     const s = setup(), t = task();
     let next: number | null = Date.now() + 60_000;
