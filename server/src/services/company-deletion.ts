@@ -1,3 +1,4 @@
+import { chatCompanyDeletion } from "./chat-channels/company-deletion.js";
 import { notifyToolConnectionHealth } from "./tool-connection-health-notifications.js";
 import { notifyCompanyRetentionWork } from "./retention-work-notifications.js";
 import { notifyDecisionTargetWork } from "./decision-target-work.js";
@@ -118,6 +119,7 @@ export async function deleteCompany(db: Db, id: string) {
         await requestRestorePointDeletion(tx, { companyId: id });
         await tx.delete(executionWorkspaces).where(eq(executionWorkspaces.companyId, id));
         await tx.delete(projects).where(eq(projects.companyId, id));
+        await chatCompanyDeletion.deleteCompanyData(tx, id);
         await agentLifecycleCompanyDeletion.deleteCompanyData(tx, id);
         await notifyToolConnectionHealth(tx, id);
         const rows = await tx
