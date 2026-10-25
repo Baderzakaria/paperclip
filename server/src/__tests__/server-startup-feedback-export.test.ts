@@ -8,7 +8,7 @@ import { readIdleSleepSafety } from "../services/idle-sleep-safety.js";
 import * as idleLocalWork from "../services/idle-local-work.js";
 import { idleBackupWakeMarker, markIdleBackupWakeRequired } from "../services/idle-database-backup.js";
 import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
-import { decisionService, reconcileBuiltInAgentsOnStartup, reconcileCodexLocalManagedHomesOnStartup, reconcilePersistedRuntimeServicesOnStartup } from "../services/index.js";
+import { decisionService, toolAccessService, reconcileBuiltInAgentsOnStartup, reconcileCodexLocalManagedHomesOnStartup, reconcilePersistedRuntimeServicesOnStartup } from "../services/index.js";
 import { runDatabaseBackup } from "@paperclipai/db";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
@@ -831,6 +831,26 @@ describe("startServer feedback export wiring", () => {
     completionSweepMock.mockClear();
     publishLiveEvent({ companyId: "company-two", type: "activity.logged", payload: { action: "issue.updated" } });
     expect(completionSweepMock).not.toHaveBeenCalled();
+  });
+
+  it("does not rescan idle tool health from the aggregate maintenance tick", async () => {
+    loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: true, heartbeatSchedulerIntervalMs: 30_000 }));
+    let tick: (() => void) | undefined;
+    const intervals = vi.spyOn(globalThis, "setInterval").mockImplementation(((callback: () => void, ms: number) => {
+      if (ms === 30_000) tick = callback;
+      return 1 as unknown as ReturnType<typeof setInterval>;
+    }) as typeof setInterval);
+    try {
+      await startServer(); await settleStartupHousekeeping();
+      const sweeps = vi.mocked(toolAccessService).mock.results.map(result => vi.mocked(result.value.sweepConnectionHealth));
+      const count = () => sweeps.reduce((total, sweep) => total + sweep.mock.calls.length, 0);
+      expect(count()).toBeGreaterThan(0);
+      const startupCalls = count();
+      expect(tick).toEqual(expect.any(Function));
+      tick!(); await new Promise<void>(resolve => setImmediate(resolve));
+      tick!(); await new Promise<void>(resolve => setImmediate(resolve));
+      expect(count()).toBe(startupCalls);
+    } finally { intervals.mockRestore(); }
   });
 
   it("never invokes the retired review detector at startup or on periodic recovery", async () => {
