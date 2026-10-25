@@ -1326,3 +1326,8 @@ Next separate owner: voice call-report reconciliation. Preserve the existing
 24-hour post-call refresh obligation, transcript ordering, task projection and
 provider diagnostics while removing scans with no eligible calls. Inspect
 completion semantics before treating a report marked available as fully settled.
+
+Slice 24 is published as [#17583](https://github.com/paperclipai/paperclip/pull/17583)
+at `9c38ddfe53`, based on #17580 `4f0364d269`. It is attached to this chat.
+CI/review are running; no merge. The next branch is
+`codex/sleep-25-voice-call-reports`, with its owner audit recorded separately.
