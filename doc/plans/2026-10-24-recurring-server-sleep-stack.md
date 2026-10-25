@@ -966,3 +966,13 @@ Plugin scheduling is published as #17518 at 8b4f551dc2. Its Actions checks passe
 but review found retained completion writes missing from shutdown and a stale
 deadline update race. Repair those and preserve independent job progress when
 one completion write fails before treating the slice as ready.
+
+
+Plugin review repair: real PostgreSQL cases reproduced lost shutdown settlement,
+independent-job starvation after a completion write error, and restoration of an
+old deadline by a concurrent registry update. Stop now flushes retained results
+and reports remaining errors; refresh preserves independent dispatch; registry
+updates take the job lock. All 62 focused lifecycle/consumer cases and server
+typechecking pass. #17510 at 400f4c0fc8 cleared the security gate and previous CI
+failures, but environment-cleanup pagination has a 32-versus-33 assertion race
+in server shard 1. Diagnose and repair it before accepting the stack.

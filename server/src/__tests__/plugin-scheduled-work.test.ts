@@ -151,6 +151,71 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await db.execute(sql`drop trigger plugin_settlement_failure on plugin_job_runs`); errors.length = 0;
     await completed(); expect(rpc).toHaveBeenCalledTimes(1);
   });
+  it("flushes a retained completion before graceful shutdown finishes", async () => {
+    await db.execute(sql`create function plugin_settlement_failure() returns trigger language plpgsql as $$ begin if new.status in ('succeeded', 'failed') then raise exception 'settlement unavailable'; end if; return new; end $$`);
+    await db.execute(sql`create trigger plugin_settlement_failure before update on plugin_job_runs for each row execute function plugin_settlement_failure()`);
+    await due(); await start();
+    await vi.waitFor(() => expect(errors.length).toBeGreaterThan(0));
+    draining = true;
+    await coordinator!.stop();
+    await db.execute(sql`drop trigger plugin_settlement_failure on plugin_job_runs`); errors.length = 0;
+    await scheduler!.stop();
+    expect((await runs())[0].status).toBe("succeeded");
+    expect(rpc).toHaveBeenCalledTimes(1);
+  });
+  it("reports shutdown persistence failure and retains the result for another stop attempt", async () => {
+    await db.execute(sql`create function plugin_settlement_failure() returns trigger language plpgsql as $$ begin if new.status in ('succeeded', 'failed') then raise exception 'settlement unavailable'; end if; return new; end $$`);
+    await db.execute(sql`create trigger plugin_settlement_failure before update on plugin_job_runs for each row execute function plugin_settlement_failure()`);
+    await due(); await start();
+    await vi.waitFor(() => expect(errors.length).toBeGreaterThan(0));
+    draining = true; await coordinator!.stop(); errors.length = 0;
+    try {
+      await expect(scheduler!.stop()).rejects.toThrow("Plugin job completion persistence failed during shutdown");
+      expect((await runs())[0].status).toBe("running");
+    } finally { await db.execute(sql`drop trigger plugin_settlement_failure on plugin_job_runs`); }
+    await scheduler!.stop();
+    expect((await runs())[0].status).toBe("succeeded");
+    expect(rpc).toHaveBeenCalledTimes(1);
+  });
+  it("dispatches independent jobs while one completion remains unwritable", async () => {
+    const blocked = await due("blocked");
+    await db.execute(sql`create function plugin_settlement_failure() returns trigger language plpgsql as $$ begin if new.status in ('succeeded', 'failed') and new.job_id::text = TG_ARGV[0] then raise exception 'settlement unavailable'; end if; return new; end $$`);
+    await db.execute(sql`create trigger plugin_settlement_failure before update on plugin_job_runs for each row execute function plugin_settlement_failure(${sql.raw("'" + blocked.id + "'")})`);
+    try {
+      await start();
+      await vi.waitFor(() => expect(errors.length).toBeGreaterThan(0));
+      const independent = await due("independent");
+      await vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(await runs()).toEqual(expect.arrayContaining([expect.objectContaining({ jobId: independent.id, status: "succeeded" })]));
+      }, { timeout: 5000 });
+      expect(rpc).toHaveBeenCalledTimes(2);
+    } finally {
+      await db.execute(sql`drop trigger plugin_settlement_failure on plugin_job_runs`); errors.length = 0;
+      await completed(2); await settled(); errors.length = 0;
+    }
+  });
+  it("preserves a deadline advanced during a concurrent unchanged declaration update", async () => {
+    const row = await due();
+    const advanced = new Date(Date.now() + 600_000);
+    let release!: () => void, locked!: () => void;
+    const barrier = new Promise<void>(resolve => { release = resolve; });
+    const acquired = new Promise<void>(resolve => { locked = resolve; });
+    const advancing = db.transaction(async tx => {
+      await pluginJobStore(tx).updateRunTimestamps(row.id, new Date(), advanced);
+      locked(); await barrier;
+    });
+    await acquired;
+    const updating = pluginRegistryService(db).upsertJob(pluginId, row.jobKey, { schedule: row.schedule });
+    try {
+      await vi.waitFor(async () => {
+        const [waiting] = await db.execute<{ count: number }>(sql`select count(*)::int as count from pg_stat_activity
+          where datname = current_database() and state = 'active' and wait_event_type = 'Lock'`);
+        expect(waiting.count).toBeGreaterThan(0);
+      });
+    } finally { release(); await advancing; await updating; }
+    expect((await pluginJobStore(db).getJobById(row.id))!.nextRunAt).toEqual(advanced);
+  });
   it("records provider failure and advances the cron obligation", async () => {
     rpc.mockRejectedValueOnce(new Error("plugin rejected job")); await due(); await start(); await completed();
     expect((await runs())[0]).toMatchObject({ status: "failed", error: "plugin rejected job" });

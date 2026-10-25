@@ -135,10 +135,10 @@ export function createPluginJobScheduler(options: PluginJobSchedulerOptions): Pl
   }
 
   async function refresh(signal?: AbortSignal) {
-    for (const jobId of pendingSettlements.keys()) await settle(jobId);
+    const settlements = await Promise.allSettled([...pendingSettlements.keys()].map(settle));
     const jobs = await db.select().from(pluginJobs).where(eq(pluginJobs.status, "active"));
     const runnable = jobs.filter(job => !unregistered.has(job.pluginId) && workerManager.isRunning(job.pluginId)
-      && !activeJobs.has(job.id) && job.schedule && !validateCron(job.schedule));
+      && !activeJobs.has(job.id) && !pendingSettlements.has(job.id) && job.schedule && !validateCron(job.schedule));
     const outstanding = runnable.length === 0 ? [] : await db.select({ jobId: pluginJobRuns.jobId })
       .from(pluginJobRuns).where(and(inArray(pluginJobRuns.jobId, runnable.map(job => job.id)),
         inArray(pluginJobRuns.status, ["pending", "queued", "running"])));
@@ -168,7 +168,7 @@ export function createPluginJobScheduler(options: PluginJobSchedulerOptions): Pl
       }
     }
     const results = await Promise.allSettled(dispatches);
-    const failed = results.find(result => result.status === "rejected");
+    const failed = [...settlements, ...results].find(result => result.status === "rejected");
     if (failed?.status === "rejected") throw failed.reason;
   }
 
@@ -195,6 +195,9 @@ export function createPluginJobScheduler(options: PluginJobSchedulerOptions): Pl
       subscriptions.clear();
       await Promise.allSettled([ticking]);
       while (inFlight.size) await Promise.allSettled([...inFlight]);
+      const results = await track(Promise.allSettled([...pendingSettlements.keys()].map(settle)));
+      const failures = results.filter(result => result.status === "rejected");
+      if (failures.length) throw new AggregateError(failures.map(result => result.reason), "Plugin job completion persistence failed during shutdown");
     },
     async registerPlugin(pluginId) {
       unregistered.delete(pluginId);

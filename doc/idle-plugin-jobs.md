@@ -30,7 +30,9 @@ including a worker becoming available without a database mutation.
   is not replaced merely because the plugin registered again. A missed schedule
   dispatches once, then computes its next cron time after completion.
 - A missing timestamp is initialized from the current cron expression. A changed
-  cron clears the old timestamp so the new schedule can be initialized.
+  cron clears the old timestamp so the new schedule can be initialized. Registry
+  updates lock the job before reading its current deadline, so a concurrent
+  completion cannot have its newly advanced deadline replaced by a stale value.
 - Claims recheck the definition under a job-row lock and reject outstanding
   queued, pending, or running records. Manual and scheduled dispatch share this
   boundary. Worker RPC calls run outside transactions.
@@ -39,10 +41,14 @@ including a worker becoming available without a database mutation.
   prevent other available slots from being used.
 - Completion and the scheduled job's next timestamp commit together. Failed
   persistence retries the retained settlement, not the plugin side effect.
-  A concurrent schedule edit is preserved by the settlement check.
+  A concurrent schedule edit is preserved by the settlement check. Failed
+  settlements do not prevent independent jobs from using available capacity.
+  The failed job stays excluded from admission until its exact result is saved.
 - Stop rejects new admissions, detaches worker subscriptions, and waits for
-  admitted work. Existing calls retain their RPC timeout. The application then
-  stops the shared coordinator before ending the database pool.
+  admitted work, then flushes retained completion results without another RPC.
+  If persistence still fails, stop rejects and retains the result for another
+  attempt; it does not report successful shutdown. Existing calls retain their
+  RPC timeout. Application teardown must complete before the pool is ended.
 
 ## Limits
 
@@ -73,3 +79,22 @@ restart and overdue execution; removed schedules; concurrent claims; failed
 completion persistence without repeated RPC; capacity refill; drain; and shutdown.
 Worker responses are simulated. Existing startup, authorization, loader, shared
 coordinator, decision-expiry, and warm-standby tests cover affected consumers.
+
+## Review repair evidence
+
+Real PostgreSQL regressions reproduced three failures: shutdown returned with a
+known completed call still marked running; one unwritable completion prevented an
+independent job from starting; and a concurrent unchanged registry update restored
+an old deadline. All three pass after the repair. The shutdown test initially
+expected an unresolved-work hold to disappear, which was incorrect. Its corrected
+baseline stops the coordinator, then observes the actual running-row failure.
+A further case verifies that persistent shutdown-write failure is reported and
+a later stop attempt saves the retained result without repeating the RPC.
+
+A permanent database outage followed by forced process termination still has the
+process-loss limitation above. This change does not claim durable storage for an
+external effect that the database has never acknowledged.
+
+The final focused run passes 62 cases across plugin scheduling, loader recovery,
+warm standby, and the delivery coordinator. Server typechecking passes. Remote
+checks and a fresh review remain required for the repaired head.

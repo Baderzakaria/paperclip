@@ -678,6 +678,7 @@ export function pluginRegistryService(db: Db) {
           .select()
           .from(pluginJobs)
           .where(and(eq(pluginJobs.pluginId, pluginId), eq(pluginJobs.jobKey, jobKey)))
+          .for("update")
           .then((rows) => rows[0] ?? null);
 
         if (existing) {
