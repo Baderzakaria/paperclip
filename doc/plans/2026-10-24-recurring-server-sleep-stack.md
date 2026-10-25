@@ -2004,3 +2004,25 @@ Slice 36 final remote gates: all 53 checks passed on 01efd3f4f7, with fresh
 Greptile 5/5 and no review threads. Slice 37 final scalar-query selection passed
 20 tests; workspace typecheck and build passed. Full local acceptance and remote
 PR gates are still pending. No PR in this stack was merged.
+
+## Slice 37 accepted; slice 38 direct webhook recovery
+
+[#17664](https://github.com/paperclipai/paperclip/pull/17664), head
+`0a25cae9ef10a8714801d72ac798823de335e050`, has all 53 remote checks
+passing and fresh Greptile 5/5 without actionable findings. Complete local
+chat/publication/startup acceptance passed 1,592 tests in 556.33 seconds.
+The PR remains draft and unmerged.
+
+Slice 38 now routes direct GitHub missed-webhook recovery through saved checkpoint
+deadlines and removes the last production chat reconciliation interval. The
+required external-source cadence remains only for eligible direct integrations;
+Cloud relay registrations and disabled/unconfigured states are quiet. A real
+signed installation-deletion regression exposed and fixed a missing producer
+notification. Forty-one selected cases pass, including 106-endpoint pagination,
+five-item company-fair batches, and an existing default-batch consumer. Complete
+acceptance and remote gates remain required. See
+[the provider audit](2026-10-25-github-webhook-recovery-sleep-audit.md).
+
+Earlier #17490/#17572 CI failures, #17576/#17580 review findings, the entire
+remaining original list, and final reconciliation with master stay open. The
+current inspected master is `5a28f7acf8`; no stack PR has been merged.

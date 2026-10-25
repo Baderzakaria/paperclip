@@ -14132,6 +14132,11 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     });
     await qualifySetupRoundTrip(service, endpoint.id);
     await service.test(endpoint.id, "owner-user");
+    const recovery = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
+    onTestFinished(() => recovery.stop());
+    await service.registerGitHubWebhookRecoveryWork(recovery, () => true).ready;
+    await expect.poll(() => (recovery.nextWakeAt() ?? 0) - Date.now(), { timeout: 5000 }).toBeGreaterThan(30_000);
+    await expect.poll(() => idleWorkSnapshot().active).toBe(0);
     const [conversation] = await readChatConversationsByEndpointId(endpoint.id);
     const credentialRefsBeforeDeletion = await db
       .select({ refs: toolConnections.credentialSecretRefs })
@@ -14158,6 +14163,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       status: "revoked",
       healthMessage: "GitHub App installation was removed",
     });
+    await expect.poll(() => recovery.nextWakeAt(), { timeout: 5000 }).toBeNull();
     await expect(
       db
         .select({
@@ -15422,6 +15428,246 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     expect(recoveredRuntime.webhookRequest).toBeNull();
     await restarted.shutdown();
     await configured.service.shutdown();
+  });
+
+  describe("GitHub webhook recovery scheduling", () => {
+    it.each(["unconfigured", "cloud", "disabled"] as const)("leaves %s recovery quiet", async mode => {
+      const f = mode === "unconfigured" ? null : await githubPreIngressRecoveryFixture();
+      const service = f?.service ?? createService().service;
+      if (f) {
+        const [endpoint] = await readChatEndpointsById(f.endpoint.id);
+        if (mode === "cloud") await db.update(chatEndpoints).set({ setup: { ...endpoint.setup,
+          github: { ...endpoint.setup.github, cloudRegistrationId: "relay-owned" } } }).where(eq(chatEndpoints.id, endpoint.id));
+        else await service.configure(endpoint.id, { action: "pause" }, "owner-user");
+        f.requests.length = 0;
+      }
+      const errors: unknown[] = [];
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+      try {
+        await service.registerGitHubWebhookRecoveryWork(coordinator, () => true).ready;
+        await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }), { timeout: 5000 })
+          .toEqual({ active: 0, next: null });
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+        const reads = vi.spyOn(db, "select"), writes = vi.spyOn(db, "update");
+        try {
+          await vi.advanceTimersByTimeAsync(120_000);
+          expect(reads).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled();
+        } finally { reads.mockRestore(); writes.mockRestore(); vi.useRealTimers(); }
+        expect(f?.requests ?? []).toEqual([]); expect(errors).toEqual([]);
+      } finally { await coordinator.stop(); vi.useRealTimers(); }
+    });
+
+    it("waits for the saved recovery deadline and requests a genuine GitHub redelivery", async () => {
+      const f = await githubPreIngressRecoveryFixture();
+      await f.makeScanDue();
+      const state = await f.checkpoint();
+      const dueAt = Date.now() + 30_000;
+      await db.update(chatSdkState).set({ value: { ...(state.value as Record<string, unknown>),
+        nextScanAt: new Date(dueAt).toISOString() } }).where(eq(chatSdkState.id, state.id));
+      const errors: unknown[] = [];
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+      try {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+        await f.service.registerGitHubWebhookRecoveryWork(coordinator, () => true).ready;
+        await expect.poll(() => idleWorkSnapshot().active).toBe(0);
+        expect(coordinator.nextWakeAt()).toBe(dueAt);
+        const reads = vi.spyOn(db, "select");
+        try { await vi.advanceTimersByTimeAsync(15_000); expect(reads).not.toHaveBeenCalled(); }
+        finally { reads.mockRestore(); }
+        expect(f.requests).toEqual([]);
+        await vi.advanceTimersByTimeAsync(16_000);
+        await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(10); expect(f.posts).toHaveLength(1); });
+        await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(10); expect((await f.receipt())?.status).toBe("processed"); });
+        expect(await f.ingress()).toBeUndefined(); expect(f.wakeup).not.toHaveBeenCalled();
+        expect((await f.callback()).status).toBe(202);
+        expect(await f.ingress()).toBeDefined();
+        expect(errors).toEqual([]);
+      } finally { await coordinator.stop(); vi.useRealTimers(); }
+    });
+
+    it("reactivates recovery from real resume and cancels its deadline on pause", async () => {
+      const f = await githubPreIngressRecoveryFixture();
+      const [endpoint] = await readChatEndpointsById(f.endpoint.id);
+      await db.update(chatEndpoints).set({ setup: { ...endpoint.setup, step: "complete" } }).where(eq(chatEndpoints.id, endpoint.id));
+      await f.service.configure(f.endpoint.id, { action: "pause" }, "owner-user");
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
+      try {
+        await f.service.registerGitHubWebhookRecoveryWork(coordinator, () => true).ready;
+        await expect.poll(() => coordinator.nextWakeAt(), { timeout: 5000 }).toBeNull();
+        const oldVersion = (await f.checkpoint()).version;
+        await f.service.configure(f.endpoint.id, { action: "resume" }, "owner-user");
+        await expect.poll(async () => (await f.checkpoint()).version, { timeout: 5000 }).toBeGreaterThan(oldVersion);
+        expect(coordinator.nextWakeAt()).not.toBeNull();
+        await f.service.configure(f.endpoint.id, { action: "pause" }, "owner-user");
+        await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }), { timeout: 5000 })
+          .toEqual({ active: 0, next: null });
+      } finally { await coordinator.stop(); }
+    });
+
+    it.each(["restart", "drain", "standby"] as const)("reconstructs due GitHub recovery through %s", async mode => {
+      const f = await githubPreIngressRecoveryFixture();
+      await f.makeScanDue();
+      let canRun = false;
+      const errors: unknown[] = [];
+      let coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => canRun,
+        canReconcile: () => mode !== "standby" || canRun, onError: error => errors.push(error) });
+      try {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+        await f.service.registerGitHubWebhookRecoveryWork(coordinator, () => canRun).ready;
+        if (mode === "restart") await coordinator.stop();
+        const reads = vi.spyOn(db, "select");
+        try { await vi.advanceTimersByTimeAsync(60_000); expect(reads).not.toHaveBeenCalled(); }
+        finally { reads.mockRestore(); }
+        expect(f.requests).toEqual([]);
+        canRun = true;
+        if (mode === "restart") {
+          coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+          await f.service.registerGitHubWebhookRecoveryWork(coordinator, () => true).ready;
+        }
+        await vi.advanceTimersByTimeAsync(30_000);
+        await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(10); expect((await f.receipt())?.status).toBe("processed"); });
+        expect(f.posts).toHaveLength(1); expect(errors).toEqual([]);
+      } finally { await coordinator.stop(); vi.useRealTimers(); }
+    });
+
+    it("retains GitHub recovery configuration intent through nested commit and rollback", async () => {
+      const f = await githubPreIngressRecoveryFixture();
+      const old = await f.checkpoint();
+      const oldWindow = old.value as Record<string, unknown>;
+      await db.update(chatSdkState).set({ value: { ...oldWindow,
+        nextScanAt: new Date(Date.now() + 86_400_000).toISOString() } }).where(eq(chatSdkState.id, old.id));
+      const [endpoint] = await readChatEndpointsById(f.endpoint.id);
+      const change = async (tx: Parameters<Parameters<Db["transaction"]>[0]>[0]) => {
+        await notifyChatEndpointConfiguration(tx, endpoint);
+        await tx.update(chatEndpoints).set({ setup: { ...endpoint.setup,
+          runtimeGeneration: Number(oldWindow.generation) + 1 } as typeof endpoint.setup }).where(eq(chatEndpoints.id, endpoint.id));
+      };
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
+      let release!: () => void;
+      let pending: Promise<unknown> | undefined;
+      try {
+        await f.service.registerGitHubWebhookRecoveryWork(coordinator, () => true).ready;
+        await expect(db.transaction(async tx => { await tx.transaction(change); throw new Error("rollback epoch"); })).rejects.toThrow("rollback epoch");
+        expect((await f.checkpoint()).version).toBe(old.version);
+        let entered!: () => void;
+        const held = new Promise<void>(resolve => { entered = resolve; });
+        const wait = new Promise<void>(resolve => { release = resolve; });
+        pending = db.transaction(async tx => { await tx.transaction(change); entered(); await wait; });
+        await held;
+        expect((await f.checkpoint()).version).toBe(old.version);
+        expect(f.requests).toEqual([]);
+        release(); await pending;
+        await expect.poll(async () => (await f.checkpoint()).value, { timeout: 5000 }).toMatchObject({
+          generation: Number(oldWindow.generation) + 1, outcome: "epoch_initialized" });
+        expect(f.requests).toEqual([]);
+        expect(coordinator.nextWakeAt()!).toBeLessThan(Date.now() + 90_000);
+      } finally { release?.(); await pending; await coordinator.stop(); }
+    });
+
+    it("preempts a future GitHub recovery window when only credential references change", async () => {
+      const f = await githubPreIngressRecoveryFixture();
+      const old = await f.checkpoint();
+      const oldWindow = old.value as Record<string, unknown>;
+      await db.update(chatSdkState).set({ value: { ...oldWindow,
+        nextScanAt: new Date(Date.now() + 86_400_000).toISOString() } }).where(eq(chatSdkState.id, old.id));
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
+      try {
+        await f.service.registerGitHubWebhookRecoveryWork(coordinator, () => true).ready;
+        const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, f.endpoint.connectionId));
+        await db.transaction(async tx => {
+          await notifyChatEndpointConfiguration(tx, f.endpoint);
+          await tx.update(toolConnections).set({ credentialSecretRefs: connection.credentialSecretRefs.map(ref => ({ ...ref,
+            versionSelector: ref.versionSelector === "1" ? "latest" : "1" })) }).where(eq(toolConnections.id, connection.id));
+        });
+        await expect.poll(async () => ((await f.checkpoint()).value as Record<string, unknown>).credentialFingerprint,
+          { timeout: 5000 }).not.toBe(oldWindow.credentialFingerprint);
+        expect((await f.checkpoint()).value).toMatchObject({ generation: oldWindow.generation, outcome: "epoch_initialized" });
+        expect(f.requests).toEqual([]);
+      } finally { await coordinator.stop(); }
+    });
+
+    it("recovers a failed GitHub deadline reconstruction after drain without passive SQL", async () => {
+      const f = await githubPreIngressRecoveryFixture(); await f.makeScanDue();
+      let canRun = true;
+      const errors: unknown[] = [];
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => canRun, canReconcile: () => true,
+        onError: error => errors.push(error) });
+      const reads = vi.spyOn(db, "select").mockImplementationOnce(() => { throw new Error("recovery inventory unavailable"); });
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+      try {
+        await f.service.registerGitHubWebhookRecoveryWork(coordinator, () => canRun).ready;
+        expect(errors).toHaveLength(1);
+        reads.mockRestore(); canRun = false;
+        await vi.advanceTimersByTimeAsync(30_000);
+        await vi.waitFor(() => expect(idleWorkSnapshot().active).toBe(0));
+        const passive = vi.spyOn(db, "select");
+        try { await vi.advanceTimersByTimeAsync(60_000); expect(passive).not.toHaveBeenCalled(); }
+        finally { passive.mockRestore(); }
+        canRun = true;
+        await vi.advanceTimersByTimeAsync(30_000);
+        await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(10); expect((await f.receipt())?.status).toBe("processed"); });
+        expect(errors).toHaveLength(1);
+      } finally { reads.mockRestore(); await coordinator.stop(); vi.useRealTimers(); }
+    });
+
+    it("reconstructs more than one page of GitHub recovery deadlines and dispatches fair batches of five", async () => {
+      const first = await githubPreIngressRecoveryFixture(), second = await githubPreIngressRecoveryFixture();
+      const ids: string[] = [];
+      for (const [f, count] of [[first, 103], [second, 3]] as const) {
+        const [endpoint] = await readChatEndpointsById(f.endpoint.id);
+        const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, endpoint.connectionId));
+        const copies = Array.from({ length: count }, () => ({ id: randomUUID(), connectionId: randomUUID(),
+          appId: BigInt("0x" + randomUUID().replaceAll("-", "").slice(0, 12)).toString() }));
+        await db.insert(toolConnections).values(copies.map(copy => ({ ...connection, id: copy.connectionId, uid: copy.connectionId })));
+        await db.insert(chatEndpoints).values(copies.map(copy => ({ ...endpoint, id: copy.id, connectionId: copy.connectionId,
+          publicId: copy.id, botExternalId: copy.appId, botUsername: "recovery-" + copy.id })));
+        ids.push(...copies.map(copy => copy.id));
+      }
+      const windows = () => db.select({ companyId: chatSdkState.companyId }).from(chatSdkState).where(and(
+        inArray(chatSdkState.endpointId, ids), eq(chatSdkState.stateKey, "paperclip:github-webhook-recovery:v1")));
+      const errors: unknown[] = [];
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+      try {
+        await first.service.registerGitHubWebhookRecoveryWork(coordinator, () => true).ready;
+        const initial = await windows();
+        expect(initial).toHaveLength(5);
+        expect(new Set(initial.map(row => row.companyId)).size).toBe(2);
+        await vi.waitFor(async () => {
+          await vi.advanceTimersByTimeAsync(1000);
+          expect(await windows()).toHaveLength(106);
+        }, { timeout: 10_000 });
+        expect(first.requests).toEqual([]); expect(second.requests).toEqual([]); expect(errors).toEqual([]);
+      } finally { await coordinator.stop(); vi.useRealTimers(); }
+    });
+
+    it("joins held GitHub history at shutdown without starting another HTTP request", async () => {
+      const f = await githubPreIngressRecoveryFixture(); await f.makeScanDue();
+      let release!: () => void, entered!: () => void;
+      const held = new Promise<void>(resolve => { release = resolve; });
+      const started = new Promise<void>(resolve => { entered = resolve; });
+      f.setBeforeList(async () => { entered(); await held; });
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: () => undefined });
+      let deliveries = 0;
+      const unrelated = coordinator.register(DELIVERY_QUEUES.feedback, { retryMs: 1000,
+        run: async () => { deliveries++; }, hasPending: async () => false });
+      await unrelated.ready;
+      const worker = f.service.registerGitHubWebhookRecoveryWork(coordinator, () => true);
+      let stopping: Promise<void> | undefined;
+      try {
+        await started;
+        unrelated.wake();
+        await expect.poll(() => deliveries).toBe(2);
+        const count = f.requests.length;
+        let stopped = false;
+        stopping = coordinator.stop().then(() => { stopped = true; });
+        await new Promise<void>(resolve => setImmediate(resolve));
+        expect(stopped).toBe(false);
+        release(); await worker.ready; await stopping;
+        expect(f.requests).toHaveLength(count); expect(f.posts).toEqual([]);
+        expect((await f.checkpoint()).value).toMatchObject({ outcome: "scan_failed" });
+      } finally { release(); await (stopping ?? coordinator.stop()); }
+    });
   });
 
   it("leaves Cloud-managed GitHub webhook recovery to the relay", async () => {

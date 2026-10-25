@@ -36,6 +36,7 @@ export const DELIVERY_QUEUES = {
   chatReceiptReactions: "chat-receipt-reactions",
   chatSessionStops: "chat-session-stops",
   chatProviderEffects: "chat-provider-effects",
+  chatGitHubWebhookRecovery: "chat-github-webhook-recovery",
   chatGitHubIngress: "chat-github-ingress",
   chatGitHubPublications: "chat-github-publications",
   chatGitHubReviewProjection: "chat-github-review-projection",

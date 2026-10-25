@@ -1,3 +1,4 @@
+import { notifyGitHubWebhookRecovery } from "./chat-channels/github/webhook-recovery-notifications.js";
 import { createHash, randomBytes } from "node:crypto";
 import { and, desc, eq, sql } from "drizzle-orm";
 import {
@@ -164,18 +165,22 @@ export function githubChatWizardService(
     bot: Endpoint,
     values: Partial<NonNullable<Endpoint["setup"]["github"]>>,
   ) {
-    await db
-      .update(chatEndpoints)
-      .set({
-        setup: sql`jsonb_set(${chatEndpoints.setup}, '{github}', coalesce(${chatEndpoints.setup}->'github','{}'::jsonb) || ${JSON.stringify(values)}::jsonb)`,
-        updatedAt: new Date(),
-      })
-      .where(
-        and(
-          eq(chatEndpoints.id, bot.id),
-          eq(chatEndpoints.companyId, bot.companyId),
-        ),
-      );
+    await db.transaction(async tx => {
+      if (values.cloudRegistrationId !== undefined)
+        await notifyGitHubWebhookRecovery(tx, { kind: "endpoint", id: bot.id });
+      await tx
+        .update(chatEndpoints)
+        .set({
+          setup: sql`jsonb_set(${chatEndpoints.setup}, '{github}', coalesce(${chatEndpoints.setup}->'github','{}'::jsonb) || ${JSON.stringify(values)}::jsonb)`,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(chatEndpoints.id, bot.id),
+            eq(chatEndpoints.companyId, bot.companyId),
+          ),
+        );
+    });
   }
   async function resume(bot: Endpoint) {
     const [company] = await db

@@ -10,6 +10,7 @@ export function registerScopedDeadlineWork<Entry extends ScheduledEntry, Scope>(
   coordinator: ReturnType<typeof createDeliveryWorkCoordinator>,
   options: {
     queue: DeliveryQueue;
+    batchSize?: number;
     decodeScope(hint: string): Scope | undefined;
     matches(entry: Entry, scope?: Scope): boolean;
     load(scope?: Scope, signal?: AbortSignal): Promise<Entry[]>;
@@ -72,7 +73,7 @@ export function registerScopedDeadlineWork<Entry extends ScheduledEntry, Scope>(
       const due = [...entries.values()].filter(entry => !unavailable.some(scope => options.matches(entry, scope))
         && Math.max(entry.dueAt, failures.get(entry.id)?.retryAt ?? 0) <= Date.now())
         .sort((a, b) => a.dueAt - b.dueAt || a.id.localeCompare(b.id));
-      const batch = takeCompanyWorkBatch(due, 25, lastCompany); lastCompany = batch.lastCompany;
+      const batch = takeCompanyWorkBatch(due, options.batchSize ?? 25, lastCompany); lastCompany = batch.lastCompany;
       for (const entry of batch.entries) {
         if (signal.aborted || !canRun()) break;
         try {
