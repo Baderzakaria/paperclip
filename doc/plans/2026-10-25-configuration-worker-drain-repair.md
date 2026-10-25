@@ -29,3 +29,17 @@ Discord command registration and receiver discovery require the same causal
 check at their own parents, then propagation through every dependent stack PR.
 The full original recurring-work inventory, milestone producer audit, older E2E
 failure and inbound cleanup/deletion policy finding remain outstanding.
+
+## Discord command registration — slice 19 / #17557
+
+The strengthened outer-rollback/drain case reproduces active=1 after commit in
+/tmp/sleep19-drain-before.log. The repair preserves the dirty scope and saved
+deadlines, but reports pending dirty work only while dispatch is allowed. The
+shared coordinator still holds unresolved transactions independently.
+
+All 67 registration/store cases pass in /tmp/sleep19-drain-tests.log, including
+90 seconds of no SQL/provider calls and an unchanged idle snapshot during drain,
+followed by registration on resume without another producer. Production server
+typecheck passes in /tmp/sleep19-drain-typecheck.log. These tests use the migrated
+paperclip_sleep19_drain_20261025_test database. Remote CI/review must run on the
+new head; this is not evidence of provider suspension.
