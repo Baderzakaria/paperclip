@@ -54,7 +54,7 @@ export function approvalRecords(db: Db) {
     },
 
     create: (companyId: string, data: Omit<typeof approvals.$inferInsert, "companyId">) =>
-      writeApprovalChange(db, tx => tx
+      writeApprovalChange(db, companyId, tx => tx
         .insert(approvals)
         .values({ ...data, companyId })
         .returning()
@@ -64,8 +64,10 @@ export function approvalRecords(db: Db) {
     // decision — e.g. when its paired agent is terminated during duplicate
     // cleanup. Idempotent: a no-op on already-resolved approvals.
     cancel: async (id: string, reason?: string | null) => {
+      const [existing] = await db.select({ companyId: approvals.companyId }).from(approvals).where(eq(approvals.id, id));
+      if (!existing) return null;
       const now = new Date();
-      const updated = await writeApprovalChange(db, tx => tx
+      const updated = await writeApprovalChange(db, existing.companyId, tx => tx
         .update(approvals)
         .set({
           status: "cancelled",
@@ -86,7 +88,7 @@ export function approvalRecords(db: Db) {
       }
 
       const now = new Date();
-      return writeApprovalChange(db, tx => tx
+      return writeApprovalChange(db, existing.companyId, tx => tx
         .update(approvals)
         .set({
           status: "revision_requested",
@@ -107,7 +109,7 @@ export function approvalRecords(db: Db) {
       }
 
       const now = new Date();
-      return writeApprovalChange(db, tx => tx
+      return writeApprovalChange(db, existing.companyId, tx => tx
         .update(approvals)
         .set({
           status: "pending",

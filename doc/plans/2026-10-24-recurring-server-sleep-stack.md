@@ -931,3 +931,18 @@ after its single justified retry. The duplicate cancelled workflows for #17490
 and #17497 were each rerun once to clear stale cancelled contexts. The #17490
 retry has a new E2E shard 3 failure under investigation; do not call it green or
 rerun again without a repair. #17497's retry was still running at this observation.
+
+
+Slice 16 security review reproduced cross-company work amplification from normal
+producer writes. The repair carries company hints through all supported producers
+and maintains separate pending scopes. Startup recovery remains instance-wide.
+A generation comparison after the final awaited read preserves concurrent commits.
+All 169 affected cases and server typechecking pass. CI fixture repairs move cold
+route imports outside timed tests and replace random watchdog identifiers. The
+initial rerun had timeouts and a cleanup failure; the final selected run passes
+without relaxing timeouts. Fresh remote CI/review remains required.
+
+Plugin scheduling is published as #17518 at 8b4f551dc2. Its Actions checks passed,
+but review found retained completion writes missing from shutdown and a stale
+deadline update race. Repair those and preserve independent job progress when
+one completion write fails before treating the slice as ready.

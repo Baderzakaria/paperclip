@@ -505,7 +505,7 @@ export function decisionQueueService(db: Db) {
     }) => {
       const result = await db.transaction(async (tx) => {
         const txDb = tx as unknown as Db;
-        if (input.key === "prs") await notifyApprovalQueueWork(txDb);
+        if (input.key === "prs") await notifyApprovalQueueWork(txDb, input.companyId);
         const inserted = await txDb.insert(decisionQueues).values({
           companyId: input.companyId,
           key: input.key,
@@ -563,7 +563,7 @@ export function decisionQueueService(db: Db) {
     }) => {
       const row = await db.transaction(async (tx) => {
         const txDb = tx as unknown as Db;
-        if (input.key === "prs") await notifyApprovalQueueWork(txDb);
+        if (input.key === "prs") await notifyApprovalQueueWork(txDb, input.companyId);
         const updated = await txDb.update(decisionQueues).set({ ...input.patch, updatedAt: new Date() })
           .where(and(eq(decisionQueues.companyId, input.companyId), eq(decisionQueues.key, input.key)))
           .returning().then((rows) => rows[0] ?? null);
@@ -673,7 +673,7 @@ export function decisionQueueService(db: Db) {
       return db.transaction(async (tx) => {
         const txDb = tx as unknown as Db;
         await lockQueue(txDb, input.companyId, queue.id);
-        if (input.key === "prs" && input.sourceKind === "approval") await notifyApprovalQueueWork(txDb);
+        if (input.key === "prs" && input.sourceKind === "approval") await notifyApprovalQueueWork(txDb, input.companyId);
         const removed = await txDb.delete(decisionQueueItems).where(and(
           eq(decisionQueueItems.companyId, input.companyId),
           eq(decisionQueueItems.queueId, queue.id),

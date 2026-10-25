@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { activityLog, approvals, companies, createDb, decisionQueueItems, decisionQueues, decisionRetention, decisionTriageEvents, issueApprovals, issues, issueWorkProducts, type Db } from "@paperclipai/db";
+import { activityLog, approvals, companies, createDb, decisionQueueItems, decisionQueues, decisionRetention, decisionTriageEvents, issueApprovals, issues, issueWorkProducts, subscribeDatabaseWork, type Db } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { approvalRecords } from "../services/approvals.js";
@@ -14,6 +14,7 @@ import { issueApprovalService } from "../services/issue-approvals.js";
 import { issueService } from "../services/issues.js";
 import { workProductService } from "../services/work-products.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
+import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
 
 const external = resolveExternalTestDatabaseUrl("PAPERCLIP_APPROVAL_QUEUE_TEST_DATABASE_URL");
@@ -88,6 +89,71 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect(reads).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled(); expect(executes).not.toHaveBeenCalled();
     reads.mockRestore(); writes.mockRestore(); executes.mockRestore();
   }
+
+  it("retains a company commit arriving during its final empty read", async () => {
+    const service = approvalQueueSeedingService(db);
+    await service.sweep();
+    expect(await service.next()).toBeNull();
+    const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.approvalQueueSeeding, (event, hints) => {
+      if (event === "settled") service.request(hints);
+    });
+    const select = db.select.bind(db);
+    let release!: () => void, observed!: () => void;
+    const observedEmpty = new Promise<void>(resolve => { observed = resolve; });
+    const barrier = new Promise<void>(resolve => { release = resolve; });
+    let intercepted = false;
+    const reads = vi.spyOn(db, "select").mockImplementation((...args: any[]) => {
+      const query = (select as any)(...args);
+      const from = query.from.bind(query);
+      query.from = (...tables: any[]) => {
+        const builder = from(...tables);
+        const limit = builder.limit.bind(builder);
+        builder.limit = (count: number) => {
+          const result = limit(count);
+          if (count === 1 && !intercepted) {
+            intercepted = true;
+            const then = result.then.bind(result);
+            result.then = (resolve: (rows: unknown[]) => unknown, reject: (err: unknown) => unknown) =>
+              then(async (rows: unknown[]) => { observed(); await barrier; return resolve(rows); }, reject);
+          }
+          return result;
+        };
+        return builder;
+      };
+      return query;
+    });
+    service.request(new Set([companyId]));
+    const sweep = service.sweep();
+    try {
+      await observedEmpty;
+      const approval = await pending();
+      release(); await sweep; reads.mockRestore();
+      expect(await service.next()).not.toBeNull();
+      await service.sweep();
+      expect(await memberships()).toEqual([expect.objectContaining({ sourceId: approval.id })]);
+      expect(await service.next()).toBeNull();
+    } finally { release(); await sweep; reads.mockRestore(); unsubscribe(); }
+  });
+
+  it("does not let a company write reconcile another company's approvals", async () => {
+    await start(); await quiet();
+    const foreignId = randomUUID();
+    await db.insert(companies).values({ id: foreignId, name: "Other tenant", issuePrefix: `F${foreignId.slice(0, 6)}` });
+    const [foreignIssue] = await db.insert(issues).values({ companyId: foreignId, title: "Other PR", status: "todo" }).returning();
+    const [foreignApproval] = await db.insert(approvals).values({ companyId: foreignId, type: "request_board_approval", payload: {} }).returning();
+    await db.insert(issueApprovals).values({ companyId: foreignId, issueId: foreignIssue.id, approvalId: foreignApproval.id });
+    await db.insert(issueWorkProducts).values({ companyId: foreignId, issueId: foreignIssue.id, type: "pull_request", provider: "github", title: "Other PR", status: "open" });
+    const ownApproval = await pending(); await seeded(ownApproval.id); await quiet();
+    expect(await db.select().from(decisionQueueItems).where(eq(decisionQueueItems.companyId, foreignId))).toEqual([]);
+    await companyService(db).update(foreignId, { status: "paused" }); await settle();
+    await companyService(db).update(foreignId, { status: "active" });
+    await vi.waitFor(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(await db.select().from(decisionQueueItems).where(eq(decisionQueueItems.companyId, foreignId)))
+        .toEqual([expect.objectContaining({ sourceId: foreignApproval.id })]);
+    });
+    await quiet();
+  });
 
   it("populates the PR queue without an attention reader after approvals leave retention maintenance", async () => {
     await start(); await quiet();

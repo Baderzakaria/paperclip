@@ -3,7 +3,6 @@ import { approvals, companies, issues, type Db } from "@paperclipai/db";
 import { executionIssueCondition } from "./issue-visibility.js";
 import { decisionQueueService } from "./decision-queues.js";
 import type { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
-import { registerDeadlineWork } from "./deadline-work.js";
 import { DELIVERY_QUEUES } from "./delivery-work-notifications.js";
 
 const linkedIssue = sql<string>`(select linked.issue_id from issue_approvals linked
@@ -11,11 +10,18 @@ const linkedIssue = sql<string>`(select linked.issue_id from issue_approvals lin
   order by linked.issue_id limit 1)`;
 
 export function approvalQueueSeedingService(db: Db) {
-  let cursor: string | undefined;
-  function candidates(database: Db, condition?: SQL) {
+  const pending = new Map<string | undefined, { cursor?: string; generation: number }>([[undefined, { generation: 0 }]]);
+  function request(companyIds: ReadonlySet<string> | undefined) {
+    for (const companyId of companyIds ?? []) {
+      const existing = pending.get(companyId);
+      if (existing) existing.generation++;
+      else pending.set(companyId, { generation: 0 });
+    }
+  }
+  function candidates(database: Db, companyId: string | undefined, condition?: SQL) {
     return database.select({ id: approvals.id, companyId: approvals.companyId, issueId: linkedIssue }).from(approvals)
       .innerJoin(companies, eq(companies.id, approvals.companyId))
-      .where(and(eq(approvals.status, "pending"), eq(companies.status, "active"), condition,
+      .where(and(eq(approvals.status, "pending"), eq(companies.status, "active"), companyId === undefined ? undefined : eq(approvals.companyId, companyId), condition,
         sql`exists (select 1 from ${issues} where ${issues.id} = ${linkedIssue}
           and ${issues.companyId} = ${approvals.companyId} and ${executionIssueCondition()}
           and exists (select 1 from issue_work_products product where product.company_id = ${approvals.companyId}
@@ -26,30 +32,41 @@ export function approvalQueueSeedingService(db: Db) {
       )).orderBy(asc(approvals.id));
   }
   async function sweep(signal?: AbortSignal) {
-    const rows = await candidates(db, cursor ? gt(approvals.id, cursor) : undefined).limit(100);
+    const scope = pending.entries().next().value;
+    if (!scope) return;
+    const [companyId, state] = scope;
+    const generation = state.generation;
+    const rows = await candidates(db, companyId, state.cursor ? gt(approvals.id, state.cursor) : undefined).limit(100);
     const errors: unknown[] = [];
     for (const row of rows) {
       if (signal?.aborted) break;
       try {
         await db.transaction(async tx => {
           const database = tx as unknown as Db;
-          const [current] = await candidates(database, eq(approvals.id, row.id)).for("update", { of: approvals });
+          const [current] = await candidates(database, row.companyId, eq(approvals.id, row.id)).for("update", { of: approvals });
           if (!current) return;
           await decisionQueueService(database).materializeSeedSources(current.companyId, [{
             sourceKind: "approval", sourceId: current.id, issueId: current.issueId,
           }]);
         });
       } catch (error) { errors.push(error); }
-      cursor = row.id;
+      state.cursor = row.id;
     }
-    if (rows.length < 100) cursor = undefined;
+    if (rows.length < 100) state.cursor = undefined;
+    const remaining = await candidates(db, companyId).limit(1);
+    if (!signal?.aborted && generation === state.generation && remaining.length === 0) {
+      pending.delete(companyId);
+    } else {
+      pending.delete(companyId);
+      pending.set(companyId, state);
+    }
     if (errors.length === 1) throw errors[0];
     if (errors.length) throw new AggregateError(errors, "Approval queue seeding failed");
   }
   async function next() {
-    return (await candidates(db).limit(1)).length ? Date.now() : null;
+    return pending.size ? Date.now() : null;
   }
-  return { sweep, next };
+  return { sweep, next, request };
 }
 
 export function registerApprovalQueueSeedingWork(
@@ -57,7 +74,20 @@ export function registerApprovalQueueSeedingWork(
   service: ReturnType<typeof approvalQueueSeedingService>,
   canRun: () => boolean,
 ) {
-  return registerDeadlineWork(coordinator, DELIVERY_QUEUES.approvalQueueSeeding, {
-    run: signal => service.sweep(signal), next: service.next, canRun, retryMs: 1_000,
+  let earliest = 0;
+  let next: number | null = null;
+  return coordinator.register(DELIVERY_QUEUES.approvalQueueSeeding, {
+    retryMs: 1_000,
+    pausePassiveMaintenance: true,
+    onSettled: service.request,
+    run: async signal => {
+      if (!canRun()) return;
+      if (Date.now() < earliest) { next = earliest; return; }
+      earliest = Date.now() + 1_000;
+      await service.sweep(signal);
+      next = await service.next();
+    },
+    hasPending: async () => (await service.next()) !== null,
+    nextRunAt: () => next,
   });
 }

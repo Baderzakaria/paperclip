@@ -2578,7 +2578,7 @@ export function createToolGatewayService(
 
     let formalApprovalId: string | null = null;
     if (toolRequiresFormalApproval(input.tool)) {
-      const [approval] = await writeApprovalChange(db, tx => tx
+      const [approval] = await writeApprovalChange(db, input.session.companyId, tx => tx
         .insert(approvals)
         .values({
           companyId: input.session.companyId,
@@ -2604,7 +2604,7 @@ export function createToolGatewayService(
         .returning());
       formalApprovalId = approval.id;
       const approvalIssueId = input.session.issueId;
-      await writeApprovalChange(db, tx => tx
+      await writeApprovalChange(db, input.session.companyId, tx => tx
         .insert(issueApprovals)
         .values({
           companyId: input.session.companyId,
