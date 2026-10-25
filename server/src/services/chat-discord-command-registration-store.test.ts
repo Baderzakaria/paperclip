@@ -1,4 +1,5 @@
 import { reconcileDatabaseWork } from "@paperclipai/db";
+import { idleWorkSnapshot } from "./task-admission.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { discordCommandSchedule } from "./chat-channels/discord/command-schedule.js";
 import { registerDiscordCommandWork } from "./chat-channels/discord/command-work.js";
@@ -755,7 +756,12 @@ suite("Discord command ownership store (real PostgreSQL, no network)", () => {
       throw new Error("abort");
     })).rejects.toThrow("abort");
     await vi.advanceTimersByTimeAsync(60_000);
-    await vi.waitFor(() => expect(coordinator!.nextWakeAt()).toBeNull());
+    // A running sweep has already consumed its timer. Wait for its SQL and
+    // transaction reconciliation to settle before measuring idle traffic.
+    await vi.waitFor(() => {
+      expect(idleWorkSnapshot().active).toBe(0);
+      expect(coordinator!.nextWakeAt()).toBeNull();
+    });
     await sqlQuiet(60_000);
     draining = true;
     await db.transaction(async tx => activate(tx as unknown as typeof db));
