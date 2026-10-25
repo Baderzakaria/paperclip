@@ -139,3 +139,84 @@ not issue status, and do not independently change this response predicate.
 Additional dynamic status writers, lookup/index cost, uncertain-publication
 settlement, page fairness, final startup wiring, full acceptance and remote review
 still need completion. Do not present this checkpoint as polling removal.
+
+## Production registration and direct-writer repairs
+
+The three direct writers above now notify response availability before their
+writes in the existing transactions. Three real-producer regressions reproduce
+missing paused response settlement before the change. Tree cancellation continues
+to use issueService; restoration now notifies each restored issue. Queue admission
+notifies only a transition into blocked. Exhausted recovery does likewise and
+retains its existing lock order and failure behavior.
+
+`/tmp/sleep35-direct-producers-before.log` records the missing tree/recovery wakes.
+Its workspace case initially failed earlier because the fixture had not enabled
+isolated workspaces, so it exercised normal admission instead of the intended
+pre-dispatch refusal. The corrected fixture enables and restores the feature,
+drains any executions on cleanup, and reproduces the missing workspace wake in
+`/tmp/sleep35-workspace-producer-before.log`. The real issue state reaches blocked
+before the missing-notice assertion, so the red result establishes the producer
+boundary rather than an unrelated setup failure. All eleven producer/lifecycle
+cases pass after repair in `/tmp/sleep35-direct-producers-fixed.log`.
+
+The remaining inspected direct status writes in agent-conversations, Slack
+lifecycle/state, access reassignment, checkout/release, and native workspace
+reconstruction move away from blocked or remove assignment. They do not create
+a new paused-response obligation. Execution eligibility is reread before any
+send, so an outstanding lease-delayed candidate observes these changes. New
+run/lineage changes still go through the milestone boundary. Generic issue-service
+assignment/status mutations notify directly. Agent deletion does not restore an
+owed response. Goal status fields are separate session state.
+
+Two further cases drive the real review-publication owner through token acquisition,
+a terminal run transition and pre-send authority denial. A known-unsent publication
+cancels and wakes terminal fallback through lease release. A saved ambiguous write
+remains parked, with no repeated SQL over 120 seconds. The latter does not assert
+that the provider write failed or relax host safety. Both pass in
+`/tmp/sleep35-publication-settlement.log`. The existing eight-attempt acknowledgement
+policy remains the owner of actual failed fallback sends.
+
+The app now registers terminal-response work with warm-standby and idle-drain
+gates, and recurring GitHub maintenance no longer calls terminal reconciliation.
+The explicit/manual combined recovery entry point is preserved. Review-check
+publication and stale-head review repair remain separate duties in maintenance.
+
+## Candidate lookup and final acceptance
+
+Generated migration `0391_jittery_norrin_radd.sql` adds a partial index for
+processed, nonfinal response actions. It runs concurrently through the existing
+top-level migration registry and is idempotent on replay. Snapshot pruning retains
+0387 through 0391, exactly five. Application, replay, numbering/safety checks and
+PostgreSQL index validity pass. No table or queue storage was added.
+
+The worker pages candidates by ID, then asks the GitHub owner to resolve actual
+run provenance and reply state. This has per-candidate read cost at startup or
+an affected scope change; it does not scan while settled. Issue/delivery/repository
+hints narrow normal wakes. A 101-row prefix of unrelated retained requests cannot
+hide the owed terminal response and does not publish those unrelated requests.
+The shared helper provides fair 25-entry dispatch batches after reconstruction.
+
+A rollback-only experiment inserted 10,000 completed actions. The candidate index
+query read four eligible rows using an index-only scan and four shared buffers.
+See `/tmp/sleep35-index-plan.sql` and `/tmp/sleep35-index-plan.log`. This proves
+completed-history exclusion for the candidate access path, not whole-worker latency
+or fleet savings. The lifecycle tests prove settled SQL quiet separately.
+
+Verification:
+
+- The earlier extracted-owner GitHub acceptance passed 194 cases in 140.71 seconds
+  (`/tmp/sleep35-github-acceptance.log`) before the three direct-writer repairs.
+- Final focused selection passes 15 cases: fourteen new terminal-worker cases
+  plus one existing matching case (`/tmp/sleep35-wired-focused.log`, 46.15 seconds).
+  The startup source suite did not match this focused selector and is included
+  in the full run below; it is not claimed passed by that focused command.
+- Workspace typecheck and build pass after final source/wiring/index changes
+  (`/tmp/sleep35-workspace-types.log`, `/tmp/sleep35-workspace-build.log`).
+- Fresh complete chat/publication/startup acceptance is running on
+  `paperclip_sleep35_full_20261025_test`, log `/tmp/sleep35-full-chat.log`.
+  Its expected count is 1,571. Do not claim completion before its terminal result.
+- Remote checks/review and any resulting repairs remain required.
+
+Independent SQL writers and multiple replicas gain no new wake protocol. Cloud
+alarm coverage and sleep admission are unchanged. The full recurring-server stack,
+older failed gates/review findings and final master reconciliation remain open.

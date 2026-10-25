@@ -3507,6 +3507,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   const { getPublicationBatchStatus, publishComment, publishBoardMessage } = createChatPublicationRequests(db, { endpointRecord, stageTeamsBoardFileIntent, processPendingSlackBoardMessages, processPendingPublications, prepareTeamsBoardSend });
 return {
     registerInteractionContinuationWork,
+    registerGitHubTerminalResponseWork: githubResponseCommentService(db, fetchImpl).registerTerminalResponseWork,
     registerGitHubAcknowledgementWork: githubResponseCommentService(db, fetchImpl).registerAcknowledgementWork,
     registerTerminalConfirmationWork,
     loadFailedRetryNoticeScopes,

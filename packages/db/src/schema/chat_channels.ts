@@ -679,6 +679,9 @@ export const chatActions = pgTable(
       table.endpointId,
       table.providerActionId,
     ),
+    index("chat_actions_github_terminal_work_idx").on(table.id).where(sql`${table.kind} = 'github_response_comment'
+      and ${table.status} = 'processed' and ${table.deliveryId} is not null
+      and coalesce(${table.result}->>'final', 'false') <> 'true'`),
     index("chat_actions_github_ack_work_idx").on(table.id).where(sql`${table.kind} = 'github_response_comment'
       and ${table.deliveryId} is not null and coalesce(${table.result}->>'final', 'false') <> 'true'
       and (${table.status} = 'received' or (${table.status} = 'failed' and ${table.result}->>'retryable' = 'true'))`),

@@ -1,3 +1,4 @@
+import { settleUnrecoverableExecutions } from "../services/execution-recovery-resolution.js";
 import { environmentService } from "../services/environments.js";
 import { createAdmissionTransactionScope, createWakeAdmissionWriter } from "../modules/wake-queue/adapters/postgres.js";
 import { chatFailedRetryNoticeWork } from "../services/chat-failed-retry-notice-work.js";
@@ -3712,6 +3713,141 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         await expect.poll(() => coordinator.nextWakeAt(), { timeout: 5000 }).toBeNull();
         expect(errors).toEqual([]);
       } finally { release(); await lease; await coordinator.stop(); }
+    });
+
+    it("finds owed terminal GitHub work beyond a full page of unrelated request history", async () => {
+      const f = await toolReplyFixture("github:paperclipai/paperclip:418");
+      const [original] = await db.select().from(chatActions).where(and(eq(chatActions.endpointId, f.endpoint.id), eq(chatActions.kind, "github_response_comment")));
+      const [delivery] = await db.select().from(chatDeliveries).where(eq(chatDeliveries.id, original.deliveryId!));
+      await db.update(heartbeatRuns).set({ status: "failed", updatedAt: new Date() }).where(eq(heartbeatRuns.id, f.run.id));
+      const history = Array.from({ length: 101 }, (_, index) => ({
+        actionId: `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
+        deliveryId: randomUUID(), commentId: randomUUID(), providerId: `retained-request-${index}`,
+      }));
+      await db.insert(issueComments).values(history.map(row => ({ id: row.commentId, companyId: f.companyId,
+        issueId: f.conversation.issueId!, authorUserId: "owner-user", body: "A separate retained request" })));
+      await db.insert(chatDeliveries).values(history.map(row => ({ ...delivery, id: row.deliveryId,
+        providerEventId: row.providerId, deduplicationKey: row.providerId, state: "processed" as const })));
+      await db.insert(chatMessageLinks).values(history.map(row => ({ companyId: f.companyId, endpointId: f.endpoint.id,
+        conversationId: f.conversation.id, deliveryId: row.deliveryId, commentId: row.commentId,
+        providerMessageId: row.providerId, direction: "inbound" })));
+      await db.insert(chatActions).values(history.map(row => ({ ...original, id: row.actionId, deliveryId: row.deliveryId,
+        providerActionId: `github_response:${row.deliveryId}`, result: { code: "fast_response_superseded" } })));
+      const errors: unknown[] = [];
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+      try {
+        const baseline = f.responseWrites.length;
+        await githubResponseCommentService(db, f.providerFetch).registerTerminalResponseWork(coordinator, () => true).ready;
+        await expect.poll(() => [...f.responseComments.values()][0]?.body, { timeout: 5000 }).toContain("stopped before completing");
+        await expect.poll(() => coordinator.nextWakeAt(), { timeout: 5000 }).toBeNull();
+        expect(f.responseWrites).toHaveLength(baseline + 1);
+        expect(await db.select().from(chatActions).where(inArray(chatActions.id, history.map(row => row.actionId))))
+          .toEqual(expect.arrayContaining(history.map(row => expect.objectContaining({ id: row.actionId,
+            status: "processed", result: { code: "fast_response_superseded" } }))));
+        expect(errors).toEqual([]);
+      } finally {
+        await coordinator.stop();
+        await db.delete(chatActions).where(inArray(chatActions.id, history.map(row => row.actionId)));
+      }
+    });
+
+    it.each([false, true])("parks terminal GitHub responses behind the publication owner (uncertain: %s)", async uncertain => {
+      const f = await toolReplyFixture();
+      const errors: unknown[] = [];
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+      let release!: () => void, entered!: () => void;
+      const hold = new Promise<void>(resolve => { release = resolve; });
+      const ready = new Promise<void>(resolve => { entered = resolve; });
+      let intercepted = false;
+      let sending: Promise<unknown> | undefined;
+      const action = async () => (await db.select().from(chatActions).where(and(eq(chatActions.endpointId, f.endpoint.id), eq(chatActions.kind, "github_review_publication"))))[0];
+      try {
+        await githubResponseCommentService(db, f.providerFetch).registerTerminalResponseWork(coordinator, () => true).ready;
+        f.setSupplementalProviderFetch(async input => {
+          if (intercepted || !String(input).endsWith("/access_tokens")) return undefined;
+          const publication = await action();
+          if (!publication) return undefined;
+          intercepted = true;
+          if (uncertain) await db.update(chatActions).set({ result: { replyWriteStarted: true } }).where(eq(chatActions.id, publication.id));
+          await db.update(heartbeatRuns).set({ status: "failed", updatedAt: new Date() }).where(eq(heartbeatRuns.id, f.run.id));
+          await issueService(db).update(f.conversation.issueId!, { status: "blocked" });
+          entered(); await hold;
+          return undefined;
+        });
+        const baseline = f.responseWrites.length;
+        sending = githubChatReviewService(db, f.providerFetch).execute(f.session, "comment", { body: "Authored final response", idempotencyKey: "terminal-owner-race" });
+        await ready;
+        await expect.poll(() => coordinator.nextWakeAt(), { timeout: 5000 }).toBeNull();
+        expect(f.responseWrites).toHaveLength(baseline);
+        release(); await sending;
+        expect((await action()).status).toBe("cancelled");
+        if (!uncertain) await expect.poll(() => [...f.responseComments.values()][0]?.body, { timeout: 5000 }).toContain("stopped before completing");
+        await expect.poll(() => coordinator.nextWakeAt(), { timeout: 5000 }).toBeNull();
+        if (uncertain) expect(f.responseWrites).toHaveLength(baseline);
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+        const reads = vi.spyOn(db, "select"), writes = vi.spyOn(db, "transaction");
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(reads).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled();
+        reads.mockRestore(); writes.mockRestore(); expect(errors).toEqual([]);
+      } finally { release(); await sending; await coordinator.stop(); vi.useRealTimers(); }
+    });
+
+    it.each(["tree restore", "workspace admission", "exhausted recovery"] as const)("wakes a paused GitHub response from %s", async producer => {
+      const f = await toolReplyFixture("github:paperclipai/paperclip:418");
+      const issueId = f.conversation.issueId!;
+      await db.update(heartbeatRuns).set({ status: "failed" }).where(eq(heartbeatRuns.id, f.run.id));
+      await db.update(chatActions).set({ result: sql`coalesce(${chatActions.result}, '{}'::jsonb) || '{"final":true}'::jsonb` })
+        .where(and(eq(chatActions.endpointId, f.endpoint.id), eq(chatActions.kind, "github_response_comment")));
+      const thread = makeThread({ channelId: "paperclipai/paperclip", id: f.conversation.externalThreadId }).thread;
+      await deliverMessage({ callbacks: f.callbacks, endpointId: f.endpoint.id, provider: "github", thread,
+        trigger: "mention", message: makeMessage({ id: "41802", text: "New request", userId: "42", userName: "octocat", mentioned: true }) });
+      const [link] = await db.select().from(chatMessageLinks).where(and(eq(chatMessageLinks.endpointId, f.endpoint.id), eq(chatMessageLinks.providerMessageId, "41802")));
+      const action = async () => (await db.select().from(chatActions).where(and(eq(chatActions.deliveryId, link.deliveryId!), eq(chatActions.kind, "github_response_comment"))))[0];
+      let mutate: () => Promise<unknown>;
+      if (producer === "tree restore") {
+        await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, issueId));
+        const tree = issueTreeControlService(db);
+        const actor = { actorType: "user" as const, actorId: "owner-user", userId: "owner-user" };
+        const cancelled = await tree.createHold(f.companyId, issueId, { mode: "cancel", actor });
+        await tree.cancelIssueStatusesForHold(f.companyId, issueId, cancelled.hold.id);
+        const restore = await tree.createHold(f.companyId, issueId, { mode: "restore", actor });
+        mutate = () => tree.restoreIssueStatusesForHold(f.companyId, issueId, restore.hold.id, { actor });
+      } else if (producer === "workspace admission") {
+        const settings = instanceSettingsService(db);
+        const previous = await settings.getExperimental();
+        await settings.updateExperimental({ enableIsolatedWorkspaces: true });
+        onTestFinished(() => settings.updateExperimental({ enableIsolatedWorkspaces: previous.enableIsolatedWorkspaces }));
+        const heartbeat = heartbeatService(db);
+        onTestFinished(() => heartbeat.drainActiveRunExecutions());
+        await db.update(issues).set({ status: "todo", workMode: "standard", responsibleUserId: "owner-user",
+          projectId: null, projectWorkspaceId: null, executionWorkspaceId: null, executionRunId: null, checkoutRunId: null,
+          executionWorkspaceSettings: { mode: "isolated_workspace", workspaceStrategy: { type: "git_worktree" } },
+        }).where(eq(issues.id, issueId));
+        await db.update(agents).set({ runtimeConfig: { heartbeat: { wakeOnDemand: true } } }).where(eq(agents.id, f.assignedAgentId));
+        mutate = () => heartbeat.wakeup(f.assignedAgentId, { source: "assignment", triggerDetail: "system",
+          reason: "issue_assigned", payload: { issueId }, contextSnapshot: { issueId, wakeReason: "issue_assigned" } });
+      } else {
+        await db.update(issues).set({ status: "in_progress", executionRunId: null, checkoutRunId: null }).where(eq(issues.id, issueId));
+        await db.insert(issueRecoveryActions).values({ companyId: f.companyId, sourceIssueId: issueId,
+          kind: "active_run_watchdog", ownerType: "board", returnOwnerAgentId: f.assignedAgentId,
+          cause: "uncertain_external_action", status: "active", evidence: { runId: f.run.id }, fingerprint: randomUUID(),
+          nextAction: "Preserve the recorded outcome without replay.",
+        });
+        mutate = () => settleUnrecoverableExecutions(db);
+      }
+      const errors: unknown[] = [];
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+      try {
+        await githubResponseCommentService(db, f.providerFetch).registerTerminalResponseWork(coordinator, () => true).ready;
+        await expect.poll(() => coordinator.nextWakeAt(), { timeout: 5000 }).toBeNull();
+        expect((await action()).result?.pausedVersion).toBeUndefined();
+        await mutate();
+        expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0].status).toBe("blocked");
+        await expect.poll(async () => (await action()).result?.pausedVersion, { timeout: 5000 }).toEqual(expect.any(String));
+        expect([...f.responseComments.values()][0].body).toContain("paused");
+        await expect.poll(() => coordinator.nextWakeAt(), { timeout: 5000 }).toBeNull();
+        expect(errors).toEqual([]);
+      } finally { await coordinator.stop(); }
     });
 
     it.each(["release", "restart", "drain", "standby"] as const)("wakes GitHub acknowledgements from a real publication lease %s", async mode => {

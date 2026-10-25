@@ -1937,3 +1937,13 @@ removal wait for the three identified direct issue writers and remaining audit
 and acceptance requirements in the terminal-response audit. No slice-35 PR or
 full-stack readiness is claimed yet. Earlier parent CI/review findings, all other
 inventory duties, and reconciliation with current master remain required.
+
+Slice 35 now covers the reproduced direct tree-restoration, workspace-admission
+and exhausted-recovery producers. Real publication-owner tests preserve both
+known-unsent cancellation and ambiguous outcome parking. Startup registers the
+new terminal worker and recurring GitHub maintenance no longer invokes that duty.
+Fourteen new worker cases plus one existing case pass; workspace types/build and
+migration application/replay/safety pass. The partial candidate index excludes
+10,000 completed rows in a rollback-only query-plan experiment. Fresh full
+chat/publication/startup acceptance is running; remote gates remain required.
+See the terminal-response audit for all retained failures and scoped evidence.
