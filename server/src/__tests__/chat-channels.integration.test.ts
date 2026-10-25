@@ -15641,6 +15641,70 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       } finally { await coordinator.stop(); vi.useRealTimers(); }
     });
 
+    it.each([
+      ["drain", false, false], ["shutdown", false, false],
+      ["drain", true, false], ["shutdown", true, false],
+      ["drain", false, true], ["shutdown", true, true],
+    ] as const)("preserves a GitHub redelivery stopped before transport (%s, prior receipt: %s, superseded: %s)", async (mode, priorReceipt, superseded) => {
+      const f = await githubPreIngressRecoveryFixture();
+      await f.makeScanDue();
+      if (priorReceipt) {
+        await f.service.processFailedGitHubWebhookDeliveries(5, f.endpoint.id);
+        const sent = (await f.receipt())!;
+        await db.update(chatActions).set({ result: { ...sent.result, retryAt: new Date(0).toISOString(),
+          requestedAt: new Date(Date.now() - 60_000).toISOString() } }).where(eq(chatActions.id, sent.id));
+        f.setDeliveries([{ ...f.original, id: "9007199254740994", redelivery: true,
+          delivered_at: new Date(Date.now() - 15_000).toISOString() }, f.original]);
+        await f.makeScanDue();
+      }
+      const previous = await f.receipt();
+      let successor: Awaited<ReturnType<typeof f.receipt>>;
+      f.posts.length = 0;
+      let canRun = true, stoppedAfterClaim = false;
+      let coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => canRun, canReconcile: () => true,
+        onError: () => undefined });
+      let stopping: Promise<void> | undefined;
+      const transaction = db.transaction.bind(db);
+      const transactions = vi.spyOn(db, "transaction").mockImplementation((async (callback, options) => {
+        const result = await transaction(callback, options);
+        if (typeof result === "string" && !stoppedAfterClaim) {
+          const receipt = await f.receipt();
+          if (receipt?.id === result && receipt.status === "processing") {
+            if (superseded) {
+              await db.update(chatActions).set({ result: { ...receipt.result,
+                requestedAt: new Date(Date.now() + 1000).toISOString() } }).where(eq(chatActions.id, receipt.id));
+              successor = await f.receipt();
+            }
+            stoppedAfterClaim = true; canRun = false;
+            if (mode === "shutdown") stopping = coordinator.stop();
+          }
+        }
+        return result;
+      }) as Db["transaction"]);
+      try {
+        await f.service.registerGitHubWebhookRecoveryWork(coordinator, () => canRun).ready;
+        await stopping;
+        expect(stoppedAfterClaim).toBe(true); expect(f.posts).toEqual([]);
+        if (superseded) expect(await f.receipt()).toEqual(successor);
+        else if (previous) expect(await f.receipt()).toMatchObject({ status: previous.status,
+          result: previous.result, payload: previous.payload });
+        else expect(await f.receipt()).toBeUndefined();
+        transactions.mockRestore();
+        await coordinator.stop();
+        await f.makeScanDue();
+        canRun = true;
+        coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
+        await f.service.registerGitHubWebhookRecoveryWork(coordinator, () => true).ready;
+        if (superseded) {
+          expect(f.posts).toEqual([]);
+          expect(await f.receipt()).toEqual(successor);
+        } else {
+          expect(f.posts).toHaveLength(1);
+          expect(await f.receipt()).toMatchObject({ status: "processed", result: { attempts: priorReceipt ? 2 : 1 } });
+        }
+      } finally { transactions.mockRestore(); await coordinator.stop(); await stopping; }
+    });
+
     it("joins held GitHub history at shutdown without starting another HTTP request", async () => {
       const f = await githubPreIngressRecoveryFixture(); await f.makeScanDue();
       let release!: () => void, entered!: () => void;

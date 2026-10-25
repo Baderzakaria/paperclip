@@ -1142,8 +1142,11 @@ export function createGitHubWebhookIngress(db: Db, options: GitHubWebhookIngress
   ) {
     const admitted = () => !isShuttingDown() && canRun() && !signal?.aborted;
     if (!admitted() || !getWebhookPublicBaseUrl()?.startsWith("https://")) return;
-    const recoveryFetch: typeof fetch = (input, init) => {
+    const assertAdmitted = () => {
       if (!admitted()) throw signal?.reason ?? new Error("GitHub webhook recovery stopped");
+    };
+    const recoveryFetch: typeof fetch = (input, init) => {
+      assertAdmitted();
       return fetchImpl(input, init);
     };
     const now = new Date();
@@ -1403,6 +1406,7 @@ export function createGitHubWebhookIngress(db: Db, options: GitHubWebhookIngress
             currentConfig.insecureSsl !== "0"
           )
             return;
+          const requestedAt = new Date().toISOString();
           const claimed = await db.transaction(async (tx) => {
             await lease.assertOwned(tx);
             const current = await runtimeCallbackEndpoint(
@@ -1460,7 +1464,7 @@ export function createGitHubWebhookIngress(db: Db, options: GitHubWebhookIngress
             const result = {
               attempts: count + 1,
               latestAttemptId: latest.id,
-              requestedAt: new Date().toISOString(),
+              requestedAt,
               retryAt: new Date(
                 Date.now() + 60_000 * 5 ** count,
               ).toISOString(),
@@ -1500,38 +1504,49 @@ export function createGitHubWebhookIngress(db: Db, options: GitHubWebhookIngress
             return changes[0]?.id ?? null;
           });
           if (!claimed) return;
-          requested += 1;
-          // Commit the immutable denial fence before transport. Even an
-          // ambiguous POST is not reattempted without a distinct failed
-          // provider delivery. A stale scanner cannot overwrite a successor.
-          await lease.assertOwned();
+          const ownsAttempt = and(
+            eq(chatActions.id, claimed),
+            eq(chatActions.status, "processing"),
+            sql`(${chatActions.result}->>'attempts')::int = ${count + 1}`,
+            sql`${chatActions.result}->>'latestAttemptId' = ${latest.id}`,
+            sql`${chatActions.result}->>'requestedAt' = ${requestedAt}`,
+          );
+          let transportStarted = false;
           try {
+            await lease.assertOwned();
             await requestGitHubAppWebhookRedelivery({
-              fetch: recoveryFetch,
+              fetch: (input, init) => {
+                assertAdmitted();
+                transportStarted = true;
+                requested += 1;
+                return fetchImpl(input, init);
+              },
               appToken,
               deliveryId: original.id,
             });
             await db
               .update(chatActions)
               .set({ status: "processed", updatedAt: new Date() })
-              .where(
-                and(
-                  eq(chatActions.id, claimed),
-                  eq(chatActions.status, "processing"),
-                  sql`(${chatActions.result}->>'attempts')::int = ${count + 1}`,
-                ),
-              );
+              .where(ownsAttempt);
           } catch (error) {
-            await db
-              .update(chatActions)
-              .set({ status: "delivery_unknown", updatedAt: new Date() })
-              .where(
-                and(
-                  eq(chatActions.id, claimed),
-                  eq(chatActions.status, "processing"),
-                  sql`(${chatActions.result}->>'attempts')::int = ${count + 1}`,
-                ),
-              );
+            if (transportStarted) {
+              await db
+                .update(chatActions)
+                .set({ status: "delivery_unknown", updatedAt: new Date() })
+                .where(ownsAttempt);
+            } else {
+              await db.transaction(async (tx) => {
+                await notifyGitHubWebhookRecovery(tx, { kind: "endpoint", id: endpoint.id });
+                if (receipt) {
+                  await tx
+                    .update(chatActions)
+                    .set({ status: receipt.status, result: receipt.result, updatedAt: receipt.updatedAt })
+                    .where(ownsAttempt);
+                } else {
+                  await tx.delete(chatActions).where(ownsAttempt);
+                }
+              });
+            }
             throw error;
           }
         });

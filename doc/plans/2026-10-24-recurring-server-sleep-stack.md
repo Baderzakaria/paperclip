@@ -2026,3 +2026,19 @@ acceptance and remote gates remain required. See
 Earlier #17490/#17572 CI failures, #17576/#17580 review findings, the entire
 remaining original list, and final reconciliation with master stay open. The
 current inspected master is `5a28f7acf8`; no stack PR has been merged.
+
+
+## Slice 38 review repair and corrected acceptance
+
+Initial #17666 at `936e132c01` has 52 passing checks and a valid Greptile P1:
+a receipt committed immediately before drain/stop could suppress a POST that
+never started. Four regressions reproduced the loss. The owner now restores a
+known-unsent claim with an exact attempt predicate while retaining uncertainty
+after transport starts. Fifty-nine selected tests pass; six stop-boundary cases
+also cover preservation of a newer receipt. Final verification is running.
+
+The initial broad command passed 1,586 tests in two files but misspelled the
+standalone publication filename. The corrected three-file command is running
+on a fresh database; the earlier result is not full publication acceptance.
+Earlier stack CI/review issues, all remaining migrations, and master reconciliation
+remain outstanding. No stack PR is merged or claimed ready as a whole.

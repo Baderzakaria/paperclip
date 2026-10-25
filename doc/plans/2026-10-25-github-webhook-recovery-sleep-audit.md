@@ -131,6 +131,41 @@ process. No permanent URL-discovery poll is introduced.
   acceptance and remote CI/review remain required. This is not a full-stack
   readiness claim.
 
+## Review repair: a claimed redelivery that never reached transport
+
+Greptile identified a valid P1 at initial head `936e132c01`: drain/shutdown
+could start after the recovery receipt committed and before the POST began.
+The guard correctly prevented HTTP, but the catch marked the receipt uncertain,
+and the next scan refused that same failed delivery. Four real-PostgreSQL cases
+reproduced the lost callback for drain/shutdown with both a first claim and a
+previous receipt (`/tmp/sleep38-unsent-regression.log`, four failures).
+
+The owner now distinguishes transport admission from a persisted claim. If the
+request did not start, it restores the prior receipt or removes the new receipt
+inside a short notifying transaction. If transport may have started, it retains
+`delivery_unknown`. Settlement and restoration use the exact attempt identity
+(id, processing status, count, provider delivery, and requested timestamp), so
+an older attempt cannot overwrite a successor. Lease failure before HTTP follows
+the same known-unsent path. Neither database transactions nor the provider POST
+are replayed automatically. A crash between commit and transport, or failure to
+persist restoration, still requires conservative durable uncertainty handling.
+
+- Server typecheck and 59 selected integration/publication/startup cases passed
+  after the repair (`/tmp/sleep38-unsent-types.log`,
+  `/tmp/sleep38-unsent-fixed.log`, 28.91 seconds).
+- Two additional cases replace the receipt timestamp while preserving its
+  processing status and attempt count. All six stop-before-transport cases pass;
+  restoration leaves the newer receipt intact and restart does not replay it
+  (`/tmp/sleep38-unsent-cas.log`, 10.27 seconds).
+- The initial full command passed 1,586 tests across two files in 571.36 seconds
+  (`/tmp/sleep38-full-chat.log`). It misspelled the standalone publication suite
+  filename, so it did not run that suite and is not three-suite acceptance.
+  The corrected complete command includes `chat-interaction-publications.test.ts`.
+- Fresh final workspace typecheck/build and corrected three-suite acceptance on
+  `paperclip_sleep38_final_20261025_1837_test` are running. Initial remote CI has
+  52 passing checks and the valid failing Greptile review; repaired-head gates
+  remain required.
+
 ## Remaining boundaries
 
 The idle-safety proof still blocks unsupported active channel obligations. A
