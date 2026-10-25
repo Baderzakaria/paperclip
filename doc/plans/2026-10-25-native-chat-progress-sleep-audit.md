@@ -172,3 +172,25 @@ evidence. Fresh CI must verify those native consumers. Before/after logs:
 `/tmp/sleep29-notification-fix-workers.log`,
 `/tmp/sleep29-notification-fix-typecheck.log`, and
 `/tmp/sleep29-native-finalization-acceptance.log`.
+
+## CI repair: keep non-progress event admission narrow (2026-10-25)
+
+CI at `3447973f6f` clears the prior finalization failures. Its sole failing test
+file is `heartbeat-run-event-atomic-append.test.ts`: native lifecycle and retry
+exhaustion events unnecessarily select runtime mode and the task-binding SQL,
+which can read a large context snapshot. Those events do not project progress.
+The lock query now selects the extra binding only for allowlisted progress
+kinds. Keep the existing strict SQL/payload regression assertions unchanged.
+
+The atomic-event suite now supports the repository's guarded external test DB
+convention, allowing its actual PostgreSQL SQL assertions to run locally despite
+embedded bootstrap failure. The original implementation reproduces both CI
+failures in `/tmp/sleep29-atomic-events-before.log`. That first external run also
+exposed fixture cleanup ordering; cleanup now removes event/run/agent rows before
+companies and always closes its pools. The repaired atomic-event and progress
+worker suites pass all 25 cases in `/tmp/sleep29-atomic-progress-fixed.log`;
+server typecheck passes in `/tmp/sleep29-atomic-progress-typecheck.log`.
+
+Greptile reviewed `3447973f6f` at 5/5 with no threads. A new full CI/review pass
+is required for this second repair; do not carry forward readiness from its
+parent head.

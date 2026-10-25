@@ -99,7 +99,9 @@ export async function appendHeartbeatRunEvent(
   return db.transaction(async (tx) => {
     const run = await tx
       .select({ companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId,
-        runtimeMode: heartbeatRuns.runtimeMode, issueId: boundRunIssueIdSql() })
+        // Only progress needs the task binding. Other native/recovery events
+        // must not read a potentially large context snapshot to append a log.
+        ...(projectsProgress ? { runtimeMode: heartbeatRuns.runtimeMode, issueId: boundRunIssueIdSql() } : {}) })
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.id, input.runId))
       .for("update")
