@@ -63567,6 +63567,52 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     };
   }
 
+  it("advances native progress past suppressed candidates with microsecond timestamps", async () => {
+    const context = await safeNativeProgressFixture("telegram", "119");
+    try {
+      const valid = await context.createRun("eligible after rejected page");
+      const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, valid.runId));
+      const rejectedIds = Array.from({ length: 30 }, () => randomUUID());
+      await db.insert(heartbeatRuns).values(rejectedIds.map(id => ({
+        id, companyId: source.companyId, agentId: source.agentId,
+        runtimeMode: "native", status: "running",
+        contextSnapshot: { ...source.contextSnapshot, endpointId: randomUUID() },
+      })));
+      await db.insert(chatPublications).values(rejectedIds.map(id => ({
+        companyId: context.fixture.companyId, endpointId: context.endpoint.id,
+        conversationId: context.conversation.id, issueId: context.conversation.issueId,
+        idempotencyKey: `run:${id}:working:${context.endpoint.id}`,
+        payload: { text: "Maya is working…", progressState: "working" },
+        state: "published", createdAt: valid.baseCreatedAt,
+      })));
+      const eventAt = new Date(valid.baseCreatedAt.getTime() + 30_000);
+      await db.insert(heartbeatRunEvents).values(rejectedIds.map(runId => ({
+        companyId: source.companyId, runId, agentId: source.agentId,
+        seq: 1, eventType: "item.completed",
+        createdAt: sql`${eventAt.toISOString()}::timestamptz + interval '0.000123 seconds'`,
+      })));
+      await context.addEvent(valid, "item.completed", 1, new Date(eventAt.getTime() + 1));
+      const select = db.select.bind(db);
+      let pages = 0;
+      const guard = vi.spyOn(db, "select").mockImplementation((...args) => {
+        if (args[0] && "eventCreatedAt" in args[0] && ++pages > 10) {
+          throw new Error("Native progress pagination did not advance past suppressed candidates");
+        }
+        return select(...args);
+      });
+      try {
+        await expect(enqueueSafeNativeChatProgress(db, { since: eventAt, limit: 1 })).resolves.toBe(1);
+      } finally { guard.mockRestore(); }
+      const progress = await db.select().from(chatPublications).where(and(
+        eq(chatPublications.conversationId, context.conversation.id),
+        like(chatPublications.idempotencyKey, "%:native:%"),
+      ));
+      expect(progress).toEqual([expect.objectContaining({
+        idempotencyKey: `run:${valid.runId}:working:${context.endpoint.id}:native:making_progress:1`,
+      })]);
+    } finally { await retirePublicationFixture(context.service, context.endpoint.id); }
+  });
+
   it.each(["separate owners", "combined budget"] as const)(
     "keeps lifecycle and native progress projection independent with %s",
     async (mode) => {
