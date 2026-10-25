@@ -1297,3 +1297,12 @@ acceptance remain pending. History retention and call reports remain separate ne
 slices. Parent #17578 at 90caaf3fa9 has no pending/failed checks and exact-head
 Greptile 5/5; the second Paperclip reviewer stopped before completion. The original
 remaining inventory, #17490 E2E failure and final reconciliation remain in scope.
+
+
+Inbound cleanup is [#17580](https://github.com/paperclipai/paperclip/pull/17580),
+head 4b4bf2d8af6e08d3859ada4b720e7fbd3ea27e24, stacked on #17578. It is
+mergeable; CI 40181994295 and review 40181994134 are live with no initial failure.
+The final migration applies/replays and its backfill is tested twice. Slice 24
+starts the separate inbound-history retention audit. Its deadline preserves both
+seven-day age conditions and requires confirmed cleanup plus no task/session
+binding. Call reports follow separately. No original remaining scope is removed.
