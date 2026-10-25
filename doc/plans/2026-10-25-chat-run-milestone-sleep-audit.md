@@ -2,8 +2,8 @@
 
 Baseline: Teams attempt recovery #17592 at f53ae3d6d2.
 Branch: codex/sleep-28-chat-run-milestones.
-Status: projection owners separated and lifecycle cursor regression repaired;
-transaction producer coverage, worker registration and final acceptance pending.
+Status: scoped worker and initial real producer signals implemented and locally
+verified; complete producer coverage, production registration and final acceptance pending.
 
 ## Separate obligations discovered
 
@@ -145,3 +145,99 @@ Paperclip Review result. Neutral is not a completed positive review. #17590 at
 queued at inspection. #17586 also has a neutral Paperclip Review. Final review
 acceptance remains separate. Refreshed master is `2e47c42fad`; stack reconciliation
 remains required. No stack PR was merged.
+
+
+## Scoped worker and initial producer checkpoint
+
+`chat-run-milestone-work.ts` now reuses `registerScopedDeadlineWork`. Its loader
+shares the lifecycle candidate selector with the explicit projector, retaining
+all existing SQL eligibility fences and timestamp precision. It reconstructs
+one entry per company/issue, with a bounded 100-publication projection batch.
+A full batch remains immediately due; a short batch has exhausted the selector
+and disarms, including currently suppressed lineage. Real selection/write
+failures retain the shared retry backoff. The scheduler owns coalescing,
+company fairness, first writes during drain, concurrent changes, and shutdown.
+No new persistent queue or independent timer is introduced.
+
+`notifyChatRunMilestones` carries only company/issue identity through the existing
+outer-transaction protocol. Issue-scoped invalidation includes descendants;
+company scope is available for broader configuration or lifecycle changes.
+Unrelated issues/companies are not reconstructed for an issue hint.
+
+Initial production integrations now await intent before writing:
+
+- `heartbeat/run-lifecycle.ts::writeRunStatus`: both shared status transition
+  callers signal the known company in their existing transaction. This is a
+  conservative company hint; it is not proof that all raw run writes are covered.
+- `heartbeat/run-completion.ts`: the late presentation-decision write now owns
+  a short transaction and signals its issue (company fallback when unbound).
+  Provider execution and presentation generation remain outside that transaction.
+- `question-response-delivery.ts::recordTerminal`: the existing transaction
+  signals the issue before recording the durable target run and outcome.
+
+The production app still uses the combined periodic projector. The new worker
+is exercised through actual coordinator registration in tests but is not yet
+registered by `app.ts`; do not remove the sweep until the remaining producer
+families in the table above are implemented. In particular: queue admission and
+recovery writers, native finalization and semantic receipts, question claim/retry
+transitions, interaction changes, publication settlement, conversation/endpoint
+changes, and decision/wake ledger changes remain to be covered. The late legacy
+presentation signal is implemented, but its own full completion integration
+proof is still required. Current Cloud blockers and single-active-writer limits
+remain unchanged.
+
+### Worker and producer verification
+
+15 real-PostgreSQL worker cases pass in
+`/tmp/sleep28-worker-question-tests.log`. They cover configured idle/internal
+runs/old history, startup and restart, first committed work, outer commit and
+nested rollback, first wake during drain, issue/company isolation, suppressed
+lineage reactivation, late presentation eligibility, 205 notices plus another
+company, selection failure through drain, publication-write retry, a concurrent
+commit during projection, shutdown, real cancellation and real question delivery.
+Quiet assertions advance two minutes and observe zero DB selects/transactions.
+The deadline test verifies no scans during the ten seconds before retry.
+
+The two real producer proofs are causal, not just notification-spy assertions:
+
+- Removing the actual `writeRunStatus` signal makes the cancellation test fail:
+  the queued notice exists but the terminal notice is absent. Restoring it passes.
+  Log: `/tmp/sleep28-cancellation-without-signal.log`.
+- The question test creates and answers a real interaction, supplies a durable
+  published prompt, and invokes the real delivery service. Its wake callback
+  inserts the continuation without a milestone signal and proves no notice is
+  projected yet. The terminal receipt then activates the worker. Removing that
+  exact signal strands the notice and fails the assertion. Log:
+  `/tmp/sleep28-question-without-signal.log`.
+
+The 31-case existing chat integration selection passes after the selector
+refactor and producer additions, including presentation authority and native
+progress. Log: `/tmp/sleep28-scoped-acceptance.log`. Expected contention/retry
+warnings occurred, with all assertions passing. Server production typecheck
+passes in `/tmp/sleep28-producer-typecheck.log`. No full-workspace or PR gate
+completion is claimed yet.
+
+Preserved fixture failures:
+
+1. `/tmp/sleep28-worker-tests.log`: all 11 initial cases failed setup because the
+   fixture used provider name `slack` as connection transport. The schema requires
+   `chat_sdk`; no production transport change was made.
+2. `/tmp/sleep28-worker-fixed-tests.log`: ten passed; the same-company isolation
+   fixture violated the application-name uniqueness constraint. Fixture names now
+   include their identity.
+3. `/tmp/sleep28-worker-producer-tests.log`: eleven passed; cancellation required
+   a responsible-user membership, and teardown omitted its new run-event rows.
+   Both are now represented/cleaned by the fixture.
+4. `/tmp/sleep28-worker-producer-fixed-tests.log`: assertions reached cancellation
+   projection, but default follow-on recovery admitted another execution and
+   teardown deadlocked against it. The test now uses cancellation's existing
+   `suppressImmediateRecovery` option to exercise Stop without starting successor
+   execution. This does not change the default production recovery policy.
+5. All 12 corrected cases passed in `/tmp/sleep28-worker-final-tests.log`; two
+   concurrency/retry cases made 14 pass in `/tmp/sleep28-worker-expanded-tests.log`;
+   the real question case brings the latest total to 15. These counts overlap.
+
+This checkpoint is progress on slice 28, not a new independently complete reason
+or a claim that milestone polling is retired. The original full PR-stack scope,
+older unresolved CI/review findings, final master reconciliation and each PR's
+latest-head acceptance remain required.

@@ -1,3 +1,4 @@
+import { notifyChatRunMilestones } from "./chat-run-milestone-notifications.js";
 import { and, asc, desc, eq, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -504,6 +505,7 @@ export function questionResponseDeliveryService(
   }): Promise<QuestionResponseDeliveryOutcome> {
     const at = now();
     const updated = await db.transaction(async (tx) => {
+      await notifyChatRunMilestones(tx, { companyId: input.delivery.companyId, issueId: input.delivery.issueId });
       const row = await tx
         .update(issueQuestionResponseDeliveries)
         .set({
