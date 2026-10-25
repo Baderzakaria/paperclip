@@ -171,3 +171,52 @@ company and Slack stop paths), admission-failure settlement, authority changes
 not already covered by shared notifications, batching/scoping/lifecycle tests,
 production registration, and removal of only this duty from the maintenance
 loop. Fresh PR creation and all checks remain outstanding for slice 30.
+
+## Receipt audit refinement (in progress)
+
+Do not mechanically notify every `agent_wakeup_requests` write. The normal
+notice predicate requires an exact `inbound_wakeup` action, matching durable
+receipt/canonical owner, and current source/destination authority. A first queued
+notice requires an unadmitted deferred owner. A not-started retirement requires
+both receipt and owner to have no run. Removed-source retirement instead requires
+the exact visible queued message and a soft-deleted source; it can remain eligible
+after surviving coalesced input promotes.
+
+- First durable chat receipt insertion is followed by the existing
+  `inbound/wakeups.ts` processed-action settlement, now carrying notice intent.
+  Failed action settlement is still an explicit gap to address. Do not assume
+  the earlier admission transaction alone establishes a processed action.
+- `execution-wait.ts` increments counters on an already-skipped receipt or
+  inserts a new skipped receipt. The counter update does not change notice
+  eligibility; first-admission terminal settlement belongs to the action owner.
+- `heartbeat/queue.ts` periodic `updatedAt` touches (queued-comment interrupt and
+  stranded-queue inspection) and `run-control.ts` retry cursor touches must not
+  wake notice reconciliation. `executionWait` explanatory-message-only updates
+  do not change the closed notice text or eligibility.
+- `explicit-native-continuation.ts` and `fresh-workspace-continuation.ts` change
+  the task-retry workspace strategy only; no notice wake follows from that field.
+- `human-directed-work.ts::retainBacklogHumanAssignment` inserts a completed
+  board-provenance receipt, not a deferred inbound-chat admission.
+- `setWakeupStatus` call sites found in heartbeat queue/control/completion,
+  recovery and retries operate on a run's receipt. Recheck any exceptional
+  run-less caller before adding a broad signal: a receipt with a run cannot
+  produce not-started, and source tombstoning owns removed-source activation.
+- Explicit cancellation paths still needing integration/tests include
+  `run-control.ts::cancelPendingWakeupsForBudgetScope`, `cancelPendingWakeupsForAgentsInternal`, company archive cascade,
+  Slack session stop, and queue replay paths that decline an unadmitted receipt.
+- `issues.ts` reassignment cancels user receipts in the issue-update transaction;
+  it currently signals lifecycle only for unhide, so that signal is not coverage
+  of reassignment. Current-authority restoration and mutation ordering need an
+  explicit test.
+- Dot/Muse follow-up consumption changes deferred receipt payloads and can bind
+  them to an already-running turn. Audit their provider-lane precedence rather
+  than emitting a false not-started notice for consumed input.
+- Task-retry and failed-run-retry generations have separate notice policy. Check
+  whether normal inbound receipts may reference their canonical owners before
+  deciding which writes belong to this reason or the next failed-retry slice.
+
+The full chat integration suite was launched at local branch `c579148977` on a
+fresh `paperclip_sleep30_full_chat_20261025_test` database, with output at
+`/tmp/sleep30-full-chat-acceptance.log`; its result must be read before claiming
+acceptance. Typecheck after merging the second parent repair passed in
+`/tmp/sleep30-after-parent-typecheck.log`.
