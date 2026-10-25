@@ -20,7 +20,7 @@ type NoticeOptions = {
 };
 export function createInboundWakeNotices(db: Db, options: NoticeOptions) {
   const { authorizeInboundWakeup, enqueueFailedChatRetryPublications, authorizeRetainedChatSourcePublication, isExternalActionAuthorizationChange } = options;
-  let inboundWakeNoticeCursor: { createdAt: Date; id: string } | null = null;
+  let inboundWakeNoticeCursor: { createdAt: string; id: string } | null = null;
   async function currentInboundWakeNotice(
     tx: DbOrTransaction,
     action: typeof chatActions.$inferSelect,
@@ -162,7 +162,7 @@ export function createInboundWakeNotices(db: Db, options: NoticeOptions) {
     // A bounded keyset sweep, not an in-memory work queue. Advancing even past
     // revoked candidates prevents an inaccessible old message starving others.
     const candidates = await db
-      .select({ action: chatActions })
+      .select({ action: chatActions, cursorCreatedAt: sql<string>`${chatActions.createdAt}::text` })
       .from(chatActions)
       .innerJoin(
         agentWakeupRequests,
@@ -193,7 +193,7 @@ export function createInboundWakeNotices(db: Db, options: NoticeOptions) {
           and ${agentWakeupRequests.status} not in ('cancelled','failed','skipped') and not (${sourceRemoved}))
           or ${hasVisibleQueue})`,
           cursor
-            ? sql`(${chatActions.createdAt}, ${chatActions.id}) > (${cursor.createdAt.toISOString()}::timestamptz, ${cursor.id}::uuid)`
+            ? sql`(${chatActions.createdAt}, ${chatActions.id}) > (${cursor.createdAt}::timestamptz, ${cursor.id}::uuid)`
             : undefined,
           sql`not exists (select 1 from chat_publications notice
           where notice.company_id = ${chatActions.companyId}
@@ -206,10 +206,10 @@ export function createInboundWakeNotices(db: Db, options: NoticeOptions) {
       )
       .orderBy(asc(chatActions.createdAt), asc(chatActions.id))
       .limit(Math.max(1, Math.min(limit, 200)));
-    const last = candidates.at(-1)?.action;
+    const last = candidates.at(-1);
     inboundWakeNoticeCursor =
       candidates.length >= Math.max(1, Math.min(limit, 200)) && last
-        ? { createdAt: last.createdAt, id: last.id }
+        ? { createdAt: last.cursorCreatedAt, id: last.action.id }
         : null;
     let inserted = retryInserted;
     for (const { action } of candidates) {

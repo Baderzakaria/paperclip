@@ -111,3 +111,19 @@ Do not turn queued work into periodic notice polling after its notice is saved.
 
 This audit changes no runtime behavior or Cloud eligibility. Exact implementation,
 producer coverage and acceptance remain required before a migration PR is ready.
+
+## Groundwork evidence
+
+The existing 22 FIFO/notice integration cases pass in
+`/tmp/sleep30-inbound-notice-baseline.log`. A new regression then reproduces the
+cursor defect: 50 authority-rejected actions share a PostgreSQL microsecond
+timestamp before one valid admitted action; two bounded passes both return zero.
+Evidence: `/tmp/sleep30-notice-cursor-before.log`.
+
+Preserving the timestamp as PostgreSQL text repairs that defect without changing
+eligibility or batching. All 23 notice cases pass in
+`/tmp/sleep30-notice-cursor-fixed.log` on a fresh isolated external PostgreSQL
+fixture database. Production typecheck passes in
+`/tmp/sleep30-cursor-typecheck.log`. The new test deletes its artificial candidates
+so they cannot starve later tests. Scoped worker ownership and complete producer
+coverage remain unimplemented; this is groundwork, not a polling-removal claim.

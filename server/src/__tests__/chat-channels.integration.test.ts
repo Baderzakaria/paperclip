@@ -71126,6 +71126,37 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     };
   }
 
+  it("advances pre-run FIFO selection past a suppressed page with microsecond timestamps", async () => {
+    const context = await deferredChatQueueFixture();
+    const rejectedIds = Array.from({ length: 50 }, () => randomUUID());
+    try {
+      const [receipt] = await readAgentWakeupRequestsById(context.action.id);
+      const before = new Date(context.action.createdAt.getTime() - 1000).toISOString();
+      await db.insert(chatActions).values(rejectedIds.map(id => ({
+        ...context.action, id, providerActionId: `inbound_wakeup:${id}`,
+        payload: { ...context.action.payload, commentId: randomUUID() },
+        createdAt: sql`${before}::timestamptz + interval '0.000123 seconds'`,
+      })));
+      await db.insert(agentWakeupRequests).values(rejectedIds.map(id => ({
+        ...receipt, id, idempotencyKey: `chat-cursor-fixture:${id}`,
+      })));
+      // Rejected current authority must not keep the same full page at the
+      // head of every bounded pass and starve the later admitted message.
+      const first = await context.service.enqueueInboundWakeupPublications(50);
+      const second = await context.service.enqueueInboundWakeupPublications(50);
+      expect(first + second).toBe(1);
+      const rows = await readChatPublicationsByEndpointId(context.endpoint.id);
+      expect(rows).toEqual([expect.objectContaining({
+        commentId: context.action.payload.commentId,
+        payload: { text: "Your follow-up is queued.", progressState: "queued" },
+      })]);
+    } finally {
+      await context.service.shutdown();
+      await db.delete(chatActions).where(inArray(chatActions.id, [...rejectedIds, context.action.id]));
+      await db.delete(agentWakeupRequests).where(inArray(agentWakeupRequests.id, [...rejectedIds, context.action.id]));
+    }
+  });
+
   it("keeps one durable pre-run FIFO notice across coalescing and restart, then reuses only its successor lane", async () => {
     const context = await deferredChatQueueFixture();
     let restarted: ChatChannelService | null = null;
