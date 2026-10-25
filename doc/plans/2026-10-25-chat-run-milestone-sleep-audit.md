@@ -627,3 +627,38 @@ Fresh origin/master inspected at `8c6bd5a83b`; reconciliation of the stack remai
 outstanding. Publication/interaction, conversation/configuration and monitor
 receipt producers remain under audit. Production registration and periodic-loop
 removal are still pending, so this checkpoint is not a completed migration PR.
+
+## Monitor receipt ordering checkpoint
+
+The normal native monitor owner does not need another milestone signal when it
+saves a schedule. `PaperclipRunnerToolAuthority.#setTaskMonitor` writes the issue
+monitor and its semantic tool receipt inside the same `#withMutationReceipt`
+transaction. The future deadline cannot be consumed before that commit. A later
+monitor wake's real queue admission already signals the issue scope, and the
+projector validates the committed receipt through `readNativeMonitorSource`.
+Do not add a redundant signal to the generic semantic tool wrapper merely because
+the projector reads a receipt.
+
+The new test executes the actual `set_task_monitor` tool authority, then admits
+the due wake through the real heartbeat queue after the source has finished. It
+checks the queued notice and idle quiet. Source completion is fixture-controlled
+and provider execution is held by task drain; this is receipt/admission/lineage
+coverage, not full monitor scheduler or harness acceptance. Alternate monitor
+wake rewrites and recovery paths still require audit before the whole producer
+family is declared complete.
+
+The initial proposed late-receipt test seeded an admitted wake before creating
+its future monitor, which did not represent the normal ordering. Its first run
+also failed the actual future-deadline validator after advancing the test clock
+(`/tmp/sleep28-monitor-receipt-before.log`). That failure was a fixture problem,
+not a production regression. The replacement follows the real ownership order
+instead of manufacturing a missing signal for an unsupported ordering.
+
+- `/tmp/sleep28-monitor-admission-tests.log`: targeted real producer path passes.
+- `/tmp/sleep28-monitor-final-tests.log`: all 43 milestone worker cases pass.
+- No production monitor code changed; `git diff --check` passed.
+
+Remote gates refreshed at this checkpoint: #17490 at `31bcd1988823` still has
+failed E2E shard 3 and aggregate checks; #17590 at `e501d6c99d72` still has queued
+Paperclip Review; #17592 at `f53ae3d6d27c` still has neutral Paperclip Review.
+These are not claimed ready and no merge was attempted.

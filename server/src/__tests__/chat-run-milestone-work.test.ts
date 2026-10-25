@@ -21,6 +21,7 @@ import { CHAT_CONTROL_RECOVERY_ADMISSION_KEY, CHAT_CONTROL_RECOVERY_UNRESOLVED_C
 import { heartbeatService } from "../services/heartbeat.js";
 import { commitNativeStatusDecision, dispatchPendingNativeStatusEffects } from "../services/native-runtime/status-decision-committer.js";
 import { claimQueuedNativeReviewRun } from "../services/native-runtime/native-review-dispatch.js";
+import { PaperclipRunnerToolAuthority } from "../services/native-runtime/paperclip-runner-tool-authority.js";
 import { finalizeNativeRun } from "../services/native-runtime/native-run-finalizer.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
 
@@ -383,6 +384,36 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect((await publications()).map(row => row.idempotencyKey)).toContain(`run:${seeded.id}:queued:${f.endpointId}`);
     await quiet();
     await service.releaseRunClaimedJustBeforeSuppression(seeded.id);
+    await quiet();
+  });
+  it("wakes an admitted monitor through its previously committed source receipt", async () => {
+    const source = await run(f, { runtimeMode: "native", nativeIssueId: f.issueId });
+    await db.update(issues).set({ executionRunId: source.id }).where(eq(issues.id, f.issueId));
+    await start(); await flush(); await quiet();
+    const nextCheckAt = new Date(Date.now() + 60_000).toISOString();
+    const authority = new PaperclipRunnerToolAuthority(db, { ...f, runId: source.id });
+    const request = { tool: "set_task_monitor", callId: randomUUID(), arguments: {
+      idempotencyKey: "milestone-monitor", monitor: { nextCheckAt, notes: "Check the saved task" },
+    } };
+    await expect(authority.execute(request)).resolves.toMatchObject({ taskId: f.issueId, replayed: false });
+    // The monitor and source receipt commit together, before due admission. This
+    // fixture finishes the source without executing a harness; admission below
+    // uses the real queue, with execution held by task drain.
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, source.id));
+    await db.update(issues).set({ executionRunId: null }).where(eq(issues.id, f.issueId));
+    await quiet();
+    const { service, dependencies } = await queue();
+    dependencies.getSchedulingSuppression.mockResolvedValue({ suppressed: true, reason: "task_drain" });
+    const admitted = await service.enqueueWakeup(f.agentId, { source: "automation", reason: "issue_monitor_due",
+      idempotencyKey: `issue-monitor:${f.issueId}:${nextCheckAt}`,
+      payload: { issueId: f.issueId, nextCheckAt },
+      contextSnapshot: { issueId: f.issueId, source: "issue.monitor" },
+      requestedByActorType: "user", requestedByActorId: f.userId,
+    });
+    expect(admitted).toMatchObject({ status: "queued" });
+    await flush();
+    expect((await publications()).map(row => row.idempotencyKey)).toContain(`run:${admitted!.id}:queued:${f.endpointId}`);
+    expect(dependencies.executeRun).not.toHaveBeenCalled();
     await quiet();
   });
   async function nativeFixture(phase = "committed") {
