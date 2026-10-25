@@ -195,6 +195,44 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(1000); expect(fetchReport).toHaveBeenCalledTimes(105); }, { timeout: 5000 });
     expect((await report(broken.id)).attempts).toBe(1); await flush(); await quiet();
   });
+  it("reconstructs recent reports without scanning old history and preserves submillisecond page boundaries", async () => {
+    const seed = await session({ endedAt: new Date(Date.now() - 2 * day) });
+    await db.execute(sql`insert into chat_voice_sessions
+      (company_id, endpoint_id, conversation_id, issue_id, assigned_agent_id, caller_id,
+       caller_authority, mode, state, generation, credential_fingerprint, provider_session_id,
+       tool_token_hash, idempotency_key, request_fingerprint, expires_at, ended_at, created_at)
+      select company_id, endpoint_id, conversation_id, issue_id, assigned_agent_id, gen_random_uuid()::text,
+        caller_authority, mode, state, generation, credential_fingerprint, gen_random_uuid()::text,
+        tool_token_hash, gen_random_uuid()::text, request_fingerprint, expires_at, ended_at, created_at
+      from chat_voice_sessions cross join generate_series(1, 20000) where id = ${seed.id}`);
+    const stamp = new Date(Date.now() - 60_000).toISOString();
+    const expected: string[] = [];
+    for (let i = 0; i < 205; i++) {
+      const row = await session(); expected.push(row.id);
+      await db.execute(sql`update chat_voice_sessions set ended_at = ${stamp}::timestamptz + (${i % 3} * interval '0.0001 second') where id = ${row.id}`);
+    }
+    await db.execute(sql`analyze chat_voice_sessions`);
+    const queries: Array<{ text: string; parameters: unknown[] }> = [];
+    const original = db.$client.unsafe.bind(db.$client);
+    const capture = vi.spyOn(db.$client, "unsafe").mockImplementation(((text: string, parameters: unknown[] = [], ...rest: unknown[]) => {
+      if (text.includes('from "chat_voice_sessions"') && text.includes('left join "chat_voice_reports"')) queries.push({ text, parameters });
+      return original(text, parameters as never, ...rest as []);
+    }) as typeof db.$client.unsafe);
+    let loaded: Awaited<ReturnType<ReturnType<typeof voiceCallReports>["load"]>>;
+    try { loaded = await voiceCallReports(db, fetchReport).load(); }
+    finally { capture.mockRestore(); }
+    expect(loaded!.map(row => row.id).sort()).toEqual(expected.sort());
+    expect(queries).toHaveLength(3);
+    function removed(node: Record<string, unknown>): number {
+      return Math.max(Number(node["Rows Removed by Filter"] ?? 0),
+        ...(Array.isArray(node.Plans) ? node.Plans.map(child => removed(child)) : []));
+    }
+    for (const query of queries) {
+      const [row] = await db.$client.unsafe(`explain (analyze, buffers, format json) ${query.text}`, query.parameters as never);
+      expect(removed(row["QUERY PLAN"][0].Plan)).toBeLessThan(1000);
+    }
+    expect(fetchReport).not.toHaveBeenCalled();
+  }, 30_000);
   it("joins an in-flight report at shutdown and resumes its saved retry", async () => {
     const call = await session(); let release!: (value: SpekoCallReport) => void;
     fetchReport.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));

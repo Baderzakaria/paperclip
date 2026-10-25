@@ -1,4 +1,4 @@
-import { and, eq, gt, gte, inArray, isNotNull, lte, ne, or, sql } from "drizzle-orm";
+import { and, eq, gte, inArray, isNotNull, lte, ne, or, sql } from "drizzle-orm";
 import { activityLog, chatEndpoints, chatVoiceReports, chatVoiceSessions, issues, type Db } from "@paperclipai/db";
 import { logger } from "../../middleware/logger.js";
 import { documentService } from "../documents.js";
@@ -21,11 +21,12 @@ const eligible = (now: number) => and(inArray(chatVoiceSessions.state, ["ended",
  * state, not a promise of immutable provider data. Keep that finite obligation. */
 export function voiceCallReports(db: Db, fetchReport: (session: VoiceSessionRow) => Promise<Report>) {
   async function load(scope?: VoiceRecoveryScope, signal?: AbortSignal): Promise<Entry[]> {
-    const entries: Entry[] = []; let cursor: string | undefined;
+    const entries: Entry[] = []; let cursor: { id: string; endedAt: string } | undefined;
     for (;;) {
       signal?.throwIfAborted();
       const rows = await db.select({ id: chatVoiceSessions.id, companyId: chatVoiceSessions.companyId,
         endpointId: chatVoiceSessions.endpointId, connectionId: chatEndpoints.connectionId,
+        endedAt: sql<string>`${chatVoiceSessions.endedAt}::text`,
         dueAt: sql<string>`least(coalesce(ceil(extract(epoch from ${chatVoiceReports.nextCheckAt}) * 1000), 0), floor(extract(epoch from ${chatVoiceSessions.endedAt}) * 1000) + ${WINDOW_MS} + 1)`,
       }).from(chatVoiceSessions)
         .innerJoin(chatEndpoints, and(eq(chatEndpoints.id, chatVoiceSessions.endpointId), eq(chatEndpoints.companyId, chatVoiceSessions.companyId)))
@@ -35,10 +36,12 @@ export function voiceCallReports(db: Db, fetchReport: (session: VoiceSessionRow)
           scope?.kind === "endpoint" ? eq(chatVoiceSessions.endpointId, scope.id) : undefined,
           scope?.kind === "connection" ? eq(chatEndpoints.connectionId, scope.id) : undefined,
           scope?.kind === "company" ? eq(chatVoiceSessions.companyId, scope.id) : undefined,
-          cursor ? gt(chatVoiceSessions.id, cursor) : undefined)).orderBy(chatVoiceSessions.id).limit(100);
-      entries.push(...rows.map(row => ({ ...row, dueAt: Number(row.dueAt) })));
+          cursor ? sql`(${chatVoiceSessions.endedAt}, ${chatVoiceSessions.id}) > (${cursor.endedAt}::timestamptz, ${cursor.id}::uuid)` : undefined))
+        .orderBy(chatVoiceSessions.endedAt, chatVoiceSessions.id).limit(100);
+      entries.push(...rows.map(({ endedAt: _cursor, ...row }) => ({ ...row, dueAt: Number(row.dueAt) })));
       if (rows.length < 100) return entries;
-      cursor = rows[rows.length - 1].id;
+      // Keep PostgreSQL precision; JS Date truncation can repeat a page.
+      cursor = rows[rows.length - 1];
     }
   }
   async function projectTranscript(session: VoiceSessionRow) {
