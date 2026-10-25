@@ -1211,3 +1211,20 @@ Parent Discord #17557 at d3187f76a4 and company cleanup #17561 at e8febb30eb now
 have no failed or pending checks (Paperclip Review skipped). No merge was made.
 The older #17490 E2E cancellation failure remains unresolved. The entire original
 inventory stays in scope, with voice the next separate reason after receivers.
+
+
+## Receiver review repair
+
+The real company-removal producer regression reproduced two inventory reads for
+one observed removal. Discovery-initiated stops now suppress their own completion
+wake; independent token loss still wakes discovery after listener retirement.
+A full reconstruction also covers its already-pending scoped hints. Hints that
+arrive during the load remain dirty, and narrower writes cannot bypass a failed
+full reconstruction's retry deadline.
+
+Both redundant-load regressions failed before repair. All 45 selected receiver,
+startup and real Discord producer tests pass after repair, including the added
+full-refresh failure/backoff case. Server typecheck and build pass. Prior broad
+consumer/workspace verification remains recorded above; these 45 overlap that
+coverage and are not an additional unique total. Publication requires fresh
+remote CI and review. The full migration inventory remains outstanding.

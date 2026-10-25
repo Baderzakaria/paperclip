@@ -153,6 +153,34 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     service.load = original; reconcile.mockResolvedValue("owned");
     await settled(); errors.length = 0; await quiet();
   });
+  it("coalesces a full refresh with its already pending scoped hints", async () => {
+    const service = chatReceiverSchedule(db, { reconcile, stop });
+    await start(service); await settled();
+    const load = vi.spyOn(service, "load");
+    await db.transaction(async tx => {
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.chatReceivers, "*");
+      await endpoint({}, tx as unknown as typeof db);
+      await endpoint({}, tx as unknown as typeof db);
+    });
+    await settled(); expect(reconcile).toHaveBeenCalledTimes(2);
+    expect(load).toHaveBeenCalledOnce(); expect(load.mock.calls[0][0]).toBeUndefined();
+    load.mockRestore(); await quiet();
+  });
+  it("keeps full-refresh backoff when a narrower producer arrives", async () => {
+    const service = chatReceiverSchedule(db, { reconcile, stop }), original = service.load;
+    await start(service); await settled();
+    const load = vi.spyOn(service, "load").mockRejectedValue(new Error("inventory unavailable"));
+    await db.transaction(tx => notifyDeliveryWork(tx, DELIVERY_QUEUES.chatReceivers, "*"));
+    await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(1000); expect(errors).toHaveLength(1); });
+    const retryAt = coordinator!.nextWakeAt();
+    const row = await endpoint();
+    await quiet(10_000);
+    expect(load).toHaveBeenCalledOnce(); expect(coordinator!.nextWakeAt()).toBe(retryAt);
+    load.mockImplementation(original);
+    await settled(); expect(reconcile).toHaveBeenCalledWith(row.id);
+    expect(load).toHaveBeenCalledTimes(2); expect(load.mock.calls[1][0]).toBeUndefined();
+    errors.length = 0; load.mockRestore(); await quiet();
+  });
   it("recovers malformed scopes without losing a subsequent valid producer", async () => {
     await start(); await settled();
     await db.transaction(tx => notifyDeliveryWork(tx, DELIVERY_QUEUES.chatReceivers, "unknown:old"));

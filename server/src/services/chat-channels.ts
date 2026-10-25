@@ -1125,7 +1125,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             runtimeVersions.delete(endpoint.id);
           }
           if (discordOwnership) {
-            await stopDiscordGatewayOwnership(discordOwnership, false);
+            await stopDiscordGatewayOwnership(discordOwnership, { removeRuntime: false });
           }
           throw error;
         }
@@ -1145,7 +1145,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   const receiverSchedule = chatReceiverSchedule(db, {
     stop: async id => {
       const ownership = discordGatewayOwnerships.get(id);
-      if (ownership) await stopDiscordGatewayOwnership(ownership);
+      // Discovery already observed removal; only independent ownership loss needs another wake.
+      if (ownership) await stopDiscordGatewayOwnership(ownership, { notifyStopped: false });
     },
     reconcile: async id => {
       const record = await endpointRecord(id);

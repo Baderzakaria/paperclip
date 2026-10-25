@@ -74,7 +74,7 @@ export function createChatReceiverOwnership(db: Db, options: OwnershipOptions) {
 
   async function stopDiscordGatewayOwnership(
     ownership: DiscordGatewayOwnership,
-    removeRuntime = true,
+    stopOptions: { removeRuntime?: boolean; notifyStopped?: boolean } = {},
   ): Promise<void> {
     if (ownership.stopPromise) return ownership.stopPromise;
     ownership.stopping = true;
@@ -84,7 +84,7 @@ export function createChatReceiverOwnership(db: Db, options: OwnershipOptions) {
     }
     ownership.stopPromise = (async () => {
       if (
-        removeRuntime &&
+        stopOptions.removeRuntime !== false &&
         ownership.context.endpointRuntime &&
         runtime.get(ownership.endpointId) === ownership.context.endpointRuntime
       ) {
@@ -105,7 +105,7 @@ export function createChatReceiverOwnership(db: Db, options: OwnershipOptions) {
       if (discordGatewayOwnerships.get(ownership.endpointId) === ownership) {
         discordGatewayOwnerships.delete(ownership.endpointId);
       }
-      if (!options.isShuttingDown()) options.onStopped?.(ownership.endpointId);
+      if (!options.isShuttingDown() && stopOptions.notifyStopped !== false) options.onStopped?.(ownership.endpointId);
     })();
     discordGatewayStopTasks.add(ownership.stopPromise);
     void ownership.stopPromise.finally(() => {
