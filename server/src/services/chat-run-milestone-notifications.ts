@@ -1,3 +1,4 @@
+import { notifyChatConfirmationWork } from "./chat-confirmation-notifications.js";
 import { notifyChatInboundWakeNotices } from "./chat-inbound-wake-notice-notifications.js";
 import { notifyChatNativeProgress } from "./chat-native-progress-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
@@ -13,4 +14,5 @@ export async function notifyChatRunMilestones(tx: object, scope: ChatRunMileston
   await notifyChatNativeProgress(tx, scope);
   // Admission and current chat authority also govern saved queue notices.
   await notifyChatInboundWakeNotices(tx, scope);
+  await notifyChatConfirmationWork(tx, scope);
 }

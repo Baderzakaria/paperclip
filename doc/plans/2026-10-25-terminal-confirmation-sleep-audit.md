@@ -3,7 +3,7 @@
 Date: 2026-10-25. Branch: `codex/sleep-32-terminal-confirmations`.
 Parent: [#17649](https://github.com/paperclipai/paperclip/pull/17649) at
 `2384384eeec4f32d073242ebf597b81df2df1ccb`.
-Status: owner audit only; no worker migration or PR yet.
+Status: implemented; focused lifecycle acceptance passes. Full acceptance and remote gates are pending.
 
 ## Obligation and existing boundary
 
@@ -31,20 +31,20 @@ continuation delivery and GitHub maintenance remain separate reasons/PRs.
 
 ## Producer inventory
 
-- [ ] Acceptance callback: notify before its processing-action write inside the
+- [x] Acceptance callback: notify before its processing-action write inside the
   existing `afterResolveInTransaction` owner.
-- [ ] Rejection callback: same contract, separately exercise the real path.
-- [ ] Initial action token creation in `chat-interaction-publications.ts` writes
+- [x] Rejection callback: same contract, separately exercise the real path.
+- [x] Initial action token creation in `chat-interaction-publications.ts` writes
   `issued`; a user still deciding does not owe settlement work. It must be quiet.
-- [ ] Terminal/supersession publication helpers expire issued sibling tokens;
+- [x] Terminal/supersession publication helpers expire issued sibling tokens;
   inspect their exact predicates before treating them as processing producers.
-- [ ] Settlement writers move processing actions to processed/failed/expired.
+- [x] Settlement writers move processing actions to processed/failed/expired.
   Preserve publication notifications, activity provenance and continuation order.
-- [ ] Board-resolution compatibility: current integration coverage fabricates a
+- [x] Board-resolution compatibility: current integration coverage fabricates a
   processing action before the board decision. Establish how historical pending
   processing rows reactivate from a later interaction change, without repeatedly
   scanning an unchanged human-wait state.
-- [ ] Startup reconstructs processing debt. Outer rollback creates no actionable
+- [x] Startup reconstructs processing debt. Outer rollback creates no actionable
   debt, ambiguous commit uses the existing transaction signal protocol, and
   first-write drain/resume retains the wake.
 
@@ -81,21 +81,22 @@ one-use token behavior, redelivery deduplication, board-race provenance and
 failed continuation handling. Reuse its fixture and assertions rather than
 building a parallel authorization fixture.
 
-- [ ] Reproduce missed recovery after the real postcommit callback failure when
+- [x] Reproduce missed recovery after the real postcommit callback failure when
   periodic/manual maintenance is not invoked.
-- [ ] Prove committed acceptance and rejection activate recovery from idle.
-- [ ] Prove first-write drain/resume, stop/restart, failed selection/retry and
+- [x] Prove committed acceptance and rejection activate recovery from idle.
+- [x] Prove first-write drain/resume, stop/restart, failed selection/retry and
   writes during a drain/sweep.
-- [ ] Verify outer rollback/commit through actual producer ownership where the
+- [x] Verify outer rollback/commit through actual producer ownership where the
   callback service accepts a caller-owned transaction.
-- [ ] Prove empty state, issued tokens awaiting a person, and completed history
+- [x] Prove empty state, issued tokens awaiting a person, and completed history
   make no recurring SQL after settlement.
-- [ ] Prove bounded progress behind pending/malformed/contended candidate prefixes.
-- [ ] Retain the existing terminal edit-before-continuation behavior, duplicate
+- [x] Prove bounded progress behind pending/malformed/contended candidate prefixes.
+- [x] Retain the existing terminal edit-before-continuation behavior, duplicate
   callback handling and board-resolution attribution.
-- [ ] Register production work and remove only its periodic maintenance call.
-- [ ] Update startup/action-worker tests and run targeted PostgreSQL acceptance,
-  server types/build, required full acceptance and fresh remote review/checks.
+- [x] Register production work and remove only its periodic maintenance call.
+- [ ] Complete final server/workspace types/build, full chat/startup acceptance,
+  and fresh remote review/checks. Production wiring has a source guard; the
+  existing generic action-worker registry is unchanged.
 
 ## Scope remains open
 
@@ -103,3 +104,74 @@ No Cloud wake gate, transport ownership, provider deadline, or sleep eligibility
 changes are implied. The supported process-local writer model remains explicit.
 Every remaining original recurring-server reason and older stack finding stays
 in the ledger; this audit does not reduce the requested scope.
+
+## Implementation and boundary decisions
+
+The Telegram owner now exposes only `registerTerminalConfirmationWork` through
+its existing callback/service wiring. Shared app startup selects this owner; it
+has no Telegram payload or decision policy. The owner reconstructs processing
+action IDs from existing rows, using 100-row UUID-keyset pages, and registers
+per-action entries with `registerScopedDeadlineWork`. The shared worker attempts
+at most 25 entries per sweep, rotates companies, retains commits arriving during
+an attempt, and backs off query/settlement failures from 30 seconds to five
+minutes. A failed entry does not prevent later entries from progressing.
+
+Successful settlement, already terminal/missing actions, invalid actions that
+receive a failure record, and actions still waiting on a pending interaction
+remove their scheduled entry. The latter retain their durable processing row;
+they wake when the interaction changes. Issued tokens and completed history do
+not enter recovery. Missing conversation IDs now receive the existing
+`confirmation_action_binding_invalid` failure classification instead of remaining
+processing forever. Other invalid-binding and authorization policy stays with the
+existing settler.
+
+Both real callback decision transactions await a confirmation intent before
+writing processing state. The existing issue/company milestone notification
+boundary also emits an identifier-only confirmation hint. This covers board
+accept/reject, expiry, withdrawal, supersession and other supported interaction
+changes without adding wrappers to each writer. It also means unrelated milestone
+changes can cause one scoped reconstruction; an issue hint never restarts a global
+inventory. The company/issue query includes orphaned conversation bindings in the
+same company so invalid work can receive an explicit failure record. Company-wide
+hints and startup reconstruct the full matching processing inventory in bounded
+SQL pages; total enumeration and memory are proportional to that inventory, not
+capped at 100 rows. No claim of constant startup cost is made.
+
+Only terminal-confirmation reconciliation was removed from periodic publication
+maintenance. Explicit `processPendingPublications` maintenance still calls the
+existing manual reconciler. Interaction continuation delivery and GitHub duties
+are unchanged and remain separate stack reasons. The host sleep gate is unchanged,
+including its treatment of durable processing debt. Process-local signals cover
+supported writes in this process; independent SQL writers/other replicas require
+an ingress protocol. Startup reconstruction remains the recovery path after a
+process loss.
+
+## Evidence and retained failures
+
+- `origin/master` refreshed to `1949e726f8515127a04314e3793c427ccfc33c1e`;
+  full-stack reconciliation is still outstanding. The exact-obligation GitHub
+  search found no competing terminal-confirmation migration.
+- `/tmp/sleep32-confirmation-before.log` is an invalid test invocation: the root
+  Vitest project filter `server` did not match a named project. No tests ran.
+- `/tmp/sleep32-confirmation-before-valid.log` uses the server configuration and
+  reproduces the real callback gap: a committed action remains processing instead
+  of reaching processed when the new worker has no producer notification.
+- `/tmp/sleep32-confirmation-lifecycle.log` initially passed accept, reject and
+  restart, but drain and failed-selection tests had not advanced to the retained
+  30-second deadline. A failed spy assertion also leaked an unconsumed injected
+  error into the following legacy test. The tests now advance exactly to the
+  registered deadline and always restore the spy. The worker was not changed to
+  conceal those harness failures.
+- `/tmp/sleep32-confirmation-lifecycle-fixed.log`: all six cases pass, including
+  the existing provider edit-before-continuation and duplicate callback journey.
+- `/tmp/sleep32-confirmation-atomic.log`: eight focused cases pass, including the
+  startup guard and a real outer commit/rollback of the board-resolution owner.
+  The test passes 101 pending and 101 malformed actions, verifies failure evidence,
+  parks human-wait debt, and observes no fabricated provider-attributed activity.
+- `/tmp/sleep32-confirmation-inflight.log`: a real PostgreSQL row lock holds one
+  settlement while a second real callback commits. Releasing it settles both
+  actions and returns the worker to quiet. This is a ninth distinct focused case.
+- `/tmp/sleep32-types.log`: server typecheck passed before the final in-flight
+  concurrency test was added. A final typecheck is still required.
+- Quiet assertions advance 120 seconds and count root database select/transaction
+  calls after startup and settlement. They do not establish provider suspension.

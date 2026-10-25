@@ -56,6 +56,7 @@ export const DELIVERY_QUEUES = {
   chatPublications: "chat-publications",
   chatNativeProgress: "chat-native-progress",
   chatInboundWakeNotices: "chat-inbound-wake-notices",
+  chatTerminalConfirmations: "chat-terminal-confirmations",
   chatFailedRetryNotices: "chat-failed-retry-notices",
   chatRunMilestones: "chat-run-milestones",
   chatReceipts: "chat-slack-receipts",

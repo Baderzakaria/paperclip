@@ -92,6 +92,8 @@ describe("createChatReconciliationCoordinator", () => {
       chat.indexOf("async function schedulePendingPublications("));
     expect(publicationMaintenance).not.toContain("await enqueueInboundWakeupPublications(");
     expect(publicationMaintenance).not.toContain("await enqueueFailedChatRetryPublications(");
+    expect(publicationMaintenance).not.toContain("reconcileTerminalConfirmationActions(");
+    expect(source).toContain("chatChannels.registerTerminalConfirmationWork(deliveryWork,");
     expect(source).toContain("chatFailedRetryNoticeWork(chatChannels).register(deliveryWork,");
   });
 

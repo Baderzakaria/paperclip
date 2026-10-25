@@ -1821,3 +1821,17 @@ implementation or PR yet. Older #17490/#17572 CI failures, #17576 inventory
 amplification findings, #17580 offboarding/cleanup ownership findings, the entire
 remaining original list, final master reconciliation and all final-head checks
 remain required. All stack PRs remain unmerged.
+
+
+## Slice 32 implementation checkpoint
+
+`codex/sleep-32-terminal-confirmations` implements terminal-confirmation recovery
+on committed signals and the shared scoped coordinator. Its Telegram owner keeps
+payload validation, settlement, continuation staging and activity attribution.
+The audit is `2026-10-25-terminal-confirmation-sleep-audit.md`. Nine distinct focused
+cases pass across the recorded commands, including real callback failure, outer
+commit/rollback, historical waiting/invalid prefixes, and a write during an active
+settlement. The new source guard excludes this duty from periodic maintenance.
+Full local acceptance, remote review/checks and publication are pending here.
+This supersedes the audit-only slice-32 status above. All older stack gates and
+every remaining original obligation remain required; no PR is merged.
