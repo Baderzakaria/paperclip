@@ -17,13 +17,13 @@ Do not mark an item done from a timer removal or a green check alone.
 | 03 | Run and task recovery | Orphan runs and active leases; shutdown workspace settlement; scheduled retries; queued runs; stranded assignments; resolved dependencies; task watchdogs; silent-run monitoring; stale locks | Pending |
 | 04 | Decision retention and notifications | Retention deadlines and notification delivery are separate reasons | Approval retention implemented in slice 14, verification in progress; other source owners pending; notification delivery: [#17475](https://github.com/paperclipai/paperclip/pull/17475), all checks passed (Paperclip Review skipped), Greptile 5/5 at `692e3ee02c` |
 | 05 | Decision expiry and interrupted effects | Expiry, effect recovery, continuation recovery | Continuations: [#17478](https://github.com/paperclipai/paperclip/pull/17478), all checks passed, Greptile 5/5 at `5f96892a58`; TTL: [#17479](https://github.com/paperclipai/paperclip/pull/17479), all checks passed, Greptile 5/5 at `63b58cc26f`; effects: [#17482](https://github.com/paperclipai/paperclip/pull/17482), all checks passed, Greptile 5/5 at `a5b5994c1d`; target invalidation: [#17486](https://github.com/paperclipai/paperclip/pull/17486), all checks passed, Greptile 5/5 at `1bbfc69590` |
-| 06 | Tool connection health | Configuration/use activation and defined proactive health deadlines | Pending |
+| 06 | Tool connection health | Configuration/use activation and defined proactive health deadlines | #17554 published; fairness, backlog, and real-producer repairs at `f8ad26f0ff`; fresh acceptance pending |
 | 07 | Secret proposals, tool reviews, gateway tokens | Separate expiry/scrub/recovery owners | Secret proposals: [#17446](https://github.com/paperclipai/paperclip/pull/17446), checks passed at `d41590ac0e`; gateway credentials: [#17450](https://github.com/paperclipai/paperclip/pull/17450), all checks passed, Greptile 5/5 at `c5c53fc43f`; pending tool-review expiry: [#17453](https://github.com/paperclipai/paperclip/pull/17453), all checks passed, Greptile 5/5 at `ce6a260a83`; approved recovery: [#17454](https://github.com/paperclipai/paperclip/pull/17454), all checks passed, Greptile 5/5 at `7a1cf03e62`; interrupted claims: [#17458](https://github.com/paperclipai/paperclip/pull/17458), all checks passed, Greptile 5/5 at `85003a7ac4`; projection: [#17468](https://github.com/paperclipai/paperclip/pull/17468), all checks passed, Greptile 5/5 at `0956883a84` |
 | 08 | GitHub connection events and continuity | Event discovery/replay and credential continuity separately | Pending |
 | 09 | Merged-PR confirmations | Candidate writes, webhook activation where supported, outstanding-candidate fallback | Pending |
 | 10 | External-object refresh | Configuration changes, refresh deadlines, source events | Pending |
 | 11 | Status-card evaluation | Settings/card mutations and evaluation deadlines | Pending |
-| 12 | Plugin scheduled jobs | Registration/update/removal and actual job deadlines | Pending |
+| 12 | Plugin scheduled jobs | Registration/update/removal and actual job deadlines | #17518 published; see latest-head gate records below |
 | 13 | Routine, agent-timer and issue-monitor scheduling | Remove periodic wake backstops after complete producer coverage; routine execution-status reconciliation separately | Pending |
 | 14 | Skill-version retention and native-harness backup expiration | Separate retention owners and existing retention guarantees | Pending |
 | 15 | Automatic database backups | Shared scheduling, actual backup deadlines, existing checkpoint contract | Pending |
@@ -1132,3 +1132,28 @@ removed the initial missing-worker failure but reproduced this actual SQL failur
 Keep the failing producer test; repair the deletion dependency in its own stack
 PR before publishing the Discord follow-up. Current local changes are not final
 acceptance. The original full inventory and remaining CI gates are still open.
+
+
+Company deletion prerequisite is [#17561](https://github.com/paperclipai/paperclip/pull/17561),
+head `4d721402d2`, based on #17554. Both new regressions failed first; all six
+cleanup-removal tests and server types/build pass after the fix. The chat owner
+removes company endpoints before agent purge in the same transaction. Other
+companies and global namespace tombstones remain unchanged; a later failure rolls
+back the deletion. Existing voice-history restrictions remain in force. Remote
+CI/review are required; this is a focused correctness dependency, not a migration
+of another inventory duty.
+
+The prerequisite is merged into the local Discord branch at `2802c361f3`. The
+company command signal precedes endpoint deletion. All seven real automatic
+registration integration cases now pass, including rotation and deletion, plus
+62 combined worker/batching cases and final server types/build. The earlier
+missing lifecycle fixture, actual dependency-order failure, and merge-conflict
+invocation are recorded in the Discord document. Update #17557's base to #17561
+and publish the review repairs for fresh CI/review. Cumulative selected Discord
+coverage is 643 cases. Health #17554 at `f8ad26f0ff` has no failures and one pending
+check at the last observation; do not mark it fully accepted yet.
+
+Next new owner remains chat runtime discovery/ownership, separate from command
+registration, voice, and active transport renewals. The full original inventory,
+#17490 E2E cancellation failure, final stack/master reconciliation, and all PR
+acceptance gates remain required. No stack merge is authorized.

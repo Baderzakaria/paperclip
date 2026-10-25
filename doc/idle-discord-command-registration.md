@@ -30,7 +30,8 @@ company status and unrelated endpoint metadata do not add new policy.
 
 Startup reconstructs eligible state in UUID keyset pages of 100. Committed hints
 refresh only the affected endpoint, connection, or deleted company. Refresh and
-retry passes have a 30-second minimum spacing. There is no periodic inventory
+retry passes have a 30-second minimum spacing when no already-due backlog
+remains. A bounded batch with more due rows continues after one second. There is no periodic inventory
 scan after all hints settle. Due dispatch rechecks persisted eligibility and the
 saved deadline, invokes the command owner, and reloads its durable result.
 
@@ -74,9 +75,9 @@ wake integration; process-local hints are not cross-replica notification deliver
 
 ## Verification and limits
 
-Selected local verification covers 38 real-PostgreSQL protocol/lifecycle cases,
-three fair-batch cases, 91 Discord integration cases, 487 tool-access/access
-consumers, and 20 chat-worker/startup consumers: 639 unique tests. Workspace
+Selected local verification covers 40 real-PostgreSQL protocol/lifecycle cases,
+three fair-batch cases, 93 Discord integration cases, 487 tool-access/access
+consumers, and 20 chat-worker/startup consumers: 643 unique tests. Workspace
 typechecking and build pass; the final small fairness addition also receives
 server type/build verification before publication. The full local `pnpm test:run`
 is not claimed: embedded PostgreSQL is unavailable on this host. Remote CI must
@@ -98,3 +99,27 @@ voice, Teams, and other chat maintenance remain separate obligations. The remain
 runtime poll can still read command receipts; it no longer initiates command
 registration or remote verification. Cloud sleep eligibility and durable alarm
 coverage are unchanged. A timer in this process cannot wake a stopped host.
+
+
+Review follow-up: a 300-command regression failed under the old 25-per-30-second
+limit. Bounded one-second continuations now drain the controlled due backlog
+within 15 seconds, then remain quiet until real verification deadlines. An unknown
+scope hint also reproduced loss of a later valid wake. Parsing now occurs inside
+the recovery boundary; an invalid scope requests full reconstruction rather than
+dropping queued scopes or retrying a poison hint forever. Both regressions and
+all 62 combined command/health/batching cases pass.
+
+The real producer integration covers credential rotation and company deletion in
+addition to configure/removal. The deletion test first lacked a configured agent
+lifecycle worker; after adding the controlled host driver it exposed an existing
+restrictive endpoint-to-agent foreign key failure. Prerequisite #17561 fixes the
+deletion order in its own PR. The command intent is now registered before endpoint
+cleanup in the owning transaction. The test verifies deadline cancellation, SQL
+silence, and retained ownership tombstones. All seven automatic-registration
+integration cases pass; 1,413 deselected cases are not counted as executed.
+
+A test invocation during prerequisite merging failed before execution because an
+import conflict was unresolved. The conflict was repaired preserving both imports,
+then the test ran successfully. Final server typecheck/build pass. Fresh CI and
+reviews are still required after publication; prior-head Greptile 5/5 and Actions
+results do not establish acceptance of this head.
