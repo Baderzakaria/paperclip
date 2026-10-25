@@ -10,7 +10,8 @@ import {
   type Db,
 } from "@paperclipai/db";
 import { conflict, forbidden } from "../errors.js";
-import { boundRunIssueId } from "./run-task-binding.js";
+import { notifyChatRunMilestones } from "./chat-run-milestone-notifications.js";
+import { boundRunIssueId, boundRunIssueIdSql } from "./run-task-binding.js";
 import { isUuidLike } from "@paperclipai/shared";
 import { queuedCommentIdsFromRunContext, queuedCommentIdsFromWakePayload } from "./issue-queued-comment-queue.js";
 
@@ -137,6 +138,13 @@ async function append(
 }
 
 async function activate(executor: Executor, context: RunIdentityContext) {
+  const [binding] = await executor.select({ issueId: boundRunIssueIdSql() })
+    .from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.id, context.runId), eq(heartbeatRuns.companyId, context.companyId),
+    ));
+  if (binding?.issueId) {
+    await notifyChatRunMilestones(executor, { companyId: context.companyId, issueId: binding.issueId });
+  }
   const [run] = await executor
     .update(heartbeatRuns)
     .set({
@@ -409,6 +417,7 @@ export async function rejectSteeredIdentity(
     );
 }
 
+/** Accept within the caller's task/run transaction; standalone recovery uses reconcileSteeredIdentity. */
 export async function acceptSteeredIdentity(
   executor: Executor,
   context: RunIdentityContext,

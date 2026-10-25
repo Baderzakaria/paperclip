@@ -1651,3 +1651,12 @@ audit retains the initial contention-sensitive assertion and its correction to
 honor the existing retry. Identity activation and remaining authority/lineage
 producers still gate production polling removal. All original slices and older
 parent CI/review findings remain required.
+
+
+Slice 28 identity activation now signals the bound issue before changing the
+responsible user. Two before-fix failures now pass with outer commit/rollback,
+pending steering, replay and settled quiet checks. All 43 existing identity and
+GitHub credential tests pass after repairing their external-DB fixture URL;
+server types/build pass. Recovery terminalization/classification writers are the
+next audit. Master 34409a92c4 was fetched without disturbing this draft. The
+worker is still not production-registered and all original stack duties remain.

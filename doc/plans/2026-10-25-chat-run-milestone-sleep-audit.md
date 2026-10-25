@@ -1264,3 +1264,29 @@ strategy-only wake changes do not alter lineage fields. Slack Board dispatch use
 source issue.comment and its own response path; do not infer milestone eligibility
 from the shared binding reader alone. These are dispositions and next audits,
 not proof that all remaining producers are complete.
+
+
+## Run identity activation
+
+Monitor/continuation lineage requires matching responsibleUserId on source and
+successor. Initialization and accepted steering can restore that match after the
+worker exhausted its candidates. The identity owner now reads the bound issue
+and registers its intent before the existing activation write. Pending steering
+and replayed acceptance do not activate work. Production callers already own a
+transaction; standalone tests now use reconcileSteeredIdentity, the existing
+transaction/lock owner, instead of accepting directly on a raw client.
+
+Two real-PostgreSQL worker cases reproduced missing notices before the fix and
+pass afterward: initialization and accepted steering, each with pending/quiet
+state, outer rollback, outer commit, replay, and settled two-minute SQL quiet.
+Evidence: /tmp/sleep28-identity-before.log and /tmp/sleep28-identity-tests.log.
+All 43 existing identity/GitHub credential tests pass in
+/tmp/sleep28-identity-acceptance-fixed.log. The first acceptance run found two
+lock fixtures still using the embedded-only URL; those now use the configured
+connection URL, retain their one-second lock timeout, and close the extra pool.
+Server typecheck/build passed in /tmp/sleep28-identity-{typecheck,build}.log.
+
+Fresh master is 34409a92c4 (native failover backup filtering); it was fetched,
+not merged into this draft. Recovery service orphan terminalization and adapter
+failure classification are the next direct run writers to audit. Production
+registration/poll removal and the original stack's gates remain unfinished.

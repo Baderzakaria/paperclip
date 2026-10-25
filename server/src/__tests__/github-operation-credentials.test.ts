@@ -1,3 +1,4 @@
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { createNativeGitHubAccess } from "../services/native-runtime/native-github-access.js";
 import express from "express";
 import request from "supertest";
@@ -32,7 +33,7 @@ import {
 import {
   initializeRunIdentity,
   reserveSteeredIdentity,
-  acceptSteeredIdentity,
+  reconcileSteeredIdentity,
 } from "../services/run-identity.js";
 import { resolveGitHubOperationCredentials } from "../services/github-operation-credentials.js";
 import {
@@ -49,23 +50,25 @@ const vault = vi.hoisted(() => ({
   resolveSecretValue: vi.fn(async () => "test-dedicated-token"),
 }));
 vi.mock("../services/secrets.js", () => ({ secretService: () => vault }));
-const support = await getEmbeddedPostgresTestSupport();
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_GITHUB_CREDENTIAL_TEST_DATABASE_URL");
+const support = external ? { supported: true } : await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)(
   "operation-time GitHub credential resolution",
   () => {
-    let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>,
+    let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined,
       db: ReturnType<typeof createDb>;
     beforeAll(async () => {
       vi.stubEnv(
         "PAPERCLIP_AGENT_JWT_SECRET",
         "test-github-broker-signing-secret",
       );
-      database = await startEmbeddedPostgresTestDatabase(
+      if (!external) database = await startEmbeddedPostgresTestDatabase(
         "paperclip-github-operation-",
       );
-      db = createDb(database.connectionString);
+      db = createDb(external ?? database!.connectionString);
     }, 30_000);
     afterAll(async () => {
+      await db?.$client.end({ timeout: 1 });
       await database?.cleanup();
       vi.unstubAllEnvs();
     }, 60_000);
@@ -208,7 +211,7 @@ const support = await getEmbeddedPostgresTestSupport();
         ...input,
         messageId: id,
       });
-      await acceptSteeredIdentity(db, context!);
+      await reconcileSteeredIdentity(db, context!);
     }
     it("resolves A → B → A without retaining tokens, and records only redacted diagnostics", async () => {
       const input = await seed();

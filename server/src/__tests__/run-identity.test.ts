@@ -1,19 +1,21 @@
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { agentWakeupRequests, agents, companies, createDb, heartbeatRuns, heartbeatRunEvents, issueComments, issueThreadInteractions, issues, secretAccessEvents } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
-import { acceptSteeredIdentity, captureRunIdentity, initializeRunIdentity, listRunIdentityContexts, rejectSteeredIdentity, reserveSteeredIdentity } from "../services/run-identity.js";
+import { acceptSteeredIdentity, reconcileSteeredIdentity, captureRunIdentity, initializeRunIdentity, listRunIdentityContexts, rejectSteeredIdentity, reserveSteeredIdentity } from "../services/run-identity.js";
 
-const support = await getEmbeddedPostgresTestSupport();
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_RUN_IDENTITY_TEST_DATABASE_URL");
+const support = external ? { supported: true } : await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)("durable execution identity", () => {
-  let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+  let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
   let db: ReturnType<typeof createDb>;
   beforeAll(async () => {
-    database = await startEmbeddedPostgresTestDatabase("paperclip-run-identity-");
-    db = createDb(database.connectionString);
+    if (!external) database = await startEmbeddedPostgresTestDatabase("paperclip-run-identity-");
+    db = createDb(external ?? database!.connectionString);
   }, 30_000);
-  afterAll(async () => { await database?.cleanup(); }, 60_000);
+  afterAll(async () => { await db?.$client.end({ timeout: 1 }); await database?.cleanup(); }, 60_000);
 
   async function seed() {
     const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID(), runId = randomUUID();
@@ -121,8 +123,8 @@ const support = await getEmbeddedPostgresTestSupport();
     expect((await captureRunIdentity(db, input)).context?.responsibleUserId).toBe("B");
     expect(startedUnderA.context?.responsibleUserId).toBe("A");
     const a = await reserveSteeredIdentity(db, { ...input, messageId: input.messageIds[2] });
-    await acceptSteeredIdentity(db, a!);
-    await acceptSteeredIdentity(db, b!);
+    await reconcileSteeredIdentity(db, a!);
+    await reconcileSteeredIdentity(db, b!);
     expect((await captureRunIdentity(db, input)).context?.responsibleUserId).toBe("A");
   });
   it("keeps rejected steering unchanged and preserves the originating identity on retry", async () => {
@@ -180,7 +182,7 @@ const support = await getEmbeddedPostgresTestSupport();
       sourceIdentityContextId: origin.id, payload: { prompt: "Continue?" } as never,
     });
     const b = await reserveSteeredIdentity(db, { ...input, messageId: input.messageIds[1] });
-    await acceptSteeredIdentity(db, b!);
+    await reconcileSteeredIdentity(db, b!);
     for (const approval of [true, false]) {
       const runId = randomUUID();
       await db.insert(heartbeatRuns).values({ id: runId, companyId: input.companyId, agentId: input.agentId, status: "running" });
@@ -251,34 +253,40 @@ const support = await getEmbeddedPostgresTestSupport();
       // A real append holds KEY SHARE on both parent rows until it commits.
       // Bound the other connection's wait so a conflicting lock fails this
       // regression instead of leaving both transactions waiting for each other.
-      const identityDb = createDb(`${database.connectionString}?options=-c%20lock_timeout%3D1000`, {
+      const identityUrl = new URL(external ?? database!.connectionString);
+      identityUrl.searchParams.set("options", "-c lock_timeout=1000");
+      const identityDb = createDb(identityUrl.toString(), {
         maxConnections: 1,
       });
-      const [settings] = await identityDb.execute(sql`show lock_timeout`);
-      expect(settings?.lock_timeout).toBe("1s");
-      await db.transaction(async (audit) => {
-        await audit.insert(secretAccessEvents).values({
-          companyId: input.companyId,
-          heartbeatRunId: input.runId,
-          issueId: input.issueId,
-          provider: "local_encrypted",
-          actorType: "agent",
-          actorId: input.agentId,
-          consumerType: "agent",
-          consumerId: input.agentId,
-          outcome: "granted",
-        });
-        if (operation === "initialize") {
-          await expect(initializeRunIdentity(identityDb, {
-            ...input, messageIds: [], responsibleUserId: "A", cause: "instruction",
-          })).resolves.toMatchObject({ responsibleUserId: "A" });
-        } else {
-          await expect(captureRunIdentity(identityDb, input)).resolves.toMatchObject({
-            run: { responsibleUserId: "A" },
-            context: { responsibleUserId: "A" },
+      try {
+        const [settings] = await identityDb.execute(sql`show lock_timeout`);
+        expect(settings?.lock_timeout).toBe("1s");
+        await db.transaction(async (audit) => {
+          await audit.insert(secretAccessEvents).values({
+            companyId: input.companyId,
+            heartbeatRunId: input.runId,
+            issueId: input.issueId,
+            provider: "local_encrypted",
+            actorType: "agent",
+            actorId: input.agentId,
+            consumerType: "agent",
+            consumerId: input.agentId,
+            outcome: "granted",
           });
-        }
-      });
+          if (operation === "initialize") {
+            await expect(initializeRunIdentity(identityDb, {
+              ...input, messageIds: [], responsibleUserId: "A", cause: "instruction",
+            })).resolves.toMatchObject({ responsibleUserId: "A" });
+          } else {
+            await expect(captureRunIdentity(identityDb, input)).resolves.toMatchObject({
+              run: { responsibleUserId: "A" },
+              context: { responsibleUserId: "A" },
+            });
+          }
+        });
+      } finally {
+        await identityDb.$client.end({ timeout: 1 });
+      }
     },
   );
 
