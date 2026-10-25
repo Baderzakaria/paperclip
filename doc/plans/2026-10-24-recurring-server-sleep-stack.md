@@ -1286,3 +1286,14 @@ locked cleanup claims, legacy handoff recovery, bound-guest ownership, terminati
 confirmation, retention protection and scheduler/producer migration remain required.
 The full original inventory, older #17490 E2E failure, and stack/master reconciliation
 remain outstanding. No stack PR has been merged by this work.
+
+
+Slice 23 inbound cleanup now uses committed admission/session changes and actual
+expiry/retry deadlines. The admission row separately records physical confirmation
+and saved provider account. Locked claims, legacy handoff repair, bound-call owner
+handoff, retention/deletion protection and safe same-account rotation are verified.
+All 205 selected tests, workspace types and build pass; publication and remote
+acceptance remain pending. History retention and call reports remain separate next
+slices. Parent #17578 at 90caaf3fa9 has no pending/failed checks and exact-head
+Greptile 5/5; the second Paperclip reviewer stopped before completion. The original
+remaining inventory, #17490 E2E failure and final reconciliation remain in scope.

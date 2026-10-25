@@ -1,3 +1,4 @@
+import { notifyVoiceInbound } from "./voice-inbound-notifications.js";
 import { notifyVoiceReplies } from "./voice-reply-notifications.js";
 import { notifyVoiceChange } from "./voice-recovery-notifications.js";
 import { notifyChatDeliveryWork } from "../chat-work-notifications.js";
@@ -180,6 +181,7 @@ export function voiceSessionStore(db: Db, options: { allowLocalBoard: boolean; n
         if (!inboundAdmissionId) return;
         // Admission expiry must relinquish cleanup in the same commit that
         // establishes an authorized owner for the existing provider call.
+        await notifyVoiceInbound(tx, { kind: "admission", id: inboundAdmissionId });
         await tx.update(chatVoiceInboundCalls).set({ state: "approved", sessionId, updatedAt: new Date() })
           .where(eq(chatVoiceInboundCalls.id, inboundAdmissionId));
       }

@@ -2,7 +2,7 @@
 
 Baseline: voice reply PR #17578, head 439d0a86eb75c129c30742a8cc24bf18e2a6ebf3.
 Branch: codex/sleep-23-voice-inbound-cleanup.
-Status: atomic approval handoff implemented and verified; cleanup worker, remaining ownership cases, and publication remain required.
+Status: cleanup implementation and local verification complete; publication and remote acceptance pending.
 
 ## One reason in this slice
 
@@ -148,3 +148,53 @@ This is a prerequisite, not the complete cleanup migration. Still required:
 - Wire all producer notifications, actual deadlines, scoped worker registration,
   lifecycle tests and remove only the cleanup portion of periodic reconciliation.
 - Keep history retention and call reports as separate forthcoming PRs.
+
+
+## Cleanup implementation and local acceptance
+
+The worker is now registered in app startup. `reconcileMaintenance` no longer
+runs inbound cleanup; it retains history pruning and reports for separate PRs.
+See [the implementation contract](../idle-voice-inbound-cleanup.md) for the complete
+producer table, ownership, credential rotation and remaining host-sleep limits.
+
+The previous checkpoint's remaining implementation items are now handled:
+locked current-state claims; matching legacy handoff repair; bound-session cleanup
+ownership; durable termination confirmation/retry; account isolation; retention
+protection; notifications and shared scheduler registration. A company-delete
+participant check also prevents cascades from erasing unfinished cleanup and locks
+endpoints to serialize against signed admission ingress.
+
+The existing admission row needs separate authorization and cleanup state. Three
+nullable fields record confirmation, retry and the signed provider account.
+Migration 0388_lying_trish_tilby.sql was generated with `pnpm db:generate`, made
+idempotent, and given a concurrent partial index. It backfills only provable old
+termination. The initial two-field unpublished generation was replaced by this
+single migration after account-rotation analysis. Five newest snapshots remain;
+the generated deletion of 0383 is intentional.
+
+Local evidence:
+- `voice-inbound-cleanup.test.ts`: 13 tests pass using a separate PostgreSQL DB.
+  Includes migration backfill/replay, company deletion and shutdown joining.
+- Full voice integration and app wiring: 129 tests pass on a fresh DB (113 voice,
+  16 app wiring). Signed ingress wakes an idle worker; a feature-disabled instance
+  retains an unconfirmed end; a replacement account cannot issue cleanup; a key
+  for the saved account can. Rejection failure survives history pruning.
+- Company deletion and server startup consumers: 52 tests pass on their isolated DB.
+- Parent live-session recovery: 11 tests pass on its separate DB.
+- Total selected coverage: 205 passing cases across these nonoverlapping suites.
+- `pnpm -r typecheck` and `pnpm build` pass on the current implementation.
+- Migration safety/numbering checks passed for the initial generated migration;
+  rerun on the final regenerated name before publication. Initial application and
+  replay succeeded on real PostgreSQL. Final generation also applied cleanly;
+  its backfill is exercised twice by the lifecycle test.
+
+Earlier handoff regression and fixture assertion failures remain recorded above.
+The repository-wide local test command still has the previously recorded embedded
+PostgreSQL host limitation; this is not a claim that that command completed. Fresh
+remote CI and review are required before accepting the PR.
+
+Parent #17578 at 90caaf3fa9 has all checks terminal with no failures and Greptile
+5/5 on that exact head. Both requested findings are fixed/resolved. The fresh
+Paperclip reviewer stopped before completing its turn; do not report a new 5/5
+assessment from that reviewer. The full original migration ledger, #17490 failure,
+and final stack/master reconciliation remain outstanding.
