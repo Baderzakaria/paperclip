@@ -169,3 +169,28 @@ intent after call termination, nested producer rollback/commit, real question
 retrieval, authority restoration, and drain/resume without passive SQL. Final
 server typechecking also passed. The earlier retained-fixture failures remain
 recorded above; shared publication-path and broader acceptance work remains open.
+
+## Publication-path and broader verification
+
+Both real chat-service paths now have a commit-boundary regression: normal
+publication and operator mark-delivered. The tests hold the real final transaction
+before its voice notification, wait until the early enqueue wake is fully idle,
+and then verify one send after publication. Disabling only the final notification
+made both tests fail with zero sends; restoring it passed both. A 105-action real
+PostgreSQL case also proves startup inventory paging and bounded action recovery.
+
+Workspace typechecking passed. Seven shared access/connection/settings suites
+passed all 651 tests. A combined full voice/startup/parent-recovery run used one
+external database: voice/startup passed 123 tests, but ten parent recovery tests
+observed the voice suite's intentionally retained sessions and failed their global
+quiet assertions. This is a test invocation isolation error, not accepted evidence
+for parent recovery. The parent suite is being rerun against its separate database.
+Do not combine these two suites under one external database URL.
+
+The 107 full voice cases now include real publication and operator producers,
+105 abandoned sends, restart, rollback/outer commit, drain, authority restoration,
+question barriers and no-resend outcomes. Full workspace build and current-head
+PR CI/reviews remain required. The local all-suite command has the previously
+recorded embedded-PostgreSQL initialization limitation; targeted database suites
+run on real isolated PostgreSQL instead. Do not count skipped or uninitialized
+database tests as passes.

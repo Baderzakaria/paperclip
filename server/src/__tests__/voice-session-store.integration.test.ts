@@ -1,3 +1,4 @@
+import * as voiceReplyNotifications from "../services/voice/voice-reply-notifications.js";
 import { voiceReplySchedule } from "../services/voice/voice-reply-schedule.js";
 import { registerVoiceReplyWork } from "../services/voice/voice-reply-work.js";
 import { pushVoiceReplies } from "../services/voice/voice-reply-push.js";
@@ -814,6 +815,54 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       enabled = true; await worker.settled();
       expect(f.transport.sendCallMessage).toHaveBeenCalledTimes(2); expect(f.transport.sendCallMessage.mock.calls.at(-1)?.[1]).toBe("After resume");
       await worker.quiet(); expect(worker.onError).not.toHaveBeenCalled();
+    } finally { await worker.coordinator.stop(); vi.useRealTimers(); }
+  });
+  it.each(["normal publication", "operator resolution"] as const)("wakes phone delivery from actual %s after its early enqueue has gone idle", async path => {
+    const f = await pushFixture();
+    await db.update(chatPublications).set({ state: path === "normal publication" ? "pending" : "delivery_unknown" })
+      .where(eq(chatPublications.id, f.publication.id));
+    const chat = chatChannelService(db, { heartbeat: { wakeup: vi.fn() } });
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    const worker = await replyWorker(f);
+    let release!: () => void, reached!: () => void;
+    const barrier = new Promise<void>(resolve => { release = resolve; });
+    const entered = new Promise<void>(resolve => { reached = resolve; });
+    const notify = voiceReplyNotifications.notifyVoicePublication;
+    const notification = vi.spyOn(voiceReplyNotifications, "notifyVoicePublication").mockImplementationOnce(async (...args) => {
+      reached(); await barrier; return notify(...args);
+    });
+    let publishing: Promise<unknown> | undefined;
+    try {
+      await worker.settled(); await worker.quiet(2000);
+      publishing = path === "normal publication"
+        ? chat.processPendingPublications(25, { maintenance: false })
+        : chat.resolvePublication(f.endpointId, f.publication.id, "mark_delivered", f.callerId);
+      await Promise.race([entered, publishing.then(() => { throw new Error("Publication ended before its final commit boundary"); })]);
+      // Hold the real final publication transaction before its voice intent.
+      // An earlier enqueue wake can fully drain while the row is not published.
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(f.transport.sendCallMessage).not.toHaveBeenCalled();
+      expect(worker.coordinator.nextWakeAt()).toBeNull();
+      release(); await publishing; await worker.settled();
+      expect((await db.select().from(chatPublications).where(eq(chatPublications.id, f.publication.id)))[0].state).toBe("published");
+      expect(f.transport.sendCallMessage).toHaveBeenCalledOnce(); await worker.quiet(); expect(worker.onError).not.toHaveBeenCalled();
+    } finally {
+      release(); await publishing; notification.mockRestore(); await worker.coordinator.stop(); await chat.shutdown(); vi.useRealTimers();
+    }
+  });
+  it("reconstructs and quarantines every abandoned phone dispatch across inventory and work batches", async () => {
+    const f = await pushFixture();
+    await db.update(chatVoiceSessions).set({ state: "ended", endedAt: new Date() }).where(eq(chatVoiceSessions.id, f.session.id));
+    await db.insert(chatActions).values(Array.from({ length: 105 }, () => ({ companyId: f.companyId, endpointId: f.endpointId,
+      conversationId: f.conversationId, kind: "speko_voice_reply_push", providerActionId: randomUUID(), status: "dispatching",
+      payload: { sessionId: f.session.id, replyId: randomUUID() }, updatedAt: new Date(Date.now() - 60_000) })));
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    const worker = await replyWorker(f);
+    try {
+      await worker.settled();
+      const actions = await db.select().from(chatActions).where(eq(chatActions.endpointId, f.endpointId));
+      expect(actions).toHaveLength(105); expect(actions.every(action => action.status === "unknown")).toBe(true);
+      expect(f.transport.sendCallMessage).not.toHaveBeenCalled(); await worker.quiet(); expect(worker.onError).not.toHaveBeenCalled();
     } finally { await worker.coordinator.stop(); vi.useRealTimers(); }
   });
   it("notifies phone questions once and waits for authorized retrieval before later answers", async () => {
