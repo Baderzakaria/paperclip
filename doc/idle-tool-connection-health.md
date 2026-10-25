@@ -116,3 +116,10 @@ rows uses `tool_connections_company_enabled_idx`, 13 shared buffer hits, and
 0.022 ms execution; the diagnostic data was rolled back. No new index is needed
 for this observed query. The local passing selection totals 770 distinct tests.
 Full workspace and remote acceptance gates remain required.
+
+Review repair: a controlled 503 probe persisted its failed health observation,
+but the warning regression failed before the fix. Scheduled probe failures now
+log company/connection identifiers and a fixed message, without provider prose.
+The saved 15-minute deadline still controls the next check. All 64 health/startup
+cases and server typechecking pass after repair; total selected coverage is now
+771 unique tests. Fresh remote gates are required for this repair.

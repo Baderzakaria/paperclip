@@ -1,3 +1,4 @@
+import { logger } from "../../../middleware/logger.js";
 import { and, eq, ne, sql } from "drizzle-orm";
 import { toolApplications, toolConnections, type Db } from "@paperclipai/db";
 import { isConnectorFeatureEnabled } from "@paperclipai/shared";
@@ -39,7 +40,10 @@ export function connectionHealthSchedule(db: Db, checkHealth: ConnectionHealth["
     if (!before || before.dueAt > Date.now()) return before ?? null;
     let failure: unknown;
     try { await checkHealth(id, { actorType: "system", actorId: "tool_health_sweep" }); }
-    catch (error) { failure = error; }
+    catch (error) {
+      failure = error;
+      logger.warn({ companyId: before.companyId, connectionId: id }, "Scheduled tool connection health check failed");
+    }
     const [after] = await load(before.companyId, id);
     if (failure && after && after.dueAt <= Date.now()) throw failure;
     return after ?? null;
