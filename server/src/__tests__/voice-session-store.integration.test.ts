@@ -77,6 +77,50 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     return { companyId, endpointId, agentId, connectionId, issueId, conversationId, callerId, sessionId, store, request, reserved, accept, toolInput, publication };
   }
 
+  it("restores blocked replies through the production live-call recovery wiring", async () => {
+    const f = await pushFixture();
+    await db.update(companyMemberships).set({ status: "suspended" }).where(eq(companyMemberships.principalId, f.callerId));
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    const onError = vi.fn();
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError });
+    const settle = () => vi.waitFor(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(idleWorkSnapshot().active).toBe(0);
+    }, { timeout: 5000 });
+    try {
+      // Reply denial is remembered by the service's own schedule. No test calls
+      // authorityAvailable: only production recovery may reactivate this reply.
+      await f.service.registerReplyWork(coordinator, () => true).ready;
+      await settle();
+      expect(coordinator.nextWakeAt()).toBeNull();
+      expect(f.transport.sendCallMessage).not.toHaveBeenCalled();
+      await db.update(companyMemberships).set({ status: "active" }).where(eq(companyMemberships.principalId, f.callerId));
+      await f.service.registerRecoveryWork(coordinator, () => true).ready;
+      await vi.advanceTimersByTimeAsync(31_000);
+      await vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(f.transport.sendCallMessage).toHaveBeenCalledOnce();
+        expect(idleWorkSnapshot().active).toBe(0);
+      }, { timeout: 5000 });
+      expect(f.transport.inspectSession).toHaveBeenCalled();
+      expect(f.transport.endSession).not.toHaveBeenCalled();
+      // Repeated healthy inspections do not republish the delivered answer.
+      await vi.advanceTimersByTimeAsync(31_000); await settle();
+      expect(f.transport.sendCallMessage).toHaveBeenCalledOnce();
+      f.transport.inspectSession.mockResolvedValue({ status: "ended", endedAt: new Date().toISOString() });
+      await vi.advanceTimersByTimeAsync(31_000); await settle();
+      await vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(coordinator.nextWakeAt()).toBeNull();
+        expect(idleWorkSnapshot().active).toBe(0);
+      }, { timeout: 5000 });
+      const reads = vi.spyOn(db, "select"), transactions = vi.spyOn(db, "transaction");
+      try { await vi.advanceTimersByTimeAsync(120_000); expect(reads).not.toHaveBeenCalled(); expect(transactions).not.toHaveBeenCalled(); }
+      finally { reads.mockRestore(); transactions.mockRestore(); }
+      expect(onError).not.toHaveBeenCalled();
+    } finally { await coordinator.stop(); vi.useRealTimers(); }
+  });
+
   it.each(["hangup", "revocation", "feature disable", "endpoint pause", "connection disable", "task reassignment"] as const)("wakes live recovery from a real start and settles after %s", async reason => {
     await instanceSettingsService(db).updateExperimental({ enableChatConnectors: true });
     const f = await nativeServiceFixture();
@@ -778,27 +822,6 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       await worker.settled(); expect(f.transport.sendCallMessage).toHaveBeenCalledTimes(2);
       expect(f.transport.sendCallMessage.mock.calls.at(-1)?.[1]).toBe("Later answer");
       await worker.quiet(); expect(worker.onError).not.toHaveBeenCalled();
-    } finally { await worker.coordinator.stop(); vi.useRealTimers(); }
-  });
-  it("reactivates an authority-blocked phone reply when active-call recovery verifies restored access", async () => {
-    const f = await pushFixture();
-    await db.update(companyMemberships).set({ status: "suspended" }).where(eq(companyMemberships.principalId, f.callerId));
-    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
-    const worker = await replyWorker(f);
-    try {
-      await worker.settled(); await worker.quiet(); expect(f.transport.sendCallMessage).not.toHaveBeenCalled();
-      await db.update(companyMemberships).set({ status: "active" }).where(eq(companyMemberships.principalId, f.callerId));
-      await db.transaction(async tx => {
-        await f.store.authorizeSession(tx, f.companyId, f.session.id);
-        await worker.service.authorityAvailable(tx, f.session.id);
-      });
-      await worker.settled(); expect(f.transport.sendCallMessage).toHaveBeenCalledOnce(); await worker.quiet();
-      // Healthy active-call inspections must not wake an already idle queue.
-      await db.transaction(async tx => {
-        await f.store.authorizeSession(tx, f.companyId, f.session.id);
-        await worker.service.authorityAvailable(tx, f.session.id);
-      });
-      expect(worker.coordinator.nextWakeAt()).toBeNull(); await worker.quiet(); expect(worker.onError).not.toHaveBeenCalled();
     } finally { await worker.coordinator.stop(); vi.useRealTimers(); }
   });
   it("preserves a newly committed phone reply through drain without passive SQL", async () => {

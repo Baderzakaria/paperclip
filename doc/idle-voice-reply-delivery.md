@@ -55,3 +55,10 @@ Signals cover the supported process-local database owner. Independent SQL writer
 or other processes require their own notification/reconciliation contract. These
 changes do not extend Cloud wake coverage, permit sleep during a live call, or
 prove deployed instance/database suspension.
+
+
+Both live-session recovery and reply delivery use `scoped-deadline-work.ts` for
+coalescing, fair batching, scope reconstruction, retries and drain retention.
+Their adapters keep domain state and provider operations in the voice owner.
+The production-wiring regression covers authority returning before live recovery
+observes the denial; recovery still ends calls when their authority is absent.
