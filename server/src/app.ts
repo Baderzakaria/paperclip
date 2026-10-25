@@ -1288,6 +1288,7 @@ export async function createApp(
   chatChannels.registerReceiverWork(deliveryWork, () => !isWarmStandby() && !isIdleTaskDrainActive());
   chatChannels.registerTeamsConsentExpiryWork(deliveryWork, () => !isWarmStandby() && !isIdleTaskDrainActive());
   chatChannels.registerTeamsAttemptRecoveryWork(deliveryWork, () => !isWarmStandby() && !isIdleTaskDrainActive());
+  chatChannels.registerInteractionContinuationWork(deliveryWork, () => !isWarmStandby() && !isIdleTaskDrainActive());
   chatChannels.registerTerminalConfirmationWork(deliveryWork, () => !isWarmStandby() && !isIdleTaskDrainActive());
   chatChannels.registerCommandWork(deliveryWork, () => !isWarmStandby() && !isIdleTaskDrainActive());
   nativeChatProgressWork(db).register(deliveryWork, () => !isWarmStandby() && !isIdleTaskDrainActive());

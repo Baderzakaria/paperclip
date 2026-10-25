@@ -1845,3 +1845,25 @@ owed cron occurrence; fixing that fixture clock passes all 28 plugin tests.
 Thirteen selected chat lifecycle cases pass after the retry-notice wait fix.
 Initial Greptile is 5/5 without findings. Fresh full acceptance and corrected-head
 remote gates remain required; see the slice-32 audit for all retained failures.
+
+## Slice 32 accepted-head verification and slice 33 start
+
+At `8b43e6222706491f2d8044af3bf86358085069af`, #17651 passes all
+53 remote checks and fresh Greptile 5/5, with no review threads. The corrected
+full chat/startup run passed all 1,512 tests on a fresh database in 463.63 seconds;
+final server typecheck also passed. Prior failed runs remain documented above.
+The PR remains unmerged. Latest fetched master is `67aa87a93b`; final stack
+reconciliation and older unresolved gates/reviews remain outstanding.
+
+Slice 33 starts from that accepted head and owns interaction continuation
+recovery only. The owner audit is in
+`2026-10-25-interaction-continuation-sleep-audit.md`. GitHub history maintenance
+and host-sleep eligibility remain separate work.
+
+Slice 33 now implements interaction continuation recovery with committed action
+signals, saved retry/claim deadlines, and a scoped call into the existing
+publication dispatcher before claiming continuation work. It preserves paused
+and future-retry publication behavior. Eleven new real-database cases pass,
+including outer rollback/commit, historical prefixes, and concurrent response
+commit. Existing Telegram acceptance also passes. Broad acceptance and fresh
+PR gates remain pending; no merge or full-stack completion is claimed.

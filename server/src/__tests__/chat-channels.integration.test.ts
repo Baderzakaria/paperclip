@@ -45012,6 +45012,205 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     return { fixture, callbacks, onAction: callbacks.onAction, endpoint, service, wakeup, settlementBarrier, dm, conversation, linkedUserId, principal, interaction, publication, acceptAction, actionEvent };
   }
 
+  it.each(["accept", "reject", "drain", "restart", "deferred", "failure", "paused endpoint", "future publication", "stale claim"] as const)("wakes interaction continuations from a committed response through %s", async mode => {
+    const context = await telegramConfirmationRecoveryFixture(mode === "reject" ? "reject" : "accept");
+    const errors: unknown[] = [];
+    let canRun = true;
+    let coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => canRun,
+      canReconcile: () => true, onError: error => errors.push(error) });
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    const settle = async () => vi.waitFor(async () => {
+      await vi.advanceTimersByTimeAsync(10);
+      expect(idleWorkSnapshot().active).toBe(0); expect(coordinator.nextWakeAt()).toBeNull();
+    }, { timeout: 10_000 });
+    const quiet = async () => {
+      const select = vi.spyOn(db, "select"), transaction = vi.spyOn(db, "transaction");
+      try {
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(select).not.toHaveBeenCalled(); expect(transaction).not.toHaveBeenCalled();
+      } finally { select.mockRestore(); transaction.mockRestore(); }
+    };
+    const originalWake = context.wakeup.getMockImplementation()!;
+    context.wakeup.mockImplementation(async (...args) => {
+      expect((context.service.runtime as unknown as FakeChatSdkRuntime).endpoints.get(context.endpoint.id)?.edits).toHaveLength(["paused endpoint", "future publication"].includes(mode) ? 0 : 1);
+      return originalWake(...args);
+    });
+    if (mode === "deferred") context.wakeup.mockResolvedValueOnce(null);
+    if (mode === "failure") context.wakeup.mockRejectedValueOnce(new Error("temporary continuation admission failure"));
+    try {
+      await context.service.registerInteractionContinuationWork(coordinator, () => canRun).ready;
+      await settle(); await quiet();
+      if (["drain", "paused endpoint", "future publication"].includes(mode)) canRun = false;
+      if (mode === "restart" || mode === "stale claim") await coordinator.stop();
+      await expect(context.onAction(context.actionEvent)).rejects.toThrow("injected post-interaction confirmation settlement crash");
+      if (["drain", "paused endpoint", "future publication"].includes(mode) || mode === "restart" || mode === "stale claim") {
+        await vi.advanceTimersByTimeAsync(1000);
+        await vi.waitFor(() => expect(idleWorkSnapshot().active).toBe(0));
+        expect(context.wakeup).not.toHaveBeenCalled();
+        await quiet();
+        if (mode === "paused endpoint") await db.update(chatEndpoints).set({ status: "paused" }).where(eq(chatEndpoints.id, context.endpoint.id));
+        if (mode === "future publication") await db.update(chatPublications).set({ state: "retry", nextAttemptAt: new Date(Date.now() + 60_000) })
+          .where(eq(chatPublications.idempotencyKey, `interaction-resolution:${context.interaction.id}:${context.endpoint.id}`));
+        if (mode === "stale claim") await db.update(chatActions).set({ status: "processing", updatedAt: new Date() }).where(and(
+          eq(chatActions.companyId, context.fixture.companyId), eq(chatActions.kind, "interaction_wakeup"),
+        ));
+        canRun = true;
+        if (mode === "restart" || mode === "stale claim") {
+          coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => canRun,
+            canReconcile: () => true, onError: error => errors.push(error) });
+          await context.service.registerInteractionContinuationWork(coordinator, () => canRun).ready;
+        } else if (coordinator.nextWakeAt() !== null) {
+          await vi.advanceTimersByTimeAsync(Math.max(0, coordinator.nextWakeAt()! - Date.now()));
+        }
+      }
+      if (mode === "stale claim") {
+        const [action] = await db.select().from(chatActions).where(and(
+          eq(chatActions.companyId, context.fixture.companyId), eq(chatActions.kind, "interaction_wakeup"),
+        ));
+        expect(coordinator.nextWakeAt()).toBe(action.updatedAt.getTime() + 30_000);
+        await vi.advanceTimersByTimeAsync(Math.max(0, coordinator.nextWakeAt()! - Date.now() - 1));
+        expect(context.wakeup).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(1);
+      }
+      if (mode === "deferred" || mode === "failure") {
+        let retryAt = 0;
+        await vi.waitFor(async () => {
+          await vi.advanceTimersByTimeAsync(10);
+          const [action] = await db.select().from(chatActions).where(and(
+            eq(chatActions.companyId, context.fixture.companyId), eq(chatActions.kind, "interaction_wakeup"),
+          ));
+          expect(action).toMatchObject({ status: "issued", result: { code: mode === "deferred" ? "interaction_wakeup_deferred" : "interaction_wakeup_failed" } });
+          retryAt = action.updatedAt.getTime() + 30_000;
+          expect(idleWorkSnapshot().active).toBe(0);
+          expect(coordinator.nextWakeAt()).toBe(retryAt);
+        }, { timeout: 10_000 });
+        expect(context.wakeup).toHaveBeenCalledTimes(1);
+        await vi.advanceTimersByTimeAsync(Math.max(0, retryAt - Date.now() - 1));
+        expect(context.wakeup).toHaveBeenCalledTimes(1);
+        await vi.advanceTimersByTimeAsync(1);
+      }
+      await vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(10);
+        expect(await db.select({ status: chatActions.status }).from(chatActions).where(and(
+          eq(chatActions.companyId, context.fixture.companyId), eq(chatActions.kind, "interaction_wakeup"),
+        ))).toEqual([{ status: "processed" }]);
+      }, { timeout: 10_000 });
+      expect(context.wakeup).toHaveBeenCalledTimes(mode === "deferred" || mode === "failure" ? 2 : 1);
+      expect(context.wakeup).toHaveBeenCalledWith(context.fixture.assignedAgentId, expect.objectContaining({
+        idempotencyKey: `interaction:${context.interaction.id}:${mode === "reject" ? "rejected" : "accepted"}`, allowRunCoalescing: false,
+      }));
+      await settle(); await quiet();
+      expect(errors).toEqual([]);
+    } finally { await coordinator.stop(); vi.useRealTimers(); await context.service.shutdown(); }
+  });
+
+  it("passes historical continuation prefixes and retains a response committed during dispatch", async () => {
+    const first = await telegramConfirmationRecoveryFixture();
+    const second = await telegramConfirmationRecoveryFixture();
+    await expect(first.onAction(first.actionEvent)).rejects.toThrow("injected post-interaction confirmation settlement crash");
+    const invalidIds = Array.from({ length: 101 }, (_, index) => `00000000-0000-4000-8002-${String(index + 1).padStart(12, "0")}`);
+    await db.insert(chatActions).values(invalidIds.map(id => ({
+      id, companyId: first.fixture.companyId, endpointId: first.endpoint.id,
+      kind: "interaction_wakeup", providerActionId: `invalid-continuation:${id}`, status: "issued", payload: {},
+    })));
+    let release!: () => void;
+    const barrier = new Promise<void>(resolve => { release = resolve; });
+    const originalWake = first.wakeup.getMockImplementation()!;
+    first.wakeup.mockImplementationOnce(async (...args) => { await barrier; return originalWake(...args); });
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true,
+      canReconcile: () => true, onError: error => errors.push(error) });
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    const ready = first.service.registerInteractionContinuationWork(coordinator, () => true).ready;
+    try {
+      await vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(10);
+        expect(first.wakeup).toHaveBeenCalledTimes(1);
+      }, { timeout: 15_000 });
+      await expect(second.onAction(second.actionEvent)).rejects.toThrow("injected post-interaction confirmation settlement crash");
+      expect(await db.select({ status: chatActions.status }).from(chatActions).where(and(
+        eq(chatActions.companyId, second.fixture.companyId), eq(chatActions.kind, "interaction_wakeup"),
+      ))).toEqual([{ status: "issued" }]);
+      release(); await ready;
+      await vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(10);
+        expect(first.wakeup).toHaveBeenCalledTimes(2);
+        expect(idleWorkSnapshot().active).toBe(0); expect(coordinator.nextWakeAt()).toBeNull();
+      }, { timeout: 15_000 });
+      expect(await db.select({ id: chatActions.id }).from(chatActions).where(and(
+        inArray(chatActions.id, invalidIds), eq(chatActions.status, "failed"),
+        eq(sql<string>`${chatActions.result}->>'code'`, "interaction_wakeup_payload_invalid"),
+      ))).toHaveLength(101);
+      expect(await db.select({ id: chatActions.id }).from(chatActions).where(and(
+        inArray(chatActions.companyId, [first.fixture.companyId, second.fixture.companyId]),
+        eq(chatActions.kind, "interaction_wakeup"), eq(chatActions.status, "processed"),
+      ))).toHaveLength(2);
+      const select = vi.spyOn(db, "select"), transaction = vi.spyOn(db, "transaction");
+      try {
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(select).not.toHaveBeenCalled(); expect(transaction).not.toHaveBeenCalled();
+      } finally { select.mockRestore(); transaction.mockRestore(); }
+      expect(errors).toEqual([]);
+    } finally {
+      release(); await ready; await coordinator.stop(); vi.useRealTimers();
+      await db.delete(chatActions).where(inArray(chatActions.id, invalidIds));
+      await first.service.shutdown(); await second.service.shutdown();
+    }
+  });
+
+  it("defers continuation dispatch until the outer response transaction commits", async () => {
+    const context = await telegramConfirmationRecoveryFixture();
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true,
+      canReconcile: () => true, onError: error => errors.push(error) });
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    const settle = async () => vi.waitFor(async () => {
+      await vi.advanceTimersByTimeAsync(10);
+      expect(idleWorkSnapshot().active).toBe(0); expect(coordinator.nextWakeAt()).toBeNull();
+    }, { timeout: 10_000 });
+    const originalWake = context.wakeup.getMockImplementation()!;
+    context.wakeup.mockImplementation(async (...args) => {
+      expect((context.service.runtime as unknown as FakeChatSdkRuntime).endpoints.get(context.endpoint.id)?.edits).toHaveLength(1);
+      return originalWake(...args);
+    });
+    try {
+      await context.service.registerInteractionContinuationWork(coordinator, () => true).ready;
+      await settle();
+      const [issue] = await db.select().from(issues).where(eq(issues.id, context.conversation.issueId));
+      const accept = async (tx: Parameters<Parameters<Db["transaction"]>[0]>[0]) => {
+        await issueThreadInteractionService(tx as unknown as Db).acceptInteraction(issue, context.interaction.id, {}, { userId: context.linkedUserId });
+        await vi.advanceTimersByTimeAsync(100);
+        expect(context.wakeup).not.toHaveBeenCalled();
+        expect(await db.select({ status: issueThreadInteractions.status }).from(issueThreadInteractions)
+          .where(eq(issueThreadInteractions.id, context.interaction.id))).toEqual([{ status: "pending" }]);
+        expect(await db.select({ id: chatActions.id }).from(chatActions).where(and(
+          eq(chatActions.companyId, context.fixture.companyId), eq(chatActions.kind, "interaction_wakeup"),
+        ))).toEqual([]);
+      };
+      await expect(db.transaction(async tx => {
+        await accept(tx);
+        throw new Error("rollback outer continuation decision");
+      })).rejects.toThrow("rollback outer continuation decision");
+      await settle();
+      expect(context.wakeup).not.toHaveBeenCalled();
+      const select = vi.spyOn(db, "select"), transaction = vi.spyOn(db, "transaction");
+      try {
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(select).not.toHaveBeenCalled(); expect(transaction).not.toHaveBeenCalled();
+      } finally { select.mockRestore(); transaction.mockRestore(); }
+      await db.transaction(accept);
+      await vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(10);
+        expect(context.wakeup).toHaveBeenCalledTimes(1);
+      });
+      await settle();
+      expect(await db.select({ status: chatActions.status }).from(chatActions).where(and(
+        eq(chatActions.companyId, context.fixture.companyId), eq(chatActions.kind, "interaction_wakeup"),
+      ))).toEqual([{ status: "processed" }]);
+      expect(errors).toEqual([]);
+    } finally { await coordinator.stop(); vi.useRealTimers(); await context.service.shutdown(); }
+  });
+
   it.each(["accept", "reject", "drain", "restart", "failed selection"] as const)("recovers committed terminal confirmations without polling through %s", async mode => {
     const context = await telegramConfirmationRecoveryFixture(mode === "reject" ? "reject" : "accept");
     let canRun = true;

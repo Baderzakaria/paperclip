@@ -1,3 +1,4 @@
+import { notifyChatContinuationWork } from "../../chat-continuation-notifications.js";
 import type { DbTransaction, RuntimeContext, LifecycleRuntimeFence } from "../runtime-types.js";
 
 import type { createDeliveryWorkCoordinator } from "../../delivery-work-coordinator.js";
@@ -586,6 +587,7 @@ export function createTelegramConfirmationActions(db: Db, options: TelegramConfi
         })
         .onConflictDoNothing();
       if (shouldWake && issue.assigneeAgentId) {
+        await notifyChatContinuationWork(tx, { companyId: issue.companyId, issueId: issue.id });
         await tx
           .insert(chatActions)
           .values({
