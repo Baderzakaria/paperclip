@@ -6652,7 +6652,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
       try {
         await f.checks.registerCheckWork(coordinator, () => true).ready;
-        expect(coordinator.nextWakeAt()).toBeNull();
+        await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }),
+          { timeout: 5000 }).toEqual({ active: 0, next: null });
         await f.enqueue();
         await expect.poll(async () => (await f.action())?.status, { timeout: 5000 }).toBe("processed");
         await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }),

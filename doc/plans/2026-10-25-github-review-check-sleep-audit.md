@@ -148,3 +148,14 @@ hypothesis also did not reproduce a cycle. These are negative diagnostic results
 not a fix for #17490 or #17572. An initial database-name collision stopped setup;
 the existing database was preserved and a newly named disposable database was
 used instead. No blind CI rerun was consumed.
+
+The second complete local run finished with 1,581 passes and one failure in
+541.48 seconds. The remaining assertion checked no deadline immediately after
+`ready`, which awaits the first pass, not a later coalesced wake. Fixture teardown
+already retires unfinished rows. Startup quiet now waits for both zero active
+work and no deadline, matching the strengthened post-delivery assertion. The
+complete GitHub workflow selection then passed all 211 tests in 187.16 seconds
+in a new database. No production behavior changed. Head `59f8c8b3e5` has all 53
+remote checks passing and fresh Greptile 5/5 with zero review threads. The new
+fixture-only commit requires its own fresh remote checks; the two local full
+runs are not reported as passes.

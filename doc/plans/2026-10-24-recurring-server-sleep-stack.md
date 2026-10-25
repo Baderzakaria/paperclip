@@ -1980,3 +1980,10 @@ chat cases and all 16 login-cleanup tests; full/new-head verification is require
 The earlier cancellation browser failures were not reproduced in six local
 replays. #17490 and #17572 remain unresolved gates, not inferred green from that
 negative result. The next untouched duty remains late stale-head projection repair.
+
+Slice 36 follow-up: all 53 remote checks and fresh 5/5 review passed on
+`59f8c8b3e5`. The second local full run had one startup-quiescence assertion
+failure and 1,581 passes. Waiting for the actual quiet condition fixes that
+fixture; all 211 GitHub workflow tests pass after the change. Fresh remote gates
+for the fixture-only commit remain required. The next slice may build on this
+commit while those independent gates run; no stack merge is authorized.
