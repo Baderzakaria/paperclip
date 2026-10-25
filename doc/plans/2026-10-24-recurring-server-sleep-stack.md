@@ -1698,3 +1698,15 @@ stay silent. See the milestone audit for transaction boundaries and retained log
 The previous pushed head 0f38d1079d has the recurring E2E shard-3 cancellation
 failure; process-identity event append deadlock evidence is retained for diagnosis.
 Production registration/poll removal and the entire remaining stack are still open.
+
+
+Slice 28 production milestone migration: the app now registers the scoped
+lifecycle worker and the periodic coordinator invokes only native progress.
+The final GitHub guest/sponsor settings owner signals actual authority changes
+inside its existing transaction; its missing intent reproduced before repair.
+159 worker/startup/coordinator cases, four GitHub acceptance cases and all 16
+assembled-app project-chat E2Es pass; server typecheck passes. The milestone
+audit has a consolidated alternate-writer disposition table. Native progress
+remains the next separate reason. Remote gates, parent findings and the rest of
+the original stack are not complete; local cancellation success does not repair
+the recorded CI deadlock.

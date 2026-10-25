@@ -5542,6 +5542,31 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           .where(eq(chatEndpointLeases.endpointId, f.endpoint.id)),
       ).toHaveLength(0);
     });
+    it("wakes milestone authority only when GitHub guest settings change, after outer commit", async () => {
+      const f = await reviewBotFixture();
+      const initial = await f.management.configuration(f.endpoint.id, "owner-user");
+      const configuration = { ...initial.configuration, people: [{
+        kind: "guest" as const, githubUserId: "84", login: "contributor",
+        sponsorUserId: "owner-user", permissionProfile: "restricted" as const, automaticReviews: false,
+      }] };
+      const events: string[] = [];
+      const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.chatRunMilestones, event => events.push(event));
+      try {
+        await db.transaction(async tx => {
+          await githubChatManagementService(tx as unknown as typeof db, f.providerFetch)
+            .saveConfiguration(f.endpoint.id, { expectedRevision: initial.revision, configuration }, "owner-user");
+          expect(events).toEqual(["intent"]);
+          expect((await f.service.get(f.endpoint.id)).allowUnlinkedPeople).toBe(false);
+        });
+        expect(events).toEqual(["intent", "settled"]);
+        expect((await f.service.get(f.endpoint.id)).allowUnlinkedPeople).toBe(true);
+        events.length = 0;
+        const current = await f.management.configuration(f.endpoint.id, "owner-user");
+        await f.management.saveConfiguration(f.endpoint.id, { expectedRevision: current.revision, configuration }, "owner-user");
+        expect(events).toEqual([]);
+      } finally { unsubscribe(); }
+    });
+
     it("scopes guest tasks and rechecks their sponsor before every bot tool", async () => {
       const f = await reviewBotFixture();
       const initial = await f.management.configuration(

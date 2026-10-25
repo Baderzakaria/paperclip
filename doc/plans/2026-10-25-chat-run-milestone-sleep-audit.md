@@ -2,8 +2,69 @@
 
 Baseline: Teams attempt recovery #17592 at f53ae3d6d2.
 Branch: codex/sleep-28-chat-run-milestones.
-Status: scoped worker and initial real producer signals implemented and locally
-verified; complete producer coverage, production registration and final acceptance pending.
+Status: lifecycle worker registered in production; recurring lifecycle projection
+removed. Selected local worker, authorization and assembled-app acceptance passes.
+Final full-stack reconciliation, CI/review gates and older parent findings remain open.
+
+## Current production disposition
+
+The app registers `chatRunMilestoneWork` with its existing delivery coordinator.
+The remaining periodic chat lane calls only `enqueueSafeNativeChatProgress` and
+is named native progress in the coordinator and tests. The explicit/manual
+combined reconciliation API remains available, with its original shared budget.
+Publications created by the lifecycle worker notify the existing delivery owner.
+The coordinator owns subscriptions, retained dirty scopes, retries and shutdown;
+no independent timer or extra table is introduced. Cloud sleep proof is unchanged.
+
+The audit's remaining alternatives were classified against actual reader fields:
+
+| Alternate writer family | Disposition |
+| --- | --- |
+| Monitor semantic receipts | The real tool writes receipt plus monitor atomically before future admission; covered queue admission establishes the successor. |
+| Retry scheduling in heartbeat/recovery/native replacement/capacity owners | Creates `scheduled_retry`, outside lifecycle selection. Covered promotion/claim introduces eligibility; coalescence counts and retry-strategy metadata do not supply lineage. |
+| Native status dispatch and effect receipts | Existing issue-scoped signals cover original coalesced intent, dispatched wake/run binding and delivered effect. |
+| Generic wake settlement | Ordinary queued→claimed/completed retains existing admission predicates; cancellation/skipping removes authority. Run status/queue producers already signal their corresponding run transition. No new general wake-count loop is needed. |
+| Execution-wait, human-directed assignment and tree cancellation | Diagnostic skipped receipts have no run; human assignment has its distinct source; tree cancellation selects unclaimed null-run receipts. None creates an admitted monitor/interaction/native-status successor. |
+| Task-retry, preserved-result and fresh-workspace receipts | Distinct task_retry/strategy metadata; actual successor run admission/finalization is covered. |
+| Dot/Muse assignment follow-up receipts | Board conversation/issue-comment paths; they do not establish external lifecycle lineage merely by sharing an issue. |
+| Slack Board reply bindings | Source issue.comment uses its own response path; it is excluded from lifecycle candidate sources. |
+| GitHub configuration | The only configuration writer upserts; deletion is endpoint/company teardown rather than restoration. Upgrading disables automatic queued/working notices. Guest/sponsor changes can restore post-close authority and now signal before mutation in the existing locked transaction. |
+| Initial local-board membership / agent compatibility backfill | Startup precedes worker reconstruction; agent-only memberships do not restore human authority. Live Cloud and board-claim human restoration now has signals. |
+
+This table complements the real producer cases and chronological audit below;
+it does not claim independent SQL writers or another replica are covered.
+The source of truth remains existing rows and the original 24-hour run window.
+Company hints are used only for broader configuration/authority operations;
+issue hints cover lineage and its descendants. Settled projection does not retain
+periodic discovery merely because history or configuration exists.
+
+Latest local evidence:
+- GitHub guest-setting transaction regression failed before its signal in
+  /tmp/sleep28-github-config-before.log; the production owner now emits intent
+  before mutation, settles after the outer commit, and stays silent for an
+  unchanged settings save. Four real GitHub settings/guest/authorization cases
+  pass in /tmp/sleep28-github-config-acceptance.log.
+- All 159 cases in seven worker/lifecycle/identity/recovery/governed/resource,
+  app-coordinator and startup suites pass in
+  /tmp/sleep28-production-worker-acceptance.log. These include configured idle,
+  retained history, first producer, outer rollback/commit, retry, restart,
+  drain/resume and shutdown tests; not every case runs the full HTTP app.
+- All 16 project-chat Playwright cases pass against a fresh assembled app at
+  port 32658, database paperclip_sleep28_production_e2e_20261025_test.
+  Log /tmp/sleep28-production-e2e.log; traces /tmp/sleep28-production-e2e-results.
+  This includes split-handoff cancellation and experiment restoration, but local
+  success does not resolve the observed remote cancellation deadlock.
+- Server production typecheck passes in /tmp/sleep28-production-worker-typecheck.log.
+  The compiler excludes tests. Server build passes in
+  /tmp/sleep28-production-worker-build.log, and the four GitHub owner cases pass
+  again after the endpoint-deletion race guard in /tmp/sleep28-github-config-final.log.
+  No fleet suspension/cost result is claimed. Final remote gates remain required.
+
+## Historical implementation checkpoints
+
+The entries below preserve earlier incomplete states, failures and subsequent
+repairs. Their statements that production still polls describe those checkpoints;
+the current production disposition above supersedes them.
 
 ## Separate obligations discovered
 

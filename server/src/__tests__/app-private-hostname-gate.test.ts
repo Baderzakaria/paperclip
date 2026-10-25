@@ -25,7 +25,7 @@ describe("createChatReconciliationCoordinator", () => {
         processFailedGitHubWebhookDeliveries,
         processPendingDeliveries,
         flushPublications,
-        projectRunMilestones: async () => 0,
+        projectNativeProgress: async () => 0,
         processPendingSlackFileUploadReceipts: async () => undefined,
         processPendingSlackSessionSyncs: async () => undefined,
         onError,
@@ -142,14 +142,14 @@ describe("createChatReconciliationCoordinator", () => {
   });
 
   it.each([false, true])(
-    "isolates a blocked milestone projector and joins its completion (rejects: %s)",
+    "isolates a blocked native progress projector and joins its completion (rejects: %s)",
     async (rejects) => {
       let release!: () => void;
       const held = new Promise<void>((resolve) => {
         release = resolve;
       });
-      const failure = new Error("milestone projection failed");
-      const projectRunMilestones = vi
+      const failure = new Error("native progress projection failed");
+      const projectNativeProgress = vi
         .fn(async () => 0)
         .mockImplementationOnce(async () => {
           await held;
@@ -159,7 +159,7 @@ describe("createChatReconciliationCoordinator", () => {
       const flushPublications = vi.fn(async () => undefined);
       const onError = vi.fn();
       const coordinator = createChatReconciliationCoordinator({
-        projectRunMilestones,
+        projectNativeProgress,
         processPendingDeliveries: async () => undefined,
         flushPublications,
         processPendingSlackFileUploadReceipts: async () => undefined,
@@ -169,7 +169,7 @@ describe("createChatReconciliationCoordinator", () => {
       try {
         coordinator.reconcile();
         await vi.waitFor(() => {
-          expect(projectRunMilestones).toHaveBeenCalledTimes(1);
+          expect(projectNativeProgress).toHaveBeenCalledTimes(1);
           expect(flushPublications).toHaveBeenCalledTimes(1);
         });
         // A newly committed final/question must dispatch even while a different
@@ -179,7 +179,7 @@ describe("createChatReconciliationCoordinator", () => {
         await vi.waitFor(() =>
           expect(flushPublications).toHaveBeenCalledTimes(2),
         );
-        expect(projectRunMilestones).toHaveBeenCalledTimes(1);
+        expect(projectNativeProgress).toHaveBeenCalledTimes(1);
         let drained = false;
         const draining = coordinator.drain().then(() => {
           drained = true;
@@ -188,17 +188,17 @@ describe("createChatReconciliationCoordinator", () => {
         expect(drained).toBe(false);
         release();
         await draining;
-        expect(projectRunMilestones).toHaveBeenCalledTimes(2);
+        expect(projectNativeProgress).toHaveBeenCalledTimes(2);
         expect(onError).toHaveBeenCalledTimes(rejects ? 1 : 0);
         if (rejects)
-          expect(onError).toHaveBeenCalledWith("run milestones", failure);
+          expect(onError).toHaveBeenCalledWith("native progress", failure);
         const completedCounts = [
-          projectRunMilestones.mock.calls.length,
+          projectNativeProgress.mock.calls.length,
           flushPublications.mock.calls.length,
         ];
         await new Promise<void>((resolve) => setImmediate(resolve));
         expect([
-          projectRunMilestones.mock.calls.length,
+          projectNativeProgress.mock.calls.length,
           flushPublications.mock.calls.length,
         ]).toEqual(completedCounts);
       } finally {
@@ -209,18 +209,18 @@ describe("createChatReconciliationCoordinator", () => {
     },
   );
 
-  it("joins a blocked milestone projector at shutdown without starting dirty follow-ups", async () => {
+  it("joins a blocked native progress projector at shutdown without starting dirty follow-ups", async () => {
     let release!: () => void;
     const held = new Promise<void>((resolve) => {
       release = resolve;
     });
-    const projectRunMilestones = vi.fn(async () => {
+    const projectNativeProgress = vi.fn(async () => {
       await held;
       return 1;
     });
     const flushPublications = vi.fn(async () => undefined);
     const coordinator = createChatReconciliationCoordinator({
-      projectRunMilestones,
+      projectNativeProgress,
       flushPublications,
       processPendingDeliveries: async () => undefined,
       processPendingSlackFileUploadReceipts: async () => undefined,
@@ -230,7 +230,7 @@ describe("createChatReconciliationCoordinator", () => {
     try {
       coordinator.reconcile();
       await vi.waitFor(() => {
-        expect(projectRunMilestones).toHaveBeenCalledOnce();
+        expect(projectNativeProgress).toHaveBeenCalledOnce();
         expect(flushPublications).toHaveBeenCalledOnce();
       });
       coordinator.notifyPublications();
@@ -243,7 +243,7 @@ describe("createChatReconciliationCoordinator", () => {
       expect(drained).toBe(false);
       release();
       await draining;
-      expect(projectRunMilestones).toHaveBeenCalledOnce();
+      expect(projectNativeProgress).toHaveBeenCalledOnce();
       expect(flushPublications).toHaveBeenCalledOnce();
     } finally {
       release();
@@ -269,7 +269,7 @@ describe("createChatReconciliationCoordinator", () => {
     );
     const onError = vi.fn();
     const coordinator = createChatReconciliationCoordinator({
-      projectRunMilestones: async () => 0,
+      projectNativeProgress: async () => 0,
       processPendingDeliveries,
       flushPublications,
       processPendingSlackFileUploadReceipts,
@@ -317,7 +317,7 @@ describe("createChatReconciliationCoordinator", () => {
       const processPendingSlackSessionSyncs = vi.fn(async () => undefined);
       const onError = vi.fn();
       const coordinator = createChatReconciliationCoordinator({
-        projectRunMilestones: async () => 0,
+        projectNativeProgress: async () => 0,
         processPendingDeliveries,
         flushPublications,
         processPendingSlackFileUploadReceipts,
