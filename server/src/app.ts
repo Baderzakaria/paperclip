@@ -195,7 +195,7 @@ import { createToolGatewayService } from "./services/tool-gateway.js";
 import { toolAccessService } from "./services/tool-access.js";
 import { chatChannelService } from "./services/chat-channels.js";
 import { deliverNativeQuestionResponse } from "./services/native-runtime/native-question-bridge.js";
-import { enqueueSafeNativeChatProgress } from "./services/chat-run-publications.js";
+import { nativeChatProgressWork } from "./services/chat-native-progress-work.js";
 import { chatRunMilestoneWork } from "./services/chat-run-milestone-work.js";
 import {
   createCoalescedAsyncTrigger,
@@ -324,7 +324,6 @@ export function shouldEnablePrivateHostnameGuard(opts: {
 type ChatReconciliationLane =
   | "deliveries"
   | "GitHub webhook recovery"
-  | "native progress"
   | "publications"
   | "Slack file receipts"
   | "Slack session status";
@@ -337,7 +336,6 @@ type ChatReconciliationLane =
 export function createChatReconciliationCoordinator(input: {
   processPendingDeliveries: () => Promise<unknown>;
   processFailedGitHubWebhookDeliveries?: () => Promise<unknown>;
-  projectNativeProgress: () => Promise<number>;
   flushPublications: () => Promise<unknown>;
   processPendingSlackFileUploadReceipts?: () => Promise<unknown>;
   processPendingSlackSessionSyncs?: () => Promise<unknown>;
@@ -348,16 +346,6 @@ export function createChatReconciliationCoordinator(input: {
   const publicationReconciliation = createCoalescedAsyncTrigger({
     run: input.flushPublications,
     onError: (error) => input.onError("publications", error),
-  });
-  const progressReconciliation = createCoalescedAsyncTrigger({
-    run: async () => {
-      const inserted = await input.projectNativeProgress();
-      // Existing final/question publications never wait on this optional
-      // projection. Newly committed progress gets a bounded dispatch wake;
-      // an empty/contended pass does not create a self-sustaining loop.
-      if (inserted > 0) publicationReconciliation.notify();
-    },
-    onError: (error) => input.onError("native progress", error),
   });
   const start = (
     lane: ChatReconciliationLane,
@@ -383,27 +371,21 @@ export function createChatReconciliationCoordinator(input: {
           input.processFailedGitHubWebhookDeliveries,
         );
       }
-      progressReconciliation.poll();
       publicationReconciliation.poll();
       if (input.processPendingSlackFileUploadReceipts) start("Slack file receipts", input.processPendingSlackFileUploadReceipts);
       if (input.processPendingSlackSessionSyncs) start("Slack session status", input.processPendingSlackSessionSyncs);
     },
     notifyPublications() {
-      progressReconciliation.notify();
       publicationReconciliation.notify();
     },
     stop() {
       stopped = true;
-      progressReconciliation.stop();
       publicationReconciliation.stop();
     },
     async drain() {
       await Promise.allSettled([
         ...inFlight.values(),
-        progressReconciliation.drain(),
       ]);
-      // Projecting the final batch can notify dispatch after an earlier drain
-      // would have returned. Join dispatch only after its producer has drained.
       await publicationReconciliation.drain();
     },
   };
@@ -1305,6 +1287,7 @@ export async function createApp(
   chatChannels.registerTeamsConsentExpiryWork(deliveryWork, () => !isWarmStandby() && !isIdleTaskDrainActive());
   chatChannels.registerTeamsAttemptRecoveryWork(deliveryWork, () => !isWarmStandby() && !isIdleTaskDrainActive());
   chatChannels.registerCommandWork(deliveryWork, () => !isWarmStandby() && !isIdleTaskDrainActive());
+  nativeChatProgressWork(db).register(deliveryWork, () => !isWarmStandby() && !isIdleTaskDrainActive());
   chatRunMilestoneWork(db, opts.authPublicBaseUrl).register(
     deliveryWork, () => !isWarmStandby() && !isIdleTaskDrainActive(),
   );
@@ -1318,7 +1301,6 @@ export async function createApp(
     processPendingDeliveries: async () => undefined,
     processFailedGitHubWebhookDeliveries: () =>
       chatChannels.processFailedGitHubWebhookDeliveries(),
-    projectNativeProgress: () => enqueueSafeNativeChatProgress(db),
     flushPublications: () => reconcileChatPublicationMaintenance(),
     onError: (lane, err) => {
       logger.error({ err, lane }, `Failed to reconcile chat ${lane}`);
@@ -1330,8 +1312,8 @@ export async function createApp(
         chatReconciliation.notifyPublications();
     },
   );
-  // Native progress and remaining publication maintenance still use this cadence.
-  // Lifecycle milestones use committed changes and their own recovery worker.
+  // Remaining publication maintenance still uses this cadence. Lifecycle and
+  // native progress projection have independent commit/deadline workers.
   // Inbox, outbox, and file receipt queues have independent commit/deadline wakes.
   let chatPublicationTimer: ReturnType<typeof setInterval> | null = setInterval(
     () => {

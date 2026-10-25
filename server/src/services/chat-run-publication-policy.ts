@@ -17,3 +17,5 @@ export function chatRunProjectionWindow(input: { since?: Date; limit?: number })
     limit: Math.max(1, Math.min(input.limit ?? 200, 1_000)),
   };
 }
+
+export type ChatRunProjectionScope = { companyId: string; issueId?: string };

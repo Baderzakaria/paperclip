@@ -1,3 +1,4 @@
+import { notifyChatNativeProgress } from "./chat-native-progress-notifications.js";
 import { allowsAutomaticRunPublication, chatRunProjectionWindow } from "./chat-run-publication-policy.js";
 import { enqueueSafeNativeChatProgress } from "./chat-native-progress.js";
 export { enqueueSafeNativeChatProgress } from "./chat-native-progress.js";
@@ -646,6 +647,9 @@ export async function enqueueChatRunLifecycleMilestones(
         if (explicitlyAuthoredPublication.length > 0) continue;
       }
       const result = await db.transaction(async (tx) => {
+        if (milestone === "working") {
+          await notifyChatNativeProgress(tx, { companyId: row.companyId, issueId: row.issueId });
+        }
         await notifyChatPublicationWork(tx);
         return tx
           .insert(chatPublications)

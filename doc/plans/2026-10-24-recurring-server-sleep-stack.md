@@ -1719,3 +1719,20 @@ test so downstream Slack publication tests see their original identity. Local
 40 stale-lock, 122 voice, 38 auth/session and 28 combined chat cases pass; server
 typecheck/build pass. See the milestone audit for failed-run dispositions.
 Latest-head remote gates and parent failures remain open.
+
+## Slice 29: native chat progress implementation
+
+Branch `codex/sleep-29-native-chat-progress`, parent #17606 at `ed76256b97`.
+Native event producers and existing eligibility notifications now wake a scoped
+worker. Progress leaves the chat timer; retained history becomes quiet. The
+worker retains only unfinished batches, concrete lock contention and failures.
+See [the owner audit](2026-10-25-native-chat-progress-sleep-audit.md) for producer
+coverage, cursor precision repair, authorization boundaries and retained failures.
+
+Forty-four focused native-progress cases pass, as do 13 app coordinator cases and
+the server build/typecheck. All 16 browser chat cases pass before the final
+base-publication hook. The hook fixes a reproduced commit-order wake gap; its
+19 worker and 13 coordinator cases pass. Final browser acceptance and
+publication/checks are pending.
+Parent #17606 now has passing checks and Greptile 5/5 on `ed76256b97`; all three
+review threads are resolved. This is not completion of the broader stack.

@@ -7,7 +7,7 @@ import { projectSafeChatPublication } from "./chat-publication-projection.js";
 import { hasChatRunOwnedProviderInteraction } from "./chat-interaction-arbitration.js";
 import { resolveChatOriginPublicationBindings } from "./issues.js";
 import { boundRunIssueIdSql } from "./run-task-binding.js";
-import { allowsAutomaticRunPublication, chatRunProjectionWindow } from "./chat-run-publication-policy.js";
+import { allowsAutomaticRunPublication, chatRunProjectionWindow, type ChatRunProjectionScope } from "./chat-run-publication-policy.js";
 import { SAFE_NATIVE_CHAT_PROGRESS_EVENT_TYPES, safeNativeChatProgressForEvent } from "./safe-native-chat-progress.js";
 
 type SafeNativeChatProgressCandidate = {
@@ -26,12 +26,10 @@ type SafeNativeChatProgressCandidate = {
 
 const SAFE_NATIVE_CHAT_PROGRESS_CADENCE_MS = 20_000;
 
-/** Only closed event types become coarse progress; event payloads stay local. */
-export async function enqueueSafeNativeChatProgress(
-  db: Db,
-  options: { since?: Date; limit?: number } = {},
-): Promise<number> {
-  const input = chatRunProjectionWindow(options);
+type NativeProgressCursor = Pick<SafeNativeChatProgressCandidate, "eventCreatedAt" | "runId" | "conversationId">;
+type NativeProgressInput = { since?: Date; limit?: number; scope?: ChatRunProjectionScope; signal?: AbortSignal };
+
+function nativeProgressPages(db: Db, since: Date, scope?: ChatRunProjectionScope) {
   const basePublication = alias(
     chatPublications,
     "safe_native_progress_base_publication",
@@ -41,17 +39,7 @@ export async function enqueueSafeNativeChatProgress(
     "safe_native_progress_later_event",
   );
   const issueIdFromContext = boundRunIssueIdSql();
-  let inserted = 0;
-  let cursor: {
-    eventCreatedAt: string;
-    runId: string;
-    conversationId: string;
-  } | null = null;
-
-  while (inserted < input.limit) {
-    const pageSize = Math.max(25, Math.min(200, input.limit - inserted));
-    const pageCursor: typeof cursor = cursor;
-    const rows: SafeNativeChatProgressCandidate[] = await db
+  return async (pageSize: number, pageCursor: NativeProgressCursor | null): Promise<SafeNativeChatProgressCandidate[]> => await db
       .select({
         eventId: heartbeatRunEvents.id,
         eventSeq: heartbeatRunEvents.seq,
@@ -118,7 +106,9 @@ export async function enqueueSafeNativeChatProgress(
           inArray(heartbeatRunEvents.eventType, [
             ...SAFE_NATIVE_CHAT_PROGRESS_EVENT_TYPES,
           ]),
-          gte(heartbeatRunEvents.createdAt, input.since),
+          gte(heartbeatRunEvents.createdAt, since),
+          scope ? eq(heartbeatRuns.companyId, scope.companyId) : undefined,
+          scope?.issueId ? eq(chatConversations.issueId, scope.issueId) : undefined,
           sql`${heartbeatRunEvents.createdAt} >= ${basePublication.createdAt} + interval '20 seconds'`,
           notExists(
             db
@@ -147,6 +137,31 @@ export async function enqueueSafeNativeChatProgress(
         asc(chatConversations.id),
       )
       .limit(pageSize);
+}
+
+export async function loadNativeChatProgressScopes(db: Db, scope?: ChatRunProjectionScope, signal?: AbortSignal) {
+  const pages = nativeProgressPages(db, chatRunProjectionWindow({}).since, scope);
+  const scopes = new Map<string, { companyId: string; issueId: string }>();
+  let cursor: NativeProgressCursor | null = null;
+  for (;;) {
+    signal?.throwIfAborted();
+    const rows = await pages(200, cursor);
+    for (const row of rows) scopes.set(`${row.companyId}:${row.issueId}`, { companyId: row.companyId, issueId: row.issueId });
+    if (rows.length < 200) return [...scopes.values()];
+    cursor = rows[rows.length - 1];
+  }
+}
+
+/** A suppressed event is settled; lock contention still owes another attempt. */
+export async function reconcileNativeChatProgress(db: Db, options: NativeProgressInput = {}) {
+  const input = chatRunProjectionWindow(options);
+  const pages = nativeProgressPages(db, input.since, options.scope);
+  let inserted = 0, contended = false;
+  let cursor: NativeProgressCursor | null = null;
+  while (inserted < input.limit) {
+    options.signal?.throwIfAborted();
+    const pageSize = Math.max(25, Math.min(200, input.limit - inserted));
+    const rows = await pages(pageSize, cursor);
     if (rows.length === 0) break;
     const lastRow = rows.at(-1)!;
     cursor = {
@@ -156,6 +171,7 @@ export async function enqueueSafeNativeChatProgress(
     };
 
     for (const row of rows) {
+      options.signal?.throwIfAborted();
       if (inserted >= input.limit) break;
       const result = await db.transaction(async (tx) => {
         // Keep the normal issue -> run order used by native finalization. The
@@ -174,7 +190,12 @@ export async function enqueueSafeNativeChatProgress(
           )
           .for("update", { skipLocked: true })
           .then((currentRows) => currentRows[0] ?? null);
-        if (!currentIssue) return 0;
+        if (!currentIssue) {
+          const [existing] = await tx.select({ id: issues.id }).from(issues)
+            .where(and(eq(issues.id, row.issueId), eq(issues.companyId, row.companyId)));
+          contended ||= Boolean(existing);
+          return 0;
+        }
         // Native event admission serializes on the run row. Taking the same
         // short lock makes terminal status, a later event, or a final comment
         // win before this non-terminal projection can be inserted.
@@ -192,7 +213,15 @@ export async function enqueueSafeNativeChatProgress(
           )
           .for("update", { skipLocked: true })
           .then((currentRows) => currentRows[0] ?? null);
-        if (!currentRun) return 0;
+        if (!currentRun) {
+          const [existing] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+            eq(heartbeatRuns.id, row.runId), eq(heartbeatRuns.companyId, row.companyId),
+            eq(heartbeatRuns.agentId, row.agentId), eq(heartbeatRuns.runtimeMode, "native"),
+            eq(heartbeatRuns.status, "running"),
+          ));
+          contended ||= Boolean(existing);
+          return 0;
+        }
 
         const destination = await tx
           .select({ id: chatConversations.id })
@@ -389,5 +418,10 @@ export async function enqueueSafeNativeChatProgress(
     }
     if (rows.length < pageSize) break;
   }
-  return inserted;
+  return { inserted, contended };
+}
+
+/** Explicit/manual callers retain the original count-only contract. */
+export async function enqueueSafeNativeChatProgress(db: Db, options: NativeProgressInput = {}): Promise<number> {
+  return (await reconcileNativeChatProgress(db, options)).inserted;
 }

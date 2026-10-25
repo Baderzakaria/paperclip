@@ -2,141 +2,145 @@
 
 Parent: #17606 at `ed76256b979541b962fa784016a550c32920d670`.
 Branch: `codex/sleep-29-native-chat-progress`.
-Status: groundwork verified; production still polls. Do not mark migrated.
+Status: implementation and focused PostgreSQL acceptance complete; remote acceptance pending; browser acceptance passed before the final base-publication hook. This is not a deployed sleep claim.
 
 ## Duty and owner
 
-Native progress is the separate `projectNativeProgress` lane in the one-second
-chat reconciliation coordinator. It projects a closed allowlist of durable run
-event types into coarse provider-safe phrases. It never copies event messages,
-payloads, tool names, arguments, or results into external publications.
+Native progress used the one-second chat reconciliation cadence. It projects a
+closed allowlist of durable run event types into coarse provider-safe phrases.
+It never copies event messages, payloads, tool names, arguments, or results into
+external publications.
 
-`chat-native-progress.ts` owns selection, authority checks and insertion.
+`chat-native-progress.ts` owns selection, authorization and insertion.
 `safe-native-chat-progress.ts` owns the normalized allowlist and phrase policy.
-`chat-run-publication-policy.ts` holds only the existing projection window and
-shared automatic-publication eligibility. The latter preserves the distinction
-between upgraded GitHub bots (tool-owned replies) and legacy automatic replies.
-The original export and explicit combined lifecycle/progress API stay compatible.
-No generic scheduler should interpret provider payloads or decide disclosure.
+`chat-run-publication-policy.ts` holds the existing projection window and shared
+automatic-publication eligibility. It preserves upgraded GitHub bots' tool-owned
+replies and legacy automatic replies. The original export and explicit combined
+lifecycle/progress API stay compatible, including their shared insertion budget.
+Startup registers the worker; it no longer invokes progress on the chat timer.
+Other chat maintenance duties remain for their own migration slices.
 
-## Existing durable contract
+## Durable contract and triggers
 
-- Native running run, matching company/agent and bound issue.
-- Active/waiting conversation with an automatic endpoint assigned to that agent.
-- Existing base working publication in pending/retry/streaming/published state.
-- Latest allowlisted event for that run, inside the existing 24-hour window.
-- Event time at least 20 seconds after the base working publication.
-- Exact current origin/lineage authorization; current provider interaction and
-  explicitly authored final output may suppress this optional progress.
-- At most one publication per phase. Twenty-second spacing compares the saved
-  event time with saved publication times. Passage of wall-clock time does not
-  make the same suppressed old event eligible. Do not invent a timer to retry it
-  after twenty seconds or change the cadence policy as part of this migration.
-- Existing publications provide durable deduplication and outbound delivery.
-  Do not introduce another queue table.
+The candidate requires a native running run, matching company/agent and bound
+issue, an active/waiting conversation, and an automatic endpoint assigned to the
+agent. Its existing base working publication must be pending, retry, streaming,
+or published. The latest allowlisted event must be within the existing 24-hour
+window and at least 20 seconds after the base publication. Existing lineage,
+interaction arbitration, final-output suppression and delivery authorization stay
+with their current owners. The ordinary direct-origin path and stricter
+post-close lineage path retain their existing different authorization stages.
 
-## Verified pagination repair
+There is at most one publication per phase. Spacing compares saved event time
+with saved publication times. Waiting twenty seconds does not make an old event
+eligible. No timer retries cadence-suppressed events. Existing events and
+publications are durable truth; there is no new queue table or schema migration.
 
-The selector previously round-tripped event timestamps through JavaScript Date.
-PostgreSQL microseconds were lost. With a full page of rejected candidates at
-one fractional timestamp, every next page selected those same candidates; an
-eligible event later in the ordered stream was never reached.
+The two event writers register awaited intent before insertion, after duplicate
+and ownership checks, inside their existing transaction boundaries:
 
-The new regression creates 30 origin-rejected candidates with a microsecond
-timestamp and a valid event after them. A query-count guard fails the broken
-pagination without leaving an infinite SQL chain after the test timeout.
-The fix keeps the timestamp as PostgreSQL text and uses the full timestamp/run/
-conversation tuple for continuation, preserving ordering and eligibility.
+- `appendHeartbeatRunEvent` covers native ingress through
+  `PaperclipControlPlanePort`, direct allowlisted events and recovered trace diffs.
+  It reads only runtime mode and bound issue alongside the existing binding
+  fields. Ordinary non-progress direct log events retain their atomic-statement
+  path. Direct allowlisted event writes now use a transaction even for legacy
+  runs; only native bound runs signal progress.
+- `NativeRunCoordinatorStore.appendEvent` has its own insertion path. It signals
+  after binding, sequence and duplicate validation, before persistence.
+- `persistReprojectedWorkspaceDiffs` delegates to the first writer and is tested
+  through its actual recovered-trace persistence API, including duplicate replay.
 
-- `/tmp/sleep29-progress-cursor-before.log`: fails with non-advancing pagination.
-- `/tmp/sleep29-progress-cursor-acceptance.log`: 17 selected cases pass after repair.
-- `/tmp/sleep29-progress-owner-acceptance.log`: 21 native-progress and combined
-  projection cases pass after extracting the owner.
-- `/tmp/sleep29-progress-owner-typecheck.log`: server production typecheck passes.
-  This excludes test files. No worker-quiet or production migration claim yet.
-- Database: isolated external PostgreSQL
-  `paperclip_sleep28_review_chat_20261025_test`, through
-  `PAPERCLIP_TEST_DATABASE_URL`. Tests retire their publication endpoints.
+Eligibility mutations share slice 28's issue/company notification boundary.
+`notifyChatRunMilestones` now invalidates both lifecycle and native progress,
+without adding recovery wrappers to every caller. Both topics share the outer
+transaction's identity and commit/rollback outcome. Existing writers cover
+lineage receipts, run state, interactions, endpoint/resource configuration,
+identity and membership. Failed-publication replay and operator retry now supply
+the affected issue to `notifyChatPublicationWork`: they can restore an existing
+base working publication without any new run event. The lifecycle projector also signals native progress before creating a first
+working publication. A long transaction can give that publication an older
+transaction-start timestamp but commit after an event was already inspected.
+Routine transport claim bookkeeping retains its narrower notification behavior.
 
-## Producer audit and remaining implementation
+## Scheduling, contention and lifetime
 
-Two event persistence owners need coverage, not just the post-commit live event:
+`chat-native-progress-work.ts` uses `registerScopedDeadlineWork` and the shared
+delivery coordinator. It reconstructs relevant issue scopes on startup, refreshes
+only the affected issue/company after a committed change, and projects batches
+of 100. A full insertion batch retains immediate work. Lock contention retains a
+one-second retry; failure uses the shared backoff. A settled short pass disarms.
+The shared worker preserves changes during execution, paused work during drain,
+startup failures through resume, fair company dispatch and shutdown ownership.
 
-1. `heartbeat-run-events.ts::appendHeartbeatRunEvent`: native ingestion uses its
-   transaction/deduplication path. `paperclip-control-plane-port.ts` wraps this
-   in an outer transaction with active-authority checks before and after append.
-   Intent must precede the event write and follow outer commit/rollback. Duplicate
-   replay must not create fresh projection work. Ordinary non-progress log events
-   must not acquire a transaction/XID merely for this feature.
-2. `native-run-coordinator-store.ts::appendEvent`: directly inserts run events
-   after current-run and sequence/duplicate checks. It does not call the generic
-   append helper. Cover it explicitly in its existing transaction.
+Projection retains issue-before-run SKIP LOCKED ordering. A skipped lock is a
+concrete obligation only while the matching row still exists and the run is
+native/running. Deleted or terminal candidates settle. Authority, latest event,
+phase deduplication and final output are checked again inside projection.
 
-Additional paths found:
+The selector also repairs an existing pagination bug: JavaScript Date truncated
+PostgreSQL microseconds, repeatedly selecting a full rejected page. Cursors now
+retain PostgreSQL timestamp text and the full timestamp/run/conversation tuple.
+The regression seeds 30 origin-rejected candidates at one fractional timestamp
+and an eligible later event. A query-count guard bounds failure of the old code.
 
-- `provider-trace-workspace-diff-reprojection.ts` appends
-  `workspace.diff.recorded` through the generic native-source path. Recovery can
-  therefore create a new eligible event independently of live runner ingress.
-- `heartbeat/run-lifecycle.ts` uses the generic writer for dynamic event types.
-  Preserve its redaction/runtime-status responsibilities; do not project raw data.
-- Direct insertion in `heartbeat/queue.ts` writes a lifecycle event; it is outside
-  the closed progress allowlist. Coordinator-store direct insertion is not.
-- Other native helper callers currently append lifecycle, process, cleanup, or
-  credential events. Their existence is not permission to signal every log entry.
+## Evidence and failures retained
 
-Eligibility changes can make a saved event actionable without a new event:
-run/issue binding and state, conversation state, current identity/membership,
-endpoint/connection/resource authority, lineage receipts, interaction arbitration,
-and base-publication state. Reuse the existing issue/company-scoped notification
-boundary audited in slice 28. Extend that shared boundary once; avoid repeated
-recovery wrappers across routes. Inspect all base-publication retry and operator
-resolution owners before removing the poll. `notifyChatPublicationWork` already
-accepts an optional issue scope for projection-affecting changes; transport claim
-bookkeeping intentionally does not invalidate projection.
+- `/tmp/sleep29-progress-cursor-before.log`: causal pagination failure.
+- `/tmp/sleep29-progress-cursor-acceptance.log`: 17 selected cases after repair.
+- `/tmp/sleep29-progress-owner-acceptance.log`: 21 projection cases after extraction.
+- `/tmp/sleep29-native-producers-before.log`: real event-writer cases fail before
+  notification hooks; startup and lock cases already pass.
+- `/tmp/sleep29-native-producers-fixed.log`: all five original producer cases pass.
+- `/tmp/sleep29-native-lifecycle.log`: 14 worker lifecycle cases pass.
+- `/tmp/sleep29-progress-recovery.log`: trace recovery and 105-run backlog pass.
+  Its attempted publication-mode test was invalid: endpoint update does not
+  accept that field. No production API was expanded to satisfy the test.
+- `/tmp/sleep29-progress-eligibility.log`: the first identity test incorrectly
+  assumed ordinary direct-origin projection enforced post-close authority.
+  The replacement uses the real closed/reopened conversation and admission
+  receipts, where the existing projection contract requires current authority.
+- `/tmp/sleep29-progress-eligibility-fixed.log`: five real-service cases pass:
+  post-close identity, resource and visibility restoration, plus failed publication
+  replay and operator retry. No new event or manual projection call is used.
+- `/tmp/sleep29-progress-worker-acceptance.log`: 13 app coordinator tests pass;
+  the concurrent-event test's quiet assertion initially counted old calls from
+  an already-installed transaction spy. Restoring that barrier spy before taking
+  the quiet baseline corrects the test accounting, without a production change.
+- `/tmp/sleep29-final-native-acceptance.log`: 44 selected tests pass across the
+  18 worker cases and 26 existing/new integration cases. These cover both real
+  event owners, nested outer commit/rollback, duplicate replay, irrelevant logs,
+  issue/run lock contention and terminalization, startup reconstruction, drain,
+  failed startup through resume, shutdown, trace recovery, issue/company scope,
+  concurrent commits, full batches, cadence, final suppression and provider-safe
+  content. The name filter skips the app file; its 13 cases passed separately.
+- `/tmp/sleep29-wired-typecheck.log`: production server typecheck passes.
+- `/tmp/sleep29-server-build.log`: server build passes (production TypeScript;
+  test files are executed by Vitest, not included in the server typecheck).
+- `/tmp/sleep29-first-base-before.log`: causal missing-wake failure when a
+  first working publication commits after event selection. The test backdates
+  the base inside its transaction to model transaction-start timestamp ordering.
+- `/tmp/sleep29-base-fixed-workers.log`: all 19 worker and 13 app coordinator
+  cases pass after the lifecycle producer signals native progress.
+- Browser acceptance: all 16 `agent-chat-projects.spec.ts` cases pass, log
+  `/tmp/sleep29-app-e2e.log`, fresh isolated database, port 32659. This run
+  precedes the final base-publication hook; a final run remains pending.
 
-## Contention and scheduling
+PostgreSQL is external and isolated because embedded PostgreSQL is unavailable
+on this host. Worker fixtures clean their own companies. The reused chat fixture
+DB retains history; tests stop workers and retire endpoints after assertions.
+Configured-idle and retained-history quiet assertions observe select/transaction
+calls, including two minutes of controlled time in worker tests. Provider APIs
+are controlled fixtures, not live Slack/Telegram/Discord accounts.
 
-The current projector locks issue then run with SKIP LOCKED. This order avoids
-inversion with native finalization and publication foreign keys. A zero insert
-count currently conflates ordinary suppression, deletion/terminalization, and
-lock contention. The polling caller retries all of them later.
+## Limits and remaining acceptance
 
-Before replacing that caller, expose whether concrete candidates were deferred
-by contention. Retain a retry only for unresolved candidates or failure. Recheck
-existence/current eligibility so a deleted or terminal run does not become an
-endless retry. A later committed event or eligibility change must remain dirty
-if it arrives during the current sweep.
+Process-local notifications retain the single active writer model. Independent
+SQL writers and other processes need a wake integration. No Cloud sleep gate or
+external alarm coverage changes here. An internal deadline cannot wake stopped
+compute. Browser acceptance, exact-head CI, and review remain required before
+this slice is ready. The whole stack remains unmerged.
 
-Use the shared scoped-deadline worker and delivery coordinator for coalescing,
-company fairness, failure backoff, drain/resume and shutdown. Reconstruct relevant
-issue scopes at startup. Scope refresh and projection must use the same candidate
-contract. A short settled pass disarms; unfinished batches retain work. Preserve
-24-hour policy rather than broadening history during this migration.
-
-## Required acceptance before removing periodic dispatch
-
-- Configured idle and retained completed/suppressed history generate no recurring
-  worker SQL after startup and settlement.
-- Real event producers wake after outer commit, not savepoint release; rollback
-  publishes nothing and settles uncertainty through the existing protocol.
-- Duplicate native-event replay and irrelevant log entries create no new debt.
-- Both event persistence owners and trace reprojection have causal coverage.
-- Restored authority/base-publication state wakes saved eligible events.
-- Contended issue and run locks retain recovery while unrelated work proceeds;
-  terminalization, final answers and changed authority win before retry.
-- Full batches, submillisecond cursor progression, cadence and phase deduplication.
-- Restart, failure, changes during a pass, drain/resume, and shutdown.
-- Assembled startup registers the worker and removes this one periodic lane;
-  other chat maintenance lanes remain until their own migrations.
-- Current-head checks/review, final base reconciliation, and an accurate PR body.
-
-Process-local signals retain the single active writer model. No Cloud sleep gate
-or external alarm coverage changes here; worker quiet is not provider suspension.
-
-## Remote reconciliation note
-
-Fetched master is `e302f2098f` (not merged into this stack yet). Newly landed
+Fetched master is `19ec787e5b` (not replayed into this stack yet). Newly landed
 #17616 expands native-harness backup expiration to continuity/quarantine evidence
-and adds its evidence signal. Its index.ts interval still exists. Audit this newer
-contract when migrating that separate retention owner; do not recreate or drop
-its preservation guarantees based on the old inventory.
+and adds its evidence signal. Its interval remains. Preserve that newer contract
+when migrating its separate retention owner.

@@ -25,7 +25,6 @@ describe("createChatReconciliationCoordinator", () => {
         processFailedGitHubWebhookDeliveries,
         processPendingDeliveries,
         flushPublications,
-        projectNativeProgress: async () => 0,
         processPendingSlackFileUploadReceipts: async () => undefined,
         processPendingSlackSessionSyncs: async () => undefined,
         onError,
@@ -78,6 +77,8 @@ describe("createChatReconciliationCoordinator", () => {
     const maintenance = source.slice(source.indexOf("const chatReconciliation ="), source.indexOf("const unsubscribeChatPublicationSignals"));
     expect(maintenance).not.toContain("chatChannels.reconcileProviderRuntimes()");
     expect(maintenance).not.toContain("chatChannels.voice.");
+    expect(maintenance).not.toContain("enqueueSafeNativeChatProgress");
+    expect(source).toContain("nativeChatProgressWork(db).register(deliveryWork,");
     expect(source).toContain("chatChannels.registerReceiverWork(deliveryWork,");
     expect(source).toContain("chatChannels.registerTeamsConsentExpiryWork(deliveryWork,");
     const teams = readFileSync(new URL("../services/chat-channels/microsoft-teams/file-delivery.ts", import.meta.url), "utf8");
@@ -141,117 +142,6 @@ describe("createChatReconciliationCoordinator", () => {
     expect(actionMaintenance).not.toContain("processPendingGitHubWebhookIngress(");
   });
 
-  it.each([false, true])(
-    "isolates a blocked native progress projector and joins its completion (rejects: %s)",
-    async (rejects) => {
-      let release!: () => void;
-      const held = new Promise<void>((resolve) => {
-        release = resolve;
-      });
-      const failure = new Error("native progress projection failed");
-      const projectNativeProgress = vi
-        .fn(async () => 0)
-        .mockImplementationOnce(async () => {
-          await held;
-          if (rejects) throw failure;
-          return 1;
-        });
-      const flushPublications = vi.fn(async () => undefined);
-      const onError = vi.fn();
-      const coordinator = createChatReconciliationCoordinator({
-        projectNativeProgress,
-        processPendingDeliveries: async () => undefined,
-        flushPublications,
-        processPendingSlackFileUploadReceipts: async () => undefined,
-        processPendingSlackSessionSyncs: async () => undefined,
-        onError,
-      });
-      try {
-        coordinator.reconcile();
-        await vi.waitFor(() => {
-          expect(projectNativeProgress).toHaveBeenCalledTimes(1);
-          expect(flushPublications).toHaveBeenCalledTimes(1);
-        });
-        // A newly committed final/question must dispatch even while a different
-        // issue's projection is blocked. Repeated signals leave one dirty retry.
-        coordinator.notifyPublications();
-        coordinator.notifyPublications();
-        await vi.waitFor(() =>
-          expect(flushPublications).toHaveBeenCalledTimes(2),
-        );
-        expect(projectNativeProgress).toHaveBeenCalledTimes(1);
-        let drained = false;
-        const draining = coordinator.drain().then(() => {
-          drained = true;
-        });
-        await new Promise<void>((resolve) => setImmediate(resolve));
-        expect(drained).toBe(false);
-        release();
-        await draining;
-        expect(projectNativeProgress).toHaveBeenCalledTimes(2);
-        expect(onError).toHaveBeenCalledTimes(rejects ? 1 : 0);
-        if (rejects)
-          expect(onError).toHaveBeenCalledWith("native progress", failure);
-        const completedCounts = [
-          projectNativeProgress.mock.calls.length,
-          flushPublications.mock.calls.length,
-        ];
-        await new Promise<void>((resolve) => setImmediate(resolve));
-        expect([
-          projectNativeProgress.mock.calls.length,
-          flushPublications.mock.calls.length,
-        ]).toEqual(completedCounts);
-      } finally {
-        release();
-        coordinator.stop();
-        await coordinator.drain();
-      }
-    },
-  );
-
-  it("joins a blocked native progress projector at shutdown without starting dirty follow-ups", async () => {
-    let release!: () => void;
-    const held = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const projectNativeProgress = vi.fn(async () => {
-      await held;
-      return 1;
-    });
-    const flushPublications = vi.fn(async () => undefined);
-    const coordinator = createChatReconciliationCoordinator({
-      projectNativeProgress,
-      flushPublications,
-      processPendingDeliveries: async () => undefined,
-      processPendingSlackFileUploadReceipts: async () => undefined,
-      processPendingSlackSessionSyncs: async () => undefined,
-      onError: vi.fn(),
-    });
-    try {
-      coordinator.reconcile();
-      await vi.waitFor(() => {
-        expect(projectNativeProgress).toHaveBeenCalledOnce();
-        expect(flushPublications).toHaveBeenCalledOnce();
-      });
-      coordinator.notifyPublications();
-      coordinator.stop();
-      let drained = false;
-      const draining = coordinator.drain().then(() => {
-        drained = true;
-      });
-      await new Promise<void>((resolve) => setImmediate(resolve));
-      expect(drained).toBe(false);
-      release();
-      await draining;
-      expect(projectNativeProgress).toHaveBeenCalledOnce();
-      expect(flushPublications).toHaveBeenCalledOnce();
-    } finally {
-      release();
-      coordinator.stop();
-      await coordinator.drain();
-    }
-  });
-
   it("keeps slow optional recovery from suppressing later publication sweeps", async () => {
     let releaseDelivery!: () => void;
     let releaseSlackStatus!: () => void;
@@ -269,7 +159,6 @@ describe("createChatReconciliationCoordinator", () => {
     );
     const onError = vi.fn();
     const coordinator = createChatReconciliationCoordinator({
-      projectNativeProgress: async () => 0,
       processPendingDeliveries,
       flushPublications,
       processPendingSlackFileUploadReceipts,
@@ -317,7 +206,6 @@ describe("createChatReconciliationCoordinator", () => {
       const processPendingSlackSessionSyncs = vi.fn(async () => undefined);
       const onError = vi.fn();
       const coordinator = createChatReconciliationCoordinator({
-        projectNativeProgress: async () => 0,
         processPendingDeliveries,
         flushPublications,
         processPendingSlackFileUploadReceipts,

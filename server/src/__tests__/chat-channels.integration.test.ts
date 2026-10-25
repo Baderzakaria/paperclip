@@ -1,3 +1,4 @@
+import { nativeChatProgressWork } from "../services/chat-native-progress-work.js";
 import { cloudActorHeaderSourceFromHeaders, resolveCloudTenantActor } from "../middleware/auth.js";
 import { cloudTenantPrimaryCompanyId } from "../services/cloud-instance.js";
 import { accessService } from "../services/access.js";
@@ -52781,6 +52782,57 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         },
       );
 
+      it.each(["identity", "resource", "visibility"] as const)(
+        "wakes saved post-close native progress when %s authority returns", async owner => {
+          const f = await reopenedFixture();
+          const onError = vi.fn();
+          const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError });
+          const progress = () => db.select().from(chatPublications).where(and(
+            eq(chatPublications.issueId, f.conversation.issueId), like(chatPublications.idempotencyKey, "%:native:%"),
+          ));
+          try {
+            await db.insert(chatPublications).values({
+              companyId: f.fixture.companyId, endpointId: f.endpoint.id,
+              conversationId: f.conversation.id, issueId: f.conversation.issueId,
+              idempotencyKey: `run:${f.fresh.runId}:working:${f.endpoint.id}`,
+              payload: { text: "Maya is working…", progressState: "working" }, state: "published",
+              createdAt: new Date(Date.now() - 60_000),
+            });
+            await db.insert(heartbeatRunEvents).values({
+              companyId: f.fixture.companyId, agentId: f.fixture.assignedAgentId,
+              runId: f.fresh.runId, seq: 1, eventType: "item.completed",
+            });
+            let restore: () => Promise<unknown>;
+            if (owner === "identity") {
+              await f.service.update(f.endpoint.id, { allowUnlinkedPeople: false }, "owner-user");
+              await f.service.revokeLink(f.endpoint.id, f.fresh.action.principalId!);
+              const intent = await f.service.createLinkIntent(f.endpoint.id, f.fresh.action.principalId!, 1800);
+              restore = () => f.service.confirmIdentityLink(new URL(intent.confirmationUrl).searchParams.get("token")!, "owner-user");
+            } else if (owner === "resource") {
+              const [conversation] = await db.select().from(chatConversations).where(eq(chatConversations.id, f.conversation.id));
+              expect(conversation.resourceId).not.toBeNull();
+              await f.service.replaceResources(f.endpoint.id, [{ id: conversation.resourceId!, enabled: false }], "owner-user");
+              restore = () => f.service.replaceResources(f.endpoint.id, [{ id: conversation.resourceId!, enabled: true }], "owner-user");
+            } else {
+              await issueService(db).update(f.conversation.issueId, { hiddenAt: new Date() });
+              restore = () => issueService(db).update(f.conversation.issueId, { hiddenAt: null });
+            }
+            await nativeChatProgressWork(db).register(coordinator, () => true).ready;
+            await vi.waitFor(() => { expect(coordinator.nextWakeAt()).toBeNull(); expect(idleWorkSnapshot().active).toBe(0); });
+            expect(await progress()).toEqual([]);
+            await restore();
+            await expect.poll(progress, { timeout: 5000 }).toEqual([
+              expect.objectContaining({ idempotencyKey: `run:${f.fresh.runId}:working:${f.endpoint.id}:native:making_progress:1` }),
+            ]);
+            await vi.waitFor(() => { expect(coordinator.nextWakeAt()).toBeNull(); expect(idleWorkSnapshot().active).toBe(0); });
+            const select = vi.spyOn(db, "select");
+            try { await new Promise(resolve => setTimeout(resolve, 1200)); expect(select).not.toHaveBeenCalled(); }
+            finally { select.mockRestore(); }
+            expect(onError).not.toHaveBeenCalled();
+          } finally { await coordinator.stop(); await f.close(); }
+        },
+      );
+
       it("publishes working and the exact fresh final after pinned close without resurrecting the old source", async () => {
         const f = await reopenedFixture();
         try {
@@ -63566,6 +63618,45 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         "providerFetch" in configured ? configured.providerFetch : undefined,
     };
   }
+
+  it.each(["replay", "operator retry"] as const)(
+    "wakes saved native progress when %s restores eligibility", async owner => {
+      const context = await safeNativeProgressFixture("telegram", `12${["replay", "operator retry"].indexOf(owner)}`, "channel", "42", true);
+      const onError = vi.fn();
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError });
+      const progress = () => db.select().from(chatPublications).where(and(
+        eq(chatPublications.issueId, context.conversation.issueId),
+        like(chatPublications.idempotencyKey, "%:native:%"),
+      ));
+      const settled = () => vi.waitFor(() => {
+        expect(coordinator.nextWakeAt()).toBeNull();
+        expect(idleWorkSnapshot().active).toBe(0);
+      }, { timeout: 5000 });
+      try {
+        const run = await context.createRun("saved progress awaiting eligibility");
+        await context.addEvent(run);
+        const [base] = await db.update(chatPublications).set({
+          state: owner === "replay" ? "failed" : "delivery_unknown",
+        }).where(eq(chatPublications.idempotencyKey, `run:${run.runId}:working:${context.endpoint.id}`)).returning();
+        const restore = () => owner === "replay"
+          ? context.service.replayPublication(context.endpoint.id, base.id)
+          : context.service.resolvePublication(context.endpoint.id, base.id, "retry_anyway", "owner-user");
+        await nativeChatProgressWork(db).register(coordinator, () => true).ready;
+        await settled(); expect(await progress()).toEqual([]);
+        await restore();
+        await expect.poll(progress, { timeout: 5000 }).toEqual([
+          expect.objectContaining({ idempotencyKey: `run:${run.runId}:working:${context.endpoint.id}:native:making_progress:1` }),
+        ]);
+        await settled();
+        const select = vi.spyOn(db, "select"), transaction = vi.spyOn(db, "transaction");
+        try {
+          await new Promise(resolve => setTimeout(resolve, 1200));
+          expect(select).not.toHaveBeenCalled(); expect(transaction).not.toHaveBeenCalled();
+        } finally { select.mockRestore(); transaction.mockRestore(); }
+        expect(onError).not.toHaveBeenCalled();
+      } finally { await coordinator.stop(); await retirePublicationFixture(context.service, context.endpoint.id); }
+    },
+  );
 
   it("advances native progress past suppressed candidates with microsecond timestamps", async () => {
     const context = await safeNativeProgressFixture("telegram", "119");
