@@ -149,3 +149,14 @@ rejection awaits provider calls. These require explicit disposition/repair at th
 parent; green checks do not resolve them. An arbitrary retry cap or credential
 failure is not proof that a provider call ended and must not silently discard the
 cleanup obligation. Preserve that requirement while assessing the deletion path.
+
+## Denial worker propagation
+
+The parent denial-latency fix is incorporated. Retention's real cleanup-receipt
+producer case now registers the cleanup worker and waits for its confirmed result,
+instead of assuming the decision request itself performs provider I/O. Both
+retention and denial regression cases are retained. The initial merge verification
+failed to parse unresolved conflict markers; no voice cases ran. After preserving
+both sides and completing the merge, all 134 voice/app cases passed on that still
+unused voice database. Logs: `/tmp/sleep24-denial-acceptance.log` (parse failure),
+`/tmp/sleep24-denial-acceptance-fixed.log` (134 pass).
