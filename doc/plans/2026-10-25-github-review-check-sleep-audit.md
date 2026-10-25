@@ -97,3 +97,25 @@ with intentionally retained rows from earlier tests. Use a per-fixture UUID
 prefix while retaining deterministic before-candidate ordering. No database was
 dropped and no production timeout was enlarged. Workspace typecheck passed
 before the final shutdown guard change; final acceptance remains pending.
+
+## Wired validation checkpoint
+
+The fresh database selection passed 36 cases across chat integration and startup
+wiring in 63.66 seconds. It includes eleven new worker cases plus selected existing
+check and maintenance cases; the other 1,532 cases were filtered out. The complete
+chat/publication/startup selection is now running separately in a fresh database.
+Workspace typecheck and build passed after the shutdown repair.
+
+Migration 0392 adds only `chat_actions_github_check_work_idx`, with the exact
+received/retryable-failed predicate used by the worker. It uses concurrent,
+idempotent creation and the existing top-level migration runner. Generation,
+safety checks, application, replay, and index validity passed. Snapshot pruning
+retains 0388 through 0392. A rollback-only plan inserted 10,000 processed actions
+and one unfinished action; candidate selection used an index-only scan, read one
+row and three shared buffers, and took 0.019 ms. This measures candidate selection,
+not all provenance reads or fleet-wide performance.
+
+The earlier source checkpoint is `219061a159`. No full local acceptance or remote
+CI success is claimed for this slice until the running checks finish. Open parent
+stack failures and review findings remain independent obligations; this slice does
+not make the whole stack ready or authorize merging it.

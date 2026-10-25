@@ -1947,3 +1947,27 @@ migration application/replay/safety pass. The partial candidate index excludes
 10,000 completed rows in a rollback-only query-plan experiment. Fresh full
 chat/publication/startup acceptance is running; remote gates remain required.
 See the terminal-response audit for all retained failures and scoped evidence.
+
+## Slice 35 accepted; slice 36 wired
+
+Slice 35 is [#17661](https://github.com/paperclipai/paperclip/pull/17661), head
+`3d7c79c262f92563555b278d101de8240e6f011b`. Complete local chat/publication/startup
+acceptance passed all 1,571 tests in 517.41 seconds. All 53 remote checks passed,
+and fresh Greptile is 5/5 with no findings. The PR remains draft and unmerged.
+
+Slice 36, `codex/sleep-36-github-review-checks`, owns GitHub review-check publication.
+It uses existing actions and scoped scheduling. Received nonterminal checks retain
+the existing five-second remote-head reconciliation deadline because webhook
+receipt is not a reliable proof of all future pushes. Completed history and
+configuration alone do not schedule work. Current authority, assessment ownership,
+provider identity, check replacement, lease fencing, and failure backoff remain
+with the GitHub owner. Late stale-head projection repair is the separate next duty.
+
+Eleven new worker tests cover real enqueue and nested transaction settlement,
+run-identity wake before a saved deadline, missed-head recovery, lifecycle states,
+retry reconstruction, lease contention, a full revoked prefix, retained history,
+and HTTP shutdown recovery. The fresh targeted selection passed 36 tests including
+existing maintenance/startup cases. Workspace typecheck/build, migration/replay,
+and candidate-index evidence passed. Full local acceptance and remote PR gates
+remain required. See `2026-10-25-github-review-check-sleep-audit.md` for the failed
+attempts, repairs, exact boundary, and external reconciliation limitation.

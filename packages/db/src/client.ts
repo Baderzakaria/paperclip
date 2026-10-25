@@ -517,6 +517,7 @@ const MIGRATIONS_WITH_TOP_LEVEL_STATEMENTS = new Set([
   "0389_workable_spencer_smythe.sql",
   "0390_long_cargill.sql",
   "0391_jittery_norrin_radd.sql",
+  "0392_charming_edwin_jarvis.sql",
   "0380_funny_adam_warlock.sql",
 ]);
 

@@ -2731,6 +2731,13 @@
       "when": 1792965069242,
       "tag": "0391_jittery_norrin_radd",
       "breakpoints": true
+    },
+    {
+      "idx": 392,
+      "version": "7",
+      "when": 1792966352995,
+      "tag": "0392_charming_edwin_jarvis",
+      "breakpoints": true
     }
   ]
 }
