@@ -1544,3 +1544,45 @@ the receipt signal, then five Slack/Discord/Telegram cases and server production
 types passed after the one-line integration. File transport and ordinary tool
 receipt ordering were audited without adding unnecessary notifications. Remaining
 configuration/recovery producers and production wiring still gate polling removal.
+
+
+## Drain review repair and fresh stack gates
+
+The first broad stack refresh found #17576 Greptile finding 4370544173: dirty
+in-memory hints kept the coordinator's settled-write activity hold alive during
+drain. SQL silence alone had missed it. It failed a new real-PostgreSQL counter
+assertion before repair. The owning parent is fixed at 1b43332c74; all checks now
+pass and that review thread is resolved. Slice 22 carries the repair into its
+shared dispatcher at b2af095de2. Open/uncertain writes remain fenced centrally;
+settled hints and their next deadlines survive resume without holding idle active.
+
+The fix is propagated through #17580 (0aab051900), #17583 (c46bcbf9ff), #17586
+(6d99318a8d), #17590 (0bb6de2343), #17592 (6e40ac2570) and #17606 (71a84ee0c0).
+Report and retention resume tests initially returned early because their flush
+helper checked only the active counter. Those parent-owned tests now advance the
+actual retained nextWakeAt and prove the durable result, plus unchanged idle
+snapshots while paused. See 2026-10-25-voice-drain-repair.md for all retained
+failure logs, including one invalid intermediate report-field assertion.
+
+Verified selection at the combined tip:
+- 99 chat lifecycle/governed/voice recovery cases pass.
+- 24 Teams consent/abandoned-attempt scheduler cases pass.
+- 38 inbound cleanup, retention and call-report cases pass after test repairs.
+- Production server typecheck passes. The 108-case full voice integration suite
+  passed at the shared-dispatch parent; strengthened reply drain passed separately.
+
+Fresh current-head rollup is saved at
+/tmp/sleep-stack-checks-after-drain-20261025.json. #17490 still fails E2E shard 3
+and aggregate at 31bcd19888. #17518 Paperclip Review remains pending. #17578 and
+newer propagated heads have pending checks, with no failures in that snapshot.
+The inbound cleanup/company-deletion review and security finding is NOT repaired
+by this drain change; current pending checks do not discharge that finding.
+No blind reruns or merges into master occurred.
+
+Next actionable parent audit: tool health (#17554), Discord command registration
+(#17557), and receiver discovery (#17572) still contain the same unconditional
+hasPending dirty-scope predicate. Reproduce their idle-hold behavior, repair at
+their owning branches, and propagate. Their currently passing CI is not evidence
+against that missing idle-counter assertion. Then continue milestone configuration
+and alternate-receipt coverage, production registration/poll removal, the entire
+original inventory, older E2E/cleanup findings and final master reconciliation.

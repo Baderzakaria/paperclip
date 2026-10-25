@@ -1063,3 +1063,12 @@ which is now correct during drain even before the retained retry fires. The run
 in `/tmp/sleep28-shared-drain-consumers.log` has 36 passes and those two failures.
 Confirm the saved deadline runs on resume, strengthen idle assertions, and repair
 these tests at their owning parent PRs before claiming propagated acceptance.
+
+The report and retention test corrections were verified at their owning parents
+and propagated. /tmp/sleep28-shared-drain-final-tests.log now passes all 38 cases
+in the previously failing combined selection. Together with the 99 milestone/
+voice-recovery and 24 Teams cases, every shared dispatcher consumer has selected
+passing evidence; the full 108 voice integration cases passed at its parent.
+This establishes the changed dispatch/drain boundary, not final PR readiness or
+host sleep. The same pending predicate in three earlier independent workers is
+still a required parent repair. Remaining milestone producers/wiring are unchanged.
