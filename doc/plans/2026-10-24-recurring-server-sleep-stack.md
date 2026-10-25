@@ -1246,3 +1246,12 @@ See the voice audit for precise coverage and remaining work. Receiver CI
 40175242445 is live with no failures at inspection; no final acceptance or merge
 is claimed. All remaining reasons, older #17490 failure, and final master
 reconciliation stay in scope.
+
+
+Live voice recovery is [#17576](https://github.com/paperclipai/paperclip/pull/17576),
+head 8f5e861dbd, based on #17572. All 837 selected tests, workspace typecheck and
+build pass; remote checks and review remain required. The full local test command
+was stopped after repeated embedded PostgreSQL setup failures, not counted as a
+pass. Slice 22 owns voice reply delivery and begins with the multipart/outcome
+policy and publication-settlement producer audit. See
+[reply delivery audit](2026-10-25-voice-reply-delivery-sleep-audit.md).
