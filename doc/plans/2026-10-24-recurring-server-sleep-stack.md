@@ -1514,3 +1514,13 @@ fixture setup/cleanup moved to a cohesive helper, keeping the worker test file
 below 1,000 lines. The broader raw-writer audit still includes external services
 (secret proposals, tool reviews, conversation reset and native review retirement),
 plus the previously listed publication/configuration/recovery dependencies.
+
+
+Slice 28 now covers binding-proposal terminal reflection and tool-review human
+verdict/expiry reflection. Nine governed-producer cases (including outer rollback
+and dependent rejection) pass with the lifecycle/interaction suites, 200 total;
+all 109 existing tool-gateway cases and server production typechecking pass.
+The audit retains the initial invalid tool-publication fixture assertion and
+corrected before-fix failures. Native external-review supersession is already
+covered by its status-decision outer transaction. Other external interaction and
+lineage producers remain under audit; the draft is not production-wired yet.

@@ -885,3 +885,61 @@ need explicit disposition rather than indiscriminate new notifications.
 Provider receipts, conversation/configuration changes and alternate recovery
 writers remain under audit. This checkpoint does not register the new worker
 in production or remove lifecycle polling, and is not final PR acceptance.
+
+
+## Governed interaction writers: proposals and tool reviews
+
+The proposal service bypasses the ordinary interaction resolver when reflecting
+binding approval/rejection/withdrawal/expiry and rejection of dependent binding
+proposals. Its existing transaction now registers scoped milestone intent only
+when the linked interaction changes status. Repeated accepted-result metadata
+updates remain quiet. Binding creation only inserts a new pending card, without
+superseding another; that operation makes response eligibility more restrictive
+and does not independently release an existing notice.
+
+Human tool-review verdicts similarly register intent in commitToolActionReview,
+after current authority/state checks and before the first request mutation.
+The gateway's separate projection transaction registers intent when a pending
+interaction becomes expired/cancelled. Result-only tool-execution metadata is
+not treated as a response-slot transition. Tool-request execution receipts are
+also lineage inputs; their broader writer audit remains required separately.
+No provider execution, signing policy or request ownership changed.
+
+`chat-run-milestone-governed-work.test.ts` is a separate cohesive suite using
+`PAPERCLIP_MILESTONE_GOVERNED_TEST_DATABASE_URL`, currently the dedicated migrated
+`paperclip_sleep28_governed_worker_20261025_test` database. It reuses only the
+company/chat fixture helper; worker startup, clock, settlement and quiet assertions
+remain explicit. Cleanup is company-scoped and runs after worker shutdown.
+
+- `/tmp/sleep28-governed-before.log`: all four ordinary binding transitions
+  fail to produce the newly eligible notice before the fix.
+- `/tmp/sleep28-governed-transitions-before.log`: six cases fail, adding nested
+  rollback followed by successful rejection, and parent-proposal rejection that
+  cascades to a binding. The rollback itself preserves pending state and quiet.
+- `/tmp/sleep28-governed-all-before.log`: retains the proposal failures and an
+  invalid tool fixture assertion: the real gateway correctly creates a prompt
+  publication, so an empty-publications expectation was wrong. The corrected
+  fixture represents a previously failed prompt delivery and asserts absence of
+  run notices rather than absence of all publications. A pending review still
+  owns that run's response until resolved.
+- `/tmp/sleep28-tool-review-before.log`: all three corrected tool cases fail at
+  the missing-notice assertion after actual approval/rejection/expiry. The real
+  gateway creates and signs the request; a controlled remote port forbids any
+  provider calls. The persisted failed prompt is fixture state, not a provider
+  delivery claim.
+- `/tmp/sleep28-governed-tests.log`: 200 cases pass across the 72 lifecycle
+  worker, 9 governed producer, 106 interaction integration and 13 interaction
+  unit cases on separate isolated PostgreSQL databases.
+- `/tmp/sleep28-tool-review-acceptance.log`: all 109 existing tool-gateway cases
+  pass on newly migrated `paperclip_sleep28_tool_review_20261025_test`, selected
+  through its existing PAPERCLIP_TOOL_REVIEW_TEST_DATABASE_URL guard.
+- `/tmp/sleep28-governed-typecheck.log`: production server typecheck passes;
+  it excludes tests. `git diff --check` passes.
+
+The native external-review supersession helper has one production caller in
+status-decision-committer: its existing milestone intent precedes decision writes
+and that helper in the same outer transaction. It needs no extra notification.
+Native automatic/obsolete review retirement, conversation reset, authorization
+prompt reactivation and tool-request execution lineage still need disposition,
+alongside remaining publication/configuration/recovery producers. Production
+registration, lifecycle polling removal and full-stack final checks remain pending.
