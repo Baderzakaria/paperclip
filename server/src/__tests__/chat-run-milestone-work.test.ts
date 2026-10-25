@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { activityLog, agents, authUsers, companyMemberships, chatConversations, chatEndpoints, chatMessageLinks, chatPublications, companies, completionContracts, createDb, nativeRunFinalizations, nativeRunResults,
+import { activityLog, agents, agentWakeupRequests, authUsers, companyMemberships, chatConversations, chatEndpoints, chatMessageLinks, chatPublications, companies, completionContracts, createDb, nativeRunFinalizations, nativeRunResults, statusDecisions, statusDecisionEffects, workAssessments, subscribeDatabaseWork,
   heartbeatRunEvents, heartbeatRuns, issueComments, issueQuestionResponseDeliveries, issueThreadInteractions, issues, toolApplications, toolConnections } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
@@ -11,6 +11,7 @@ import { notifyChatRunMilestones } from "../services/chat-run-milestone-notifica
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
 import { questionResponseDeliveryService } from "../services/question-response-delivery.js";
 import { heartbeatService } from "../services/heartbeat.js";
+import { commitNativeStatusDecision, dispatchPendingNativeStatusEffects } from "../services/native-runtime/status-decision-committer.js";
 import { finalizeNativeRun } from "../services/native-runtime/native-run-finalizer.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
 
@@ -68,6 +69,10 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       await db.delete(issueComments).where(eq(issueComments.companyId, companyId));
       await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.companyId, companyId));
       await db.delete(nativeRunFinalizations).where(eq(nativeRunFinalizations.companyId, companyId));
+      await db.delete(statusDecisionEffects).where(eq(statusDecisionEffects.companyId, companyId));
+      await db.delete(statusDecisions).where(eq(statusDecisions.companyId, companyId));
+      await db.delete(workAssessments).where(eq(workAssessments.companyId, companyId));
+      await db.delete(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId));
       await db.delete(nativeRunResults).where(eq(nativeRunResults.companyId, companyId));
       await db.delete(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId));
       await db.delete(completionContracts).where(eq(completionContracts.companyId, companyId));
@@ -132,7 +137,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     ].sort());
     await quiet();
   });
-  it("wakes from native committed-result projection and leaves repeated finalization quiet", async () => {
+  async function nativeFixture(phase = "committed") {
     const contractId = randomUUID(), resultId = randomUUID();
     await db.insert(completionContracts).values({
       id: contractId, companyId: f.companyId, issueId: f.issueId, revision: 1,
@@ -152,8 +157,29 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       resultJson: { terminal: { runTerminalState: "cancelled" } }, canonicalSha256: "milestone-result",
     });
     await db.insert(nativeRunFinalizations).values({ runId: row.id, companyId: f.companyId, issueId: f.issueId,
-      phase: "committed", resultId,
+      phase, resultId,
     });
+    return { row, contractId, resultId };
+  }
+  async function continuationDecisionFixture() {
+    const native = await nativeFixture("assessing");
+    const assessmentId = randomUUID();
+    await db.insert(workAssessments).values({ id: assessmentId, companyId: f.companyId, issueId: f.issueId,
+      runId: native.row.id, contractId: native.contractId, resultId: native.resultId, triggerKind: "run_result",
+      triggerActorCompanyId: f.companyId, priorIssueStatus: "in_progress", priorStatusVersion: 0,
+      policyVersion: "phase6-v1", assessmentJson: {}, inputDigest: assessmentId,
+    });
+    return { companyId: f.companyId, issueId: f.issueId, runId: native.row.id, assessmentId,
+      priorStatus: "in_progress", priorStatusVersion: 0, priorDecisionId: null,
+      decision: { policyVersion: "phase6-v1", statusAction: "preserve" as const, toStatus: "in_progress" as const,
+        reasonCode: "live_continuation_registered", unblockDescriptor: null,
+        effects: [{ kind: "enqueue_continuation" as const, agentId: f.agentId, continuationKind: "same_agent" as const,
+          summary: "Continue responding", idempotencyKey: `continuation:${native.row.id}` }],
+      },
+    };
+  }
+  it("wakes from native committed-result projection and leaves repeated finalization quiet", async () => {
+    const { row } = await nativeFixture();
     await start(); await flush(); await quiet();
     await finalizeNativeRun({ db, runId: row.id, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
     await flush();
@@ -166,6 +192,48 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     // coordinator callbacks that start after the finalizer returns.
     await quiet();
     expect(await publications()).toHaveLength(2);
+  });
+  it("signals a new native decision at outer commit but not an already committed replay", async () => {
+    const input = await continuationDecisionFixture();
+    const events: string[] = [];
+    const unsubscribe = subscribeDatabaseWork(db, "chat-run-milestones", event => events.push(event));
+    try {
+      await db.transaction(async tx => {
+        await commitNativeStatusDecision({ db: tx as unknown as typeof db, ...input });
+        expect(events).toEqual(["intent"]);
+      });
+      expect(events).toEqual(["intent", "settled"]);
+      events.length = 0;
+      await expect(commitNativeStatusDecision({ db, ...input })).resolves.toMatchObject({ replayed: true });
+      expect(events).toEqual([]);
+    } finally { unsubscribe(); }
+  });
+  it("wakes a suppressed continuation when its native effect delivery receipt commits", async () => {
+    const input = await continuationDecisionFixture();
+    const { decision } = await commitNativeStatusDecision({ db, ...input });
+    const [intent] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId));
+    // Reconstruct an interrupted delivery with its already admitted successor.
+    // The target has no direct chat identity: only the delivered ledger can
+    // authorize inheriting the source run's conversation.
+    await db.update(statusDecisionEffects).set({ deliveryState: "pending", deliveredAt: null })
+      .where(eq(statusDecisionEffects.decisionId, decision.id));
+    const target = await run(f, { status: "queued", contextSnapshot: {
+      issueId: f.issueId, source: "native_status_decision", nativeStatusWakeIntentId: intent.id,
+    } });
+    await db.update(agentWakeupRequests).set({ status: "coalesced", runId: target.id }).where(eq(agentWakeupRequests.id, intent.id));
+    await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agentId, source: "automation",
+      reason: "issue_status_changed", requestedByActorType: "system", requestedByActorId: `native-status-wake-dispatch:${intent.id}`,
+      runId: target.id, status: "queued", idempotencyKey: intent.idempotencyKey, payload: { issueId: f.issueId },
+    });
+    await start(); await flush();
+    expect((await publications()).some(row => row.idempotencyKey.startsWith(`run:${target.id}:`))).toBe(false);
+    await quiet();
+    await dispatchPendingNativeStatusEffects({ db, ...input, decisionId: decision.id });
+    await flush();
+    expect((await publications()).map(row => row.idempotencyKey)).toContain(`run:${target.id}:queued:${f.endpointId}`);
+    await quiet();
+    await expect(dispatchPendingNativeStatusEffects({ db, ...input, decisionId: decision.id })).resolves.toEqual([]);
+    await quiet();
   });
   it("projects a continuation only after the real question delivery receipt commits", async () => {
     const source = await run(f, { status: "succeeded" });

@@ -288,3 +288,46 @@ publication, conversation/configuration, and monitor/semantic-receipt writers
 from the table above. Signals added here do not establish complete producer
 coverage. The full original stack, unresolved earlier gates, and master
 reconciliation remain required; no PR has been merged by this checkpoint.
+
+
+## Native decision and effect-receipt checkpoint
+
+`commitNativeStatusDecision` registers company/issue milestone intent after the
+existing committed/replayed-decision exits, before inserting or applying a new
+decision and its effects. `dispatchPendingNativeStatusEffects` registers intent
+only when pending/failed effects exist and their targets have passed validation,
+before their delivered receipt and run effect metadata are written. Both use the
+existing owning transactions; no caller wrapper or new persistence is needed.
+Pure committed replay and an empty pending-effect set remain unsignalled.
+
+Why the effect receipt matters: `readNativeContinuationSource` requires the
+applied decision, delivered same-agent continuation effect, original wake intent,
+dispatched wake, and responsible-user continuity. A target run can already exist
+while its missing delivered receipt prevents publication. A notification only at
+run insertion cannot recover that later eligibility transition.
+
+Two new PostgreSQL regressions failed before these integrations:
+`/tmp/sleep28-native-effects-before.log`. One observed no milestone intent in the
+real decision transaction; the other committed a real effect-delivery receipt but
+still had no successor notice. After the repair all 18 milestone worker cases
+pass (`/tmp/sleep28-native-effects-tests.log`). The new cases exercise the real
+committer and effect dispatcher, outer-commit settlement, committed replay, late
+lineage admission and quiet repeated recovery. The continuation is initially
+suppressed even though its run and dispatch already exist, and becomes publishable
+only after the real receipt producer runs. Fixtures preserve real foreign keys.
+
+All nine selected native chat integration cases still pass after the committer
+change (`/tmp/sleep28-native-effects-acceptance.log`); expected lock contention
+remains retryable. Server production typecheck passes
+(`/tmp/sleep28-native-effects-typecheck.log`). These are local checks, not full
+workspace or PR acceptance, and do not include test-file typechecking.
+
+Next concrete audit is heartbeat queue admission, coalescing, cancellation,
+claim/release and wake-receipt writers in `heartbeat/queue.ts`, then the other
+recovery writers. Some run mutations still use the root DB directly; place any
+new transaction at the narrow mutation owner rather than wrapping execution or
+provider I/O. Avoid signalling no-op periodic inspections and lease renewals.
+Remaining interaction, publication, conversation/configuration, question
+claim/retry, and monitor/semantic-receipt dependencies still require coverage.
+The new worker is still not production-registered, and the periodic combined
+projector remains until that audit and its real producer tests are complete.

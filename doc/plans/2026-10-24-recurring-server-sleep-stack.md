@@ -1413,3 +1413,11 @@ See the slice audit for failure logs and coverage limits. The production scan
 remains until status-decision/effect, admission, lineage, publication, and remaining
 producer coverage is complete. This is local progress, not a published migration
 or completion of the full stack.
+
+
+Slice 28 now also covers new native status-decision commits and pending-effect
+receipts, after their no-op exits. Two regressions failed first; all 18 milestone
+worker cases, nine native chat recovery integrations, and server production types
+pass after repair. Real late continuation receipts now reactivate projection.
+Next is heartbeat queue/admission/recovery producer coverage. Periodic projection
+and all remaining inventory/remote acceptance duties remain outstanding.
