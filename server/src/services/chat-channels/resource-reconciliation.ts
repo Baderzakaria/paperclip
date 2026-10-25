@@ -604,7 +604,10 @@ export function createChatResourceReconciliation(db: Db, options: ResourceReconc
         });
   }
 
-  const { reconcileGitHubWebhookRepository, listGitHubRepositories, toggleAllGitHubRepositories } = createGitHubResources(db, { endpointRecord, upsertProviderResourceRow, updateResourceSelection });
+  const { reconcileGitHubWebhookRepository, listGitHubRepositories, toggleAllGitHubRepositories } = createGitHubResources(db, {
+    endpointRecord, upsertProviderResourceRow, updateResourceSelection,
+    restoreResourceConversations: (tx, endpoint, resourceId) => setResourceConversationAvailability(tx, endpoint, resourceId, true, new Date()),
+  });
 
   return { reconcileGitHubWebhookRepository, reconcileProviderResourceRows, listResources, listGitHubRepositories, replaceResources, toggleAllGitHubRepositories, hasNewerProcessedProviderLifecycleEffect, applyProviderAvailability };
 }

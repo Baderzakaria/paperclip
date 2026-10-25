@@ -49,16 +49,20 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
   }
   const publications = () => db.select().from(chatPublications).where(eq(chatPublications.issueId, f.issueId));
 
-  it.each(["inventory", "lifecycle"] as const)("wakes only reopened conversations after %s commits, preserving rollback and completed history", async path => {
+  it.each(["inventory", "lifecycle", "github repository"] as const)("wakes only reopened conversations after %s commits, preserving rollback and completed history", async path => {
+    const provider = path === "github repository" ? "github" : "slack";
+    const resourceType = provider === "github" ? "repository" : "channel";
+    const providerResourceId = provider === "github" ? "owner/repo" : "recovered-channel";
+    await db.update(chatEndpoints).set({ provider }).where(eq(chatEndpoints.id, f.endpointId));
     const runId = randomUUID();
     await db.insert(heartbeatRuns).values({ id: runId, companyId: f.companyId, agentId: f.agentId,
       responsibleUserId: f.userId, status: "failed", errorCode: "test_run_failed", updatedAt: new Date(),
-      contextSnapshot: { issueId: f.issueId, source: "chat:slack", endpointId: f.endpointId, wakeCommentId: f.commentId },
+      contextSnapshot: { issueId: f.issueId, source: `chat:${provider}`, endpointId: f.endpointId, wakeCommentId: f.commentId },
     });
     await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, f.issueId));
     const [endpoint] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, f.endpointId));
     const [resource] = await db.insert(chatEndpointResources).values({ companyId: f.companyId, endpointId: f.endpointId,
-      type: "channel", providerResourceId: "recovered-channel", label: "Recovered", availability: "unavailable", enabled: true,
+      type: resourceType, providerResourceId, label: "Recovered", availability: "unavailable", enabled: true,
     }).returning();
     await db.update(chatConversations).set({ resourceId: resource.id, state: "unavailable" }).where(eq(chatConversations.id, f.conversationId));
     const completedId = randomUUID();
@@ -76,7 +80,9 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
         endpointRecord: async () => ({ endpoint }), withCredentialMutationLease: withLease, runtimeGeneration: () => 0, maxErrorText: 1000,
       });
       if (path === "inventory") {
-        await resources.reconcileProviderResourceRows(endpoint, { provider: "slack", resources: [{ type: "channel", providerResourceId: "recovered-channel", label: "Recovered" }] }, lease);
+        await resources.reconcileProviderResourceRows(endpoint, { provider, resources: [{ type: resourceType, providerResourceId, label: "Recovered" }] }, lease);
+      } else if (path === "github repository") {
+        await resources.reconcileGitHubWebhookRepository(endpoint, { repository: { id: 123, full_name: providerResourceId, name: "repo", owner: { id: 321, login: "owner" } } }, lease);
       } else {
         await resources.applyProviderAvailability({ currentEndpoint: endpoint, credentialLease: lease, staleResourceEffect: false,
           claimed: delivery, candidate: { attempts: 0 }, effect: { kind: "resource", provider: "slack", providerEventId: delivery.providerEventId,
@@ -99,7 +105,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     try {
       await withLease(endpoint, lease => createChatResourceReconciliation(db, {
         endpointRecord: async () => ({ endpoint }), withCredentialMutationLease: withLease, runtimeGeneration: () => 0, maxErrorText: 1000,
-      }).reconcileProviderResourceRows(endpoint, { provider: "slack", resources: [{ type: "channel", providerResourceId: "recovered-channel", label: "Recovered" }] }, lease));
+      }).reconcileProviderResourceRows(endpoint, { provider, resources: [{ type: resourceType, providerResourceId, label: "Recovered" }] }, lease));
       expect(notices).toEqual([]);
     } finally { unsubscribe(); }
     await flush(); await quiet();

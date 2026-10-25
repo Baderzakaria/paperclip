@@ -1127,3 +1127,28 @@ Final resource checkpoint: all 20 projection units pass at the corrected path in
 /tmp/sleep28-resource-build.log. Combined selected evidence is 116 distinct
 milestone/projection/provider cases, plus the 109 propagated configuration-owner
 cases. Full remote checks/reviews remain required for the new head.
+
+## GitHub repository restoration follow-up
+
+GitHub's signed repository callback has a separate restoration path. Its real
+owner regression fails in /tmp/sleep28-resource-github-before.log. The provider
+module now receives a narrow restoreResourceConversations callback from the
+existing resource owner, using the same transaction and issue notification.
+Provider payload parsing stays in github/resources.ts. All three resource cases
+pass in /tmp/sleep28-resource-github-tests.log; five GitHub integration cases
+pass in /tmp/sleep28-resource-github-acceptance.log, including rename/transfer,
+concurrent installation events, foreign-installation canonical inventory,
+credential rotation, and paused endpoints. Server build/typecheck passes in
+/tmp/sleep28-resource-github-build.log. Installation recovery already invokes
+reconcileProviderResourceRows; its restoration uses the covered inventory path.
+
+Next concrete producer: telegram/resources.ts::migrateTelegramResourceConversations
+sets moved conversations active before the generic availability transition runs,
+so that transition cannot discover the earlier unavailable state. Preserve the
+existing migration semantics and notify its affected issue scopes before the
+migration write. Normal chat admission also writes links and activates the
+conversation in chat-channels.ts; establish its wake ordering explicitly. The
+Slack waiting-to-active helpers preserve selector eligibility (both states are
+already admitted). Email uses explicit publication mode, which the lifecycle
+selector and lineage resolver exclude. These dispositions narrow the remaining
+configuration audit; they do not authorize removing the periodic scan yet.
