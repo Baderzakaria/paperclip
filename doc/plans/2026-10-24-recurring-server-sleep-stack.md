@@ -1157,3 +1157,15 @@ Next new owner remains chat runtime discovery/ownership, separate from command
 registration, voice, and active transport renewals. The full original inventory,
 #17490 E2E cancellation failure, final stack/master reconciliation, and all PR
 acceptance gates remain required. No stack merge is authorized.
+
+
+Prerequisite #17561 review found that retained chat conversations/publications
+also restrict issue deletion. Expanded real-history fixtures reproduced that
+failure, and cleanup now runs immediately after locking the company. All six
+cleanup cases pass, including restoration of chat history on later failure. The
+review thread is resolved at parent head `e7c29e4840`; fresh review/CI still apply.
+Discord inherits that parent at `33954efd2e` and registers its company intent
+before the earlier cleanup. Seven producer integrations and all six cleanup cases
+pass on the merged branch. The 1,413 deselected broad chat cases are not passes.
+Health `f8ad26f0ff` now has fresh Greptile 5/5 and no failed checks; Paperclip Review
+was still queued at the last inspection. The full goal remains active.

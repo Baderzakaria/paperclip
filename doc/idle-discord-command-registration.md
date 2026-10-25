@@ -123,3 +123,11 @@ import conflict was unresolved. The conflict was repaired preserving both import
 then the test ran successfully. Final server typecheck/build pass. Fresh CI and
 reviews are still required after publication; prior-head Greptile 5/5 and Actions
 results do not establish acceptance of this head.
+
+
+The prerequisite's history review moved cleanup ahead of issue deletion as well.
+The dependent signal moves with it, before the first endpoint delete. All seven
+producer integrations and six expanded deletion cases pass after propagation;
+rollback restores conversation/publication history. The finding remains recorded
+in the prerequisite document rather than treating the earlier endpoint-only
+fixture as sufficient evidence.
