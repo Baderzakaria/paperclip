@@ -173,7 +173,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await db.update(chatVoiceInboundCalls).set({ expiresAt: new Date(0), updatedAt: new Date(0) }).where(eq(chatVoiceInboundCalls.id, f.call.id));
     const onError = vi.fn();
     const maintenance = createChatReconciliationCoordinator({
-      processPendingDeliveries: async () => undefined, projectRunMilestones: async () => 0,
+      processPendingDeliveries: async () => undefined, projectNativeProgress: async () => 0,
       flushPublications: async () => undefined, onError,
     });
     try {

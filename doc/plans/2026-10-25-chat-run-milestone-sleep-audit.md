@@ -1522,3 +1522,58 @@ for the unresolved cancellation investigation, not proof of its entire lock cycl
 No blind rerun or masking was performed. Production milestone registration,
 final producer dispositions, native progress as its separate slice, remote gates,
 and every remaining original stack duty remain outstanding.
+
+
+## Latest review and CI repair (2026-10-25)
+
+Review of `1b0bec0b25` found three defects. All were reproduced before repair:
+
+- GitHub `linkObservedIdentity` is a separate supported identity writer. It now
+  signals before creating/reactivating its identity link, inside the existing
+  membership and principal locks. Reconfirming an already-linked identity is
+  silent. The real producer test covers outer commit, rollback and reconfirmation.
+- Orphan-run terminalization registered intent even when its guarded update
+  rejected retained native finalization. It now locks an eligible run before
+  intent and preserves the same predicate on the update. Five retained phases,
+  each swept three times, emit no milestone signals. All 40 stale-lock tests pass,
+  including coordinator-arrival races, terminal-issue authority and exhausted
+  finalization recovery. This does not migrate the stale-lock polling owner.
+- The voice retention integration test still supplied the former coordinator
+  callback name. It now uses `projectNativeProgress`; the original failure was
+  `input.projectNativeProgress is not a function`.
+
+CI run `40212695778` also exposed an incomplete Cloud-auth fake and shared-user
+fixture leakage. The fake now models transaction and locking calls, retaining
+failure injection for optional membership/settings reads. The Cloud authority
+integration test restores the shared user's name/email/verification metadata in
+its finally block. Previously it left `Owner 1` behind, breaking later Slack
+publication assertions that expected `Owner User`. No publication policy or
+assertion was weakened to hide the changed name.
+
+Evidence:
+
+- `/tmp/sleep28-review-before.log`: five redundant-wake regressions and the
+  missing GitHub identity intent fail before repair.
+- `/tmp/sleep28-voice-callback-before.log`: reproduces the renamed-callback error.
+- `/tmp/sleep28-review-fixed.log`: all 40 stale-lock tests pass; one unscoped
+  signal assertion observed another fixture's notification. The two GitHub
+  transaction assertions now filter the actual company scope; both pass in
+  `/tmp/sleep28-review-github-scoped.log`.
+- `/tmp/sleep28-voice-callback-fixed.log`: 28 failures on a reused database with
+  retained voice sessions/reports. Preserve this failed run. The full suite on
+  fresh migrated `paperclip_sleep28_review_voice_20261025_test` passes all 122
+  cases (`/tmp/sleep28-review-voice-fresh.log`). Global reconstruction tests need
+  an isolated database; reusing a previous suite's retained obligations is invalid.
+- `/tmp/sleep28-review-cloud-fakes-final.log`: 38 Cloud-auth/session tests pass.
+  The first repair exposed an obsolete one-read assertion; the updated assertion
+  still verifies the exact own-user/active filter on the authorization read.
+- `/tmp/sleep28-review-long-board.log`: reproduces the `Owner 1` fixture leak.
+- `/tmp/sleep28-review-chat-isolation.log`: 28 cases pass together on fresh
+  `paperclip_sleep28_review_chat_20261025_test`: all ten authority-restoration
+  cases, both GitHub signal cases, and all 16 long-publication cases.
+- `/tmp/sleep28-review-typecheck.log` and `/tmp/sleep28-review-build.log`: server
+  production typecheck and build pass. Test files are not typechecked.
+
+Latest-head CI/review and stack reconciliation remain required. These local
+passes do not discharge previous cancellation/deadlock evidence or parent review
+findings. No merge or host-sleep qualification is claimed.

@@ -57,6 +57,7 @@ function createFakeDb(options: {
   chain.then = (resolve: (v: unknown) => unknown, reject?: (error: unknown) => unknown) =>
     Promise.resolve().then(options.beforeWrite).then(resolve, reject);
   const db = {
+    transaction: async (work: (tx: Db) => Promise<unknown>) => work(db),
     insert: (table: unknown) => {
       insertedTables.push(table);
       return chain;
@@ -69,9 +70,9 @@ function createFakeDb(options: {
       return {
         from: (table: unknown) => ({
           where: (condition: unknown) => {
-            // Role-default grant seeding reads existing grants first; keep that
-            // read working so selectThrows exercises only the degradable reads.
-            if (options.selectThrows && table !== principalPermissionGrants) {
+            // Only settings lookup is degradable. Membership locking and
+            // permission seeding must still work in the fail-closed flag test.
+            if (options.selectThrows && table === instanceSettings) {
               throw new Error("select unavailable");
             }
             selectWheres.push({ table, condition });
@@ -81,9 +82,19 @@ function createFakeDb(options: {
                 : table === companyMemberships
                   ? (options.membershipQueryRows ?? [])
                   : [];
-            return {
-              then: (resolve: (v: unknown) => unknown) => Promise.resolve(rows).then(resolve),
+            let locked = false;
+            const result = {
+              for: () => { locked = true; return result; },
+              then: (resolve: (v: unknown) => unknown, reject?: (error: unknown) => unknown) => {
+                // The optional cross-company read can fail independently of
+                // the primary membership transaction, which must succeed.
+                const query = options.selectThrows && table === companyMemberships && !locked
+                  ? Promise.reject(new Error("select unavailable"))
+                  : Promise.resolve(rows);
+                return query.then(resolve, reject);
+              },
             };
+            return result;
           },
         }),
       };
@@ -329,11 +340,13 @@ describe("resolveCloudTenantActor (shared-pool hardening)", () => {
       const { db, selectWheres } = createFakeDb();
       await resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
       const membershipSelects = selectWheres.filter((entry) => entry.table === companyMemberships);
-      expect(membershipSelects).toHaveLength(1);
+      expect(membershipSelects).toHaveLength(2);
+      // The first read locks the primary membership before its upsert; the
+      // second loads the user's active memberships for request authorization.
       // Rows for other users and rows in any non-active status are excluded
       // by the query itself: the filter binds exactly this user id and the
       // "active" status — the same condition the session path applies.
-      expect(membershipSelects[0]!.condition).toEqual(
+      expect(membershipSelects[1]!.condition).toEqual(
         and(
           eq(companyMemberships.principalType, "user"),
           eq(companyMemberships.principalId, "user-123"),

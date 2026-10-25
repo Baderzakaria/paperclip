@@ -332,6 +332,9 @@ export function githubChatManagementService(db: Db, fetchImpl = fetch) {
         expiresAt: null,
         updatedAt: new Date(),
       };
+      if (prior?.status !== "linked") {
+        await notifyChatRunMilestones(tx, { companyId: bot.companyId });
+      }
       await tx
         .insert(chatIdentityLinks)
         .values(values)

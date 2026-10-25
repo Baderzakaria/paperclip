@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  subscribeDatabaseWork,
   costEvents,
   activityLog,
   agents,
@@ -26,6 +27,7 @@ const mockTelemetryClient = vi.hoisted(() => ({ track: vi.fn() }));
 vi.mock("../telemetry.ts", () => ({ getTelemetryClient: () => mockTelemetryClient }));
 
 import { heartbeatService } from "../services/heartbeat.ts";
+import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import { recoveryService } from "../services/recovery/service.ts";
 
 const external = resolveExternalTestDatabaseUrl("PAPERCLIP_STALE_LOCK_TEST_DATABASE_URL");
@@ -588,8 +590,15 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
   it.each(["observed", "workspace_finalizing", "ready_for_assessment", "arbitrating", "retryable_failure"])(
     "preserves a completed native result in %s after its provider exits", async phase => {
       const { runningRunId, issueId } = await seedPendingNativeResult(phase);
-      const result = await recoveryService(db, { enqueueWakeup: vi.fn() }).sweepStaleIssueLocks();
-      expect(result).toEqual({ cleared: 0, issueIds: [], terminalizedRunIds: [] });
+      const events: string[] = [];
+      const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.chatRunMilestones, event => events.push(event));
+      try {
+        const recovery = recoveryService(db, { enqueueWakeup: vi.fn() });
+        for (let pass = 0; pass < 3; pass++) {
+          expect(await recovery.sweepStaleIssueLocks()).toEqual({ cleared: 0, issueIds: [], terminalizedRunIds: [] });
+        }
+        expect(events).toEqual([]);
+      } finally { unsubscribe(); }
       expect(await db.select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode }).from(heartbeatRuns)
         .where(eq(heartbeatRuns.id, runningRunId))).toEqual([{ status: "running", errorCode: null }]);
       expect(await db.select({ executionRunId: issues.executionRunId }).from(issues)

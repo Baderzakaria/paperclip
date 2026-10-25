@@ -1710,3 +1710,12 @@ audit has a consolidated alternate-writer disposition table. Native progress
 remains the next separate reason. Remote gates, parent findings and the rest of
 the original stack are not complete; local cancellation success does not repair
 the recorded CI deadlock.
+
+
+Slice 28 review repair: cover GitHub observed-identity linking, suppress
+unchanged native-finalization recovery wakes, and repair the voice callback and
+Cloud-auth test contracts. Restore shared user profile after the Cloud authority
+test so downstream Slack publication tests see their original identity. Local
+40 stale-lock, 122 voice, 38 auth/session and 28 combined chat cases pass; server
+typecheck/build pass. See the milestone audit for failed-run dispositions.
+Latest-head remote gates and parent failures remain open.

@@ -6158,7 +6158,61 @@ export function recoveryService(
     await deps.beforeOrphanedRunTerminalWrite?.(run.id);
     const now = new Date();
     const updated = await db.transaction(async tx => {
-      const boundIssueId = boundRunIssueId(run);
+      const eligible = and(
+        eq(heartbeatRuns.id, run.id),
+        eq(heartbeatRuns.status, "running"),
+        eq(heartbeatRuns.runtimeMode, run.runtimeMode),
+        nativeRunnerOwnershipNotHeldCondition(),
+        // Provider exit is expected while the native coordinator resumes a
+        // session or copies its completed workspace back. The coordinator
+        // owns those retries, including expired leases and future attempts.
+        // Check at the write so a newly recorded result cannot be orphaned
+        // using the earlier liveness snapshot. Terminal issue status remains
+        // the stronger authority.
+        !issueTerminalStatus && run.runtimeMode === "native"
+          ? notExists(tx.select({ runId: nativeRunFinalizations.runId })
+              .from(nativeRunFinalizations).where(and(
+                eq(nativeRunFinalizations.runId, heartbeatRuns.id),
+                eq(nativeRunFinalizations.companyId, heartbeatRuns.companyId),
+                or(
+                  and(
+                    isNotNull(nativeRunFinalizations.resultId),
+                    inArray(nativeRunFinalizations.phase, [
+                      "observed", "workspace_finalizing", "ready_for_assessment",
+                      "arbitrating", "retryable_failure",
+                    ]),
+                  ),
+                  and(
+                    isNull(nativeRunFinalizations.resultId),
+                    or(
+                      eq(nativeRunFinalizations.phase, "retryable_failure"),
+                      and(eq(nativeRunFinalizations.phase, "observed"), gt(nativeRunFinalizations.attempt, 0)),
+                    ),
+                  ),
+                ),
+              )))
+          : undefined,
+        // Recheck ownership in the write: a controller can renew or claim
+        // the run after the liveness read. An old snapshot cannot end a new
+        // controller's run, even if that controller's lease later expires.
+        run.runtimeMode === "legacy"
+          ? and(
+              run.controllerBootId
+                ? eq(heartbeatRuns.controllerBootId, run.controllerBootId)
+                : isNull(heartbeatRuns.controllerBootId),
+              or(
+                isNull(heartbeatRuns.controllerBootId),
+                sql`${heartbeatRuns.controllerLeaseExpiresAt} <= clock_timestamp()`,
+              ),
+            )
+          : undefined,
+      );
+      // Do not wake projection for a retained native finalization or a run
+      // whose execution owner changed. Keep the same predicate on the write
+      // to recheck finalization records committed after this lock was taken.
+      const [candidate] = await tx.select().from(heartbeatRuns).where(eligible).for("update");
+      if (!candidate) return null;
+      const boundIssueId = boundRunIssueId(candidate);
       if (boundIssueId) {
         await notifyChatRunMilestones(tx, { companyId: run.companyId, issueId: boundIssueId });
       }
@@ -6173,57 +6227,7 @@ export function recoveryService(
             (terminalStatus === "interrupted" ? errorCode : null),
           updatedAt: now,
         })
-        .where(
-          and(
-            eq(heartbeatRuns.id, run.id),
-            eq(heartbeatRuns.status, "running"),
-            eq(heartbeatRuns.runtimeMode, run.runtimeMode),
-            nativeRunnerOwnershipNotHeldCondition(),
-            // Provider exit is expected while the native coordinator resumes a
-            // session or copies its completed workspace back. The coordinator
-            // owns those retries, including expired leases and future attempts.
-            // Check at the write so a newly recorded result cannot be orphaned
-            // using the earlier liveness snapshot. Terminal issue status remains
-            // the stronger authority.
-            !issueTerminalStatus && run.runtimeMode === "native"
-              ? notExists(tx.select({ runId: nativeRunFinalizations.runId })
-                  .from(nativeRunFinalizations).where(and(
-                    eq(nativeRunFinalizations.runId, heartbeatRuns.id),
-                    eq(nativeRunFinalizations.companyId, heartbeatRuns.companyId),
-                    or(
-                      and(
-                        isNotNull(nativeRunFinalizations.resultId),
-                        inArray(nativeRunFinalizations.phase, [
-                          "observed", "workspace_finalizing", "ready_for_assessment",
-                          "arbitrating", "retryable_failure",
-                        ]),
-                      ),
-                      and(
-                        isNull(nativeRunFinalizations.resultId),
-                        or(
-                          eq(nativeRunFinalizations.phase, "retryable_failure"),
-                          and(eq(nativeRunFinalizations.phase, "observed"), gt(nativeRunFinalizations.attempt, 0)),
-                        ),
-                      ),
-                    ),
-                  )))
-              : undefined,
-            // Recheck ownership in the write: a controller can renew or claim
-            // the run after the liveness read. An old snapshot cannot end a new
-            // controller's run, even if that controller's lease later expires.
-            run.runtimeMode === "legacy"
-              ? and(
-                  run.controllerBootId
-                    ? eq(heartbeatRuns.controllerBootId, run.controllerBootId)
-                    : isNull(heartbeatRuns.controllerBootId),
-                  or(
-                    isNull(heartbeatRuns.controllerBootId),
-                    sql`${heartbeatRuns.controllerLeaseExpiresAt} <= clock_timestamp()`,
-                  ),
-                )
-              : undefined,
-          ),
-        )
+        .where(eligible)
         .returning()
         .then((rows) => rows[0] ?? null);
     });

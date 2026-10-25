@@ -5542,6 +5542,41 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           .where(eq(chatEndpointLeases.endpointId, f.endpoint.id)),
       ).toHaveLength(0);
     });
+    it("wakes GitHub milestone identity restoration only after outer commit and stays quiet on reconfirmation", async () => {
+      const f = await reviewBotFixture();
+      await f.service.revokeLink(f.endpoint.id, f.principal.id);
+      const verified = { githubUserId: "42", login: "octocat" };
+      const events: string[] = [];
+      const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.chatRunMilestones, (event, scopes) => {
+        if ([...scopes ?? []].some(scope => JSON.parse(scope).companyId === f.companyId)) events.push(event);
+      });
+      const link = () => db.select().from(chatIdentityLinks).where(and(
+        eq(chatIdentityLinks.endpointId, f.endpoint.id), eq(chatIdentityLinks.principalId, f.principal.id),
+      )).then(rows => rows[0]);
+      try {
+        await expect(db.transaction(async tx => {
+          await githubChatManagementService(tx as unknown as typeof db, f.providerFetch)
+            .linkObservedIdentity(f.endpoint.id, "owner-user", verified);
+          expect(events).toEqual(["intent"]);
+          expect((await link()).status).toBe("revoked");
+          throw new Error("rollback identity restoration");
+        })).rejects.toThrow("rollback identity restoration");
+        expect((await link()).status).toBe("revoked");
+        events.length = 0;
+        await db.transaction(async tx => {
+          await githubChatManagementService(tx as unknown as typeof db, f.providerFetch)
+            .linkObservedIdentity(f.endpoint.id, "owner-user", verified);
+          expect(events).toEqual(["intent"]);
+          expect((await link()).status).toBe("revoked");
+        });
+        expect(events).toEqual(["intent", "settled"]);
+        expect((await link()).status).toBe("linked");
+        events.length = 0;
+        await f.management.linkObservedIdentity(f.endpoint.id, "owner-user", verified);
+        expect(events).toEqual([]);
+      } finally { unsubscribe(); }
+    });
+
     it("wakes milestone authority only when GitHub guest settings change, after outer commit", async () => {
       const f = await reviewBotFixture();
       const initial = await f.management.configuration(f.endpoint.id, "owner-user");
@@ -5550,7 +5585,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         sponsorUserId: "owner-user", permissionProfile: "restricted" as const, automaticReviews: false,
       }] };
       const events: string[] = [];
-      const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.chatRunMilestones, event => events.push(event));
+      const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.chatRunMilestones, (event, scopes) => {
+        if ([...scopes ?? []].some(scope => JSON.parse(scope).companyId === f.companyId)) events.push(event);
+      });
       try {
         await db.transaction(async tx => {
           await githubChatManagementService(tx as unknown as typeof db, f.providerFetch)
@@ -52652,6 +52689,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           const stackId = randomUUID();
           const f = await reopenedFixture(false, owner === "cloud_sync" ? cloudTenantPrimaryCompanyId(stackId) : undefined);
           const previousToken = process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN;
+          const [previousUser] = owner === "cloud_sync"
+            ? await db.select().from(authUsers).where(eq(authUsers.id, "owner-user"))
+            : [];
           const onError = vi.fn();
           const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError });
           const notice = () => db.select().from(chatPublications).where(and(
@@ -52731,7 +52771,12 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           } finally {
             if (previousToken === undefined) delete process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN;
             else process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN = previousToken;
-            await coordinator.stop(); await f.close();
+            await coordinator.stop();
+            if (previousUser) await db.update(authUsers).set({
+              name: previousUser.name, email: previousUser.email,
+              emailVerified: previousUser.emailVerified, updatedAt: previousUser.updatedAt,
+            }).where(eq(authUsers.id, previousUser.id));
+            await f.close();
           }
         },
       );
