@@ -897,8 +897,12 @@ Permissions / Trust settings. Board operators with `agents:create` can add
 same-company projects through `POST /api/agents/:id/project-access`; the operation
 locks the agent, preserves existing permissions and audits added projects.
 Saving does not retry work. The task offers explicit Retry after the required
-project is allowed, and dispatch rechecks authorization. Existing setup failures
-with the exact project-boundary denial also receive the explanation on reload.
+projects are allowed, and dispatch rechecks authorization. Readiness checks the
+task's current organizational project and selected workspace source, including
+a valid pending selection. Moving the task to an allowed project does not clear
+a retained source's access requirement. Existing setup failures with the exact
+project-boundary denial also receive the explanation on reload, without assuming
+that the task's current project caused the historical failure.
 
 Cross-issue writes are contained per heartbeat run. An agent-authored comment
 may wake the target assignee, including an explicit `resume: true` comment on a

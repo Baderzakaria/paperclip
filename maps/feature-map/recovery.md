@@ -53,6 +53,11 @@ A workspace project denial names the blocked access and links to the agent's
 project, return to the saved task for an explicit **Retry task** action. Saving
 permissions alone does not wake the agent. Historical setup denials receive the
 same notice on reload; unrelated errors and prior assignees do not.
+Move a denied task to a project the agent can access while retaining a source
+from another project: the notice must stay blocked until the selected source is
+also allowed or an authorized workspace selection replaces it. A valid pending
+selection is checked for the next admission; a stale or unavailable selection
+must not show access as ready. Project changes alone preserve selected files.
 
 Thinking appears immediately after Retry, before the request completes.
 Technical source/run details remain in deliberate diagnostics. The
