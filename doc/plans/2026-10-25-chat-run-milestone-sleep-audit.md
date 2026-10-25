@@ -528,3 +528,54 @@ covered. Still required: queued-comment/lineage mutations, native reviewer claim
 acceptance, publication and interaction changes, conversation/configuration,
 question claim/retry, and monitor/semantic receipt dependencies. Production still
 uses the combined periodic projector until those producers are complete.
+
+
+## Queued-comment lineage and native reviewer claim coverage
+
+The queued-comment PostgreSQL adapter now signals before rewriting a run's
+canonical comment IDs, deleting a queued comment, or cancelling its emptied
+queued run. Its private transaction builder receives the already-locked issue
+identity; exported application ports and caller wrappers are unchanged. Body-only
+edits, issue timestamp touches, and wake-payload bookkeeping do not independently
+signal: milestone binding reads comment identities/links and run lineage, not the
+queued message text. The same transaction's run rewrite owns the wake for reorder
+or nonempty discard; deletion owns the first intent for discard.
+
+The reconstruction regression deliberately starts with the saved queue and run
+context out of sync. The real reorder use case reprojects the run context from
+that authoritative queue. It is recovery/compatibility coverage, not a claim that
+ordinary reordering introduces new comment identities. The discard regression
+uses the actual use case and adapter inside a caller-owned transaction and proves
+that intent settles only at outer commit. Existing adapter tests retain rollback
+and company/issue authorization coverage. Reference/external-object callbacks in
+these fixtures are no-ops; this does not claim their integration behavior.
+
+The previously outstanding native-review claim test now exercises the real
+PostgreSQL claim against a seeded valid review assignment: applied decision,
+matching projected status version, pending confirmation with a separate reviewer,
+source native run, queued reviewer run and matching wake. It checks issue/run/wake
+ownership and the working notice, then verifies repeated claim is quiet. This
+covers claim/notification integration, not the entire review-creation workflow.
+
+Evidence:
+
+- `/tmp/sleep28-queued-comment-before.log`: reconstructed lineage failed to wake
+  its notice; discard emitted no transaction intent. Both failed before repair.
+- `/tmp/sleep28-native-review-claim-without-signal.log`: removing the real claim
+  notification reproduced the missing working notice. The signal was restored
+  in finally; no production native-claim edit remains in this checkpoint.
+- `/tmp/sleep28-lineage-final-tests.log`: all 74 selected cases pass across the
+  38 milestone worker tests, queued-comment adapter/use cases, and native review
+  participant policy. Earlier 51-case and targeted native-claim runs overlap.
+- `/tmp/sleep28-queued-comment-typecheck.log`: server production types pass;
+  test files are outside that command. `git diff --check` passes.
+- The existing queued-comment adapter tests now accept guarded
+  `PAPERCLIP_QUEUED_COMMENT_TEST_DATABASE_URL` and close their client. Their broad
+  fixture cleanup ran only on freshly created/migrated
+  `paperclip_sleep28_queued_comment_20261025_test`; embedded mode remains default.
+
+The queued-comment producer and native reviewer claim gaps are closed for this
+slice. Publication/interaction, conversation/configuration, question claim/retry,
+and monitor/semantic receipt producers still need their own audit and proof.
+The production periodic projector remains; no slice publication or full-goal
+completion is claimed.

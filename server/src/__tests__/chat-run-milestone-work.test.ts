@@ -10,6 +10,8 @@ import { chatRunMilestoneWork } from "../services/chat-run-milestone-work.js";
 import { notifyChatRunMilestones } from "../services/chat-run-milestone-notifications.js";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
 import { questionResponseDeliveryService } from "../services/question-response-delivery.js";
+import { createQueuedCommentIssueLockWriter } from "../modules/wake-queue/adapters/queued-comment-postgres.js";
+import { createDiscardQueuedComment, createReorderQueuedComments } from "../modules/wake-queue/application/queued-comment-use-cases.js";
 import { createRunDispatch } from "../modules/run-dispatch/index.js";
 import { createAdmissionTransactionScope, createPostgresWakeQueueAdapter, createWakeAdmissionWriter } from "../modules/wake-queue/adapters/postgres.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
@@ -18,6 +20,7 @@ import { createHeartbeatQueueTestDependencies } from "./helpers/heartbeat-queue.
 import { CHAT_CONTROL_RECOVERY_ADMISSION_KEY, CHAT_CONTROL_RECOVERY_UNRESOLVED_CODE } from "../services/chat-control-recovery-stop.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { commitNativeStatusDecision, dispatchPendingNativeStatusEffects } from "../services/native-runtime/status-decision-committer.js";
+import { claimQueuedNativeReviewRun } from "../services/native-runtime/native-review-dispatch.js";
 import { finalizeNativeRun } from "../services/native-runtime/native-run-finalizer.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
 
@@ -312,6 +315,49 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect((await publications()).map(row => row.idempotencyKey)).toContain(`run:${old.id}:failed:${f.endpointId}`);
     expect(dependencies.executeRun).not.toHaveBeenCalled(); await quiet();
   });
+  async function editableQueue(staleContext = false) {
+    const wakeId = randomUUID();
+    await db.update(issueComments).set({ authorUserId: f.userId }).where(eq(issueComments.id, f.commentId));
+    await db.insert(agentWakeupRequests).values({ id: wakeId, companyId: f.companyId, agentId: f.agentId,
+      source: "on_demand", status: "queued", payload: { issueId: f.issueId, _paperclipWakeContext: { wakeCommentIds: [f.commentId] } },
+    });
+    const seeded = await run(f, { status: "queued", runtimeMode: "legacy", wakeupRequestId: wakeId,
+      contextSnapshot: { ...runValues().contextSnapshot, wakeCommentId: staleContext ? randomUUID() : f.commentId },
+    });
+    await db.update(agentWakeupRequests).set({ runId: seeded.id }).where(eq(agentWakeupRequests.id, wakeId));
+    const issue = { id: f.issueId, companyId: f.companyId, assigneeAgentId: f.agentId, executionRunId: seeded.id };
+    const actor = { actorType: "user" as const, actorId: f.userId, agentId: null, runId: null, agentApiKeyId: null };
+    const issueLock = createQueuedCommentIssueLockWriter(db, {
+      syncCommentReferences: async () => {}, deleteCommentReferenceSource: async () => {}, syncCommentExternalObjectsSafely: async () => {},
+    });
+    const snapshot = await issueLock.withLockedQueue({ issue, actor, queueId: wakeId }, async locked => locked.queue);
+    return { seeded, issueLock, input: { issue, actor, queueId: wakeId, revision: snapshot.revision, now: new Date() } };
+  }
+  it("wakes when queued-comment mutation reconstructs run lineage from its authoritative queue", async () => {
+    const { seeded, issueLock, input } = await editableQueue(true);
+    await start(); await flush(); expect(await publications()).toEqual([]); await quiet();
+    await createReorderQueuedComments({ issueLock })({ ...input, orderedCommentIds: [f.commentId] });
+    await flush();
+    expect((await publications()).map(row => row.idempotencyKey)).toContain(`run:${seeded.id}:queued:${f.endpointId}`);
+    await quiet();
+  });
+  it("settles queued-comment discard intent only after the owning transaction commits", async () => {
+    const { seeded, input } = await editableQueue();
+    const events: string[] = [];
+    const unsubscribe = subscribeDatabaseWork(db, "chat-run-milestones", event => events.push(event));
+    try {
+      await db.transaction(async tx => {
+        const writer = createQueuedCommentIssueLockWriter(tx as unknown as typeof db, {
+          syncCommentReferences: async () => {}, deleteCommentReferenceSource: async () => {}, syncCommentExternalObjectsSafely: async () => {},
+        });
+        await createDiscardQueuedComment({ issueLock: writer })({ ...input, commentId: f.commentId });
+        expect(events).toContain("intent"); expect(events).not.toContain("settled");
+      });
+      expect(events).toContain("settled");
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.id)))[0])
+        .toMatchObject({ status: "cancelled", errorCode: "queued_comment_discarded" });
+    } finally { unsubscribe(); }
+  });
   it("wakes when the real coalescing writer gives an existing run chat lineage", async () => {
     const seeded = await run(f, { contextSnapshot: { issueId: f.issueId, source: "issue_assigned" } });
     await start(); await flush(); expect(await publications()).toEqual([]); await quiet();
@@ -380,6 +426,35 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       },
     };
   }
+  it("wakes from a governed native reviewer claim and leaves repeated claims quiet", async () => {
+    const input = await continuationDecisionFixture();
+    const { decision } = await commitNativeStatusDecision({ db, ...input });
+    const [reviewer] = await db.insert(agents).values({ companyId: f.companyId, name: "Reviewer", adapterType: "paperclip_runner" }).returning();
+    await db.update(statusDecisions).set({ decisionJson: { ...decision.decisionJson, projectedStatusVersion: 1 } }).where(eq(statusDecisions.id, decision.id));
+    await db.update(issues).set({ status: "in_review", statusVersion: 1, lastStatusDecisionId: decision.id, executionRunId: null }).where(eq(issues.id, f.issueId));
+    await db.update(chatEndpoints).set({ assignedAgentId: reviewer.id }).where(eq(chatEndpoints.id, f.endpointId));
+    const [interaction] = await db.insert(issueThreadInteractions).values({ companyId: f.companyId, issueId: f.issueId,
+      kind: "request_confirmation", status: "pending", sourceRunId: input.runId, addresseeAgentId: reviewer.id,
+      effectiveResolverPolicy: "anyone", resolverPolicyProvenance: "inherited",
+      payload: { version: 1, prompt: "Review the work", target: { type: "custom", key: "native_completion_review", revisionId: decision.id } },
+    }).returning();
+    const wakeId = randomUUID();
+    await db.insert(agentWakeupRequests).values({ id: wakeId, companyId: f.companyId, agentId: reviewer.id, source: "automation", status: "queued" });
+    const seeded = await run(f, { agentId: reviewer.id, status: "queued", runtimeMode: "native", nativeIssueId: f.issueId, wakeupRequestId: wakeId,
+      contextSnapshot: { ...runValues().contextSnapshot, nativeReviewInteractionId: interaction.id, nativeReviewDecisionId: decision.id },
+    });
+    await db.update(agentWakeupRequests).set({ runId: seeded.id }).where(eq(agentWakeupRequests.id, wakeId));
+    const [before] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.id));
+    const claim = { run: before, agentNameKey: "reviewer", claimedAt: new Date(), claimValues: {} };
+    await start(); await flush(); await quiet();
+    expect(await claimQueuedNativeReviewRun(db, claim)).toMatchObject({ id: seeded.id, status: "running" });
+    await flush();
+    expect((await publications()).map(row => row.idempotencyKey)).toContain(`run:${seeded.id}:working:${f.endpointId}`);
+    expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0].executionRunId).toBe(seeded.id);
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wakeId)))[0].status).toBe("claimed");
+    await quiet();
+    expect(await claimQueuedNativeReviewRun(db, claim)).toBeNull(); await quiet();
+  });
   it("wakes from native committed-result projection and leaves repeated finalization quiet", async () => {
     const { row } = await nativeFixture();
     await start(); await flush(); await quiet();

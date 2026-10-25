@@ -1462,3 +1462,13 @@ two; replacement-admission tests cover the latter two and their early intent
 placement is audited. All 60 milestone/queue tests and server production types
 pass. Queued-comment/lineage and remaining dependency producers still prevent
 removing periodic projection. No new PR, merge, or full-goal completion is claimed.
+
+
+Slice 28 lineage checkpoint: queued-comment run-context rewrites, deletion and
+cancellation signal through their existing adapter transaction. Real queue
+reconstruction and caller-owned discard regressions failed before repair. The
+native reviewer claim now has real database integration and causal signal-removal
+coverage. All 74 selected worker/adapter/policy cases and server production types
+pass. Remaining publication, interaction, configuration, question and monitor
+producer coverage still gates periodic-projector removal. Original inventory,
+remote gates/findings and final master reconciliation remain open.
