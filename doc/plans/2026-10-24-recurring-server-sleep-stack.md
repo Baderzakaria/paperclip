@@ -946,3 +946,14 @@ Plugin scheduling is published as #17518 at 8b4f551dc2. Its Actions checks passe
 but review found retained completion writes missing from shutdown and a stale
 deadline update race. Repair those and preserve independent job progress when
 one completion write fails before treating the slice as ready.
+
+
+Approval queue follow-up: persistent projection failure reproduced 120 failed
+transactions in two simulated minutes. Per-scope exponential backoff now caps
+retries at one minute without discarding debt or letting repeated signals reset
+the budget. A coordinator regression proves SQL silence during backoff and real
+producer progress for another company. The candidate and seed writer share the
+PR-product predicate. All 124 affected worker/queue/startup/retention/attention
+cases pass, along with server types/build. One initial consumer command skipped
+six queue tests because its DB variable was missing; the corrected run executes
+and passes them. Fresh remote checks and review remain required after publication.
