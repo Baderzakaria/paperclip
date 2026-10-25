@@ -201,7 +201,7 @@ type ChatRunMilestoneCandidate = {
   runId: string;
   runStatus: string;
   runErrorCode: string | null;
-  runUpdatedAt: Date;
+  runUpdatedAt: string;
   issueId: string;
   companyId: string;
   endpointId: string;
@@ -280,10 +280,11 @@ export function safeMilestoneText(input: {
  * lane. The selector intentionally reads only event identity, type, sequence,
  * and time; native messages and payloads stay inside Paperclip.
  */
-async function enqueueSafeNativeChatProgress(
+export async function enqueueSafeNativeChatProgress(
   db: Db,
-  input: { since: Date; limit: number },
+  options: { since?: Date; limit?: number } = {},
 ): Promise<number> {
+  const input = chatRunProjectionWindow(options);
   const basePublication = alias(
     chatPublications,
     "safe_native_progress_base_publication",
@@ -658,16 +659,11 @@ async function enqueueSafeNativeChatProgress(
  * output, errors, tool events, and reasoning stay in Paperclip. Idempotency is
  * keyed by run, milestone, and endpoint so polling and restarts are harmless.
  */
-export async function enqueueChatRunMilestones(
+export async function enqueueChatRunLifecycleMilestones(
   db: Db,
-  input: {
-    publicBaseUrl?: string | null;
-    since?: Date;
-    limit?: number;
-  } = {},
+  input: ChatRunProjectionInput = {},
 ): Promise<number> {
-  const since = input.since ?? new Date(Date.now() - 24 * 60 * 60_000);
-  const limit = Math.max(1, Math.min(input.limit ?? 200, 1_000));
+  const { since, limit } = chatRunProjectionWindow(input);
   const issueIdFromContext = boundRunIssueIdSql();
   const explicitlyAuthoredCommentReason = sql<boolean>`(
     ${issueComments.metadata} ->> 'authorizationReason' = 'paperclip_runner_protocol'
@@ -763,7 +759,7 @@ export async function enqueueChatRunMilestones(
   )`;
   let inserted = 0;
   let cursor: {
-    updatedAt: Date;
+    updatedAt: string;
     runId: string;
     conversationId: string;
   } | null = null;
@@ -780,7 +776,9 @@ export async function enqueueChatRunMilestones(
         runId: heartbeatRuns.id,
         runStatus: heartbeatRuns.status,
         runErrorCode: heartbeatRuns.errorCode,
-        runUpdatedAt: heartbeatRuns.updatedAt,
+        // Keep PostgreSQL precision: a Date cursor can repeatedly select a
+        // rejected page whose updated_at has submillisecond digits.
+        runUpdatedAt: sql<string>`${heartbeatRuns.updatedAt}::text`,
         issueId: chatConversations.issueId,
         companyId: chatConversations.companyId,
         endpointId: chatConversations.endpointId,
@@ -939,19 +937,8 @@ export async function enqueueChatRunMilestones(
           gte(heartbeatRuns.updatedAt, since),
           isNull(chatPublications.id),
           pageCursor
-            ? or(
-                gt(heartbeatRuns.updatedAt, pageCursor.updatedAt),
-                and(
-                  eq(heartbeatRuns.updatedAt, pageCursor.updatedAt),
-                  or(
-                    gt(heartbeatRuns.id, pageCursor.runId),
-                    and(
-                      eq(heartbeatRuns.id, pageCursor.runId),
-                      gt(chatConversations.id, pageCursor.conversationId),
-                    ),
-                  ),
-                ),
-              )
+            ? sql`(${heartbeatRuns.updatedAt}, ${heartbeatRuns.id}, ${chatConversations.id}) >
+                (${pageCursor.updatedAt}::timestamptz, ${pageCursor.runId}::uuid, ${pageCursor.conversationId}::uuid)`
             : undefined,
         ),
       )
@@ -1064,11 +1051,30 @@ export async function enqueueChatRunMilestones(
     }
     if (rows.length < pageSize) break;
   }
-  if (inserted < limit) {
-    inserted += await enqueueSafeNativeChatProgress(db, {
-      since,
-      limit: limit - inserted,
-    });
-  }
   return inserted;
+}
+
+type ChatRunProjectionInput = {
+  publicBaseUrl?: string | null;
+  since?: Date;
+  limit?: number;
+};
+
+function chatRunProjectionWindow(input: ChatRunProjectionInput) {
+  return {
+    since: input.since ?? new Date(Date.now() - 24 * 60 * 60_000),
+    limit: Math.max(1, Math.min(input.limit ?? 200, 1_000)),
+  };
+}
+
+/** Explicit combined reconciliation retains lifecycle priority and one shared
+ * publication budget. Background owners can reconcile the two duties separately. */
+export async function enqueueChatRunMilestones(
+  db: Db,
+  input: ChatRunProjectionInput = {},
+): Promise<number> {
+  const { since, limit } = chatRunProjectionWindow(input);
+  const inserted = await enqueueChatRunLifecycleMilestones(db, { ...input, since, limit });
+  if (inserted >= limit) return inserted;
+  return inserted + await enqueueSafeNativeChatProgress(db, { since, limit: limit - inserted });
 }

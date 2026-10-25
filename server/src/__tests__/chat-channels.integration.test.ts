@@ -186,6 +186,8 @@ import {
 } from "../services/chat-interaction-publications.js";
 import {
   enqueueChatRunMilestones,
+  enqueueChatRunLifecycleMilestones,
+  enqueueSafeNativeChatProgress,
   githubRunReplyState,
   resolveChatRunPresentationAuthorizationReason,
   CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON,
@@ -34438,7 +34440,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     ]);
   });
 
-  it("drains bounded Slack chat-origin milestones without admitting an internal issue run", async () => {
+  it.each(["milliseconds", "microseconds"])("drains bounded Slack chat-origin milestones without admitting an internal issue run (%s)", async (precision) => {
     const fixture = await seedCompany();
     const { callbacks, endpoint } = await configuredSlackEndpoint(fixture);
     const thread = makeThread({
@@ -34533,15 +34535,32 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       })),
     ]);
 
-    const inserted: number[] = [];
-    for (let index = 0; index < 4; index += 1) {
-      inserted.push(
-        await enqueueChatRunMilestones(db, {
-          since: new Date("2026-09-05T14:00:00.000Z"),
-          limit: 1,
-        }),
-      );
+    if (precision === "microseconds") {
+      await db.update(heartbeatRuns).set({
+        updatedAt: sql`'2026-09-05T14:59:00.000123Z'::timestamptz`,
+      }).where(inArray(heartbeatRuns.id, resolverRejectedRuns.map(run => run.id)));
     }
+    // Fail a non-advancing pagination loop explicitly instead of leaving a
+    // background query chain running after the test timeout.
+    const select = db.select.bind(db);
+    let reads = 0;
+    const readGuard = vi.spyOn(db, "select").mockImplementation((...args) => {
+      if (args[0] && "runUpdatedAt" in args[0] && ++reads > 100) {
+        throw new Error("Milestone projection did not advance past rejected candidates");
+      }
+      return select(...args);
+    });
+    const inserted: number[] = [];
+    try {
+      for (let index = 0; index < 4; index += 1) {
+        inserted.push(
+          await enqueueChatRunLifecycleMilestones(db, {
+            since: new Date("2026-09-05T14:00:00.000Z"),
+            limit: 1,
+          }),
+        );
+      }
+    } finally { readGuard.mockRestore(); }
     expect(inserted).toEqual([1, 1, 1, 0]);
     const publications = await db
       .select()
@@ -63296,6 +63315,36 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         "providerFetch" in configured ? configured.providerFetch : undefined,
     };
   }
+
+  it.each(["separate owners", "combined budget"] as const)(
+    "keeps lifecycle and native progress projection independent with %s",
+    async (mode) => {
+      await enqueueChatRunMilestones(db, { since: new Date(0) });
+      const context = await safeNativeProgressFixture("telegram", mode === "separate owners" ? "111" : "112");
+      try {
+        const progressRun = await context.createRun("ongoing work");
+        await context.addEvent(progressRun);
+        const failedRun = await context.createRun("failed work");
+        await db.update(heartbeatRuns).set({ status: "failed" }).where(eq(heartbeatRuns.id, failedRun.runId));
+        const input = { since: new Date(0), limit: 1 };
+        await expect((mode === "separate owners" ? enqueueChatRunLifecycleMilestones : enqueueChatRunMilestones)(db, input)).resolves.toBe(1);
+        const rows = () => db.select({ key: chatPublications.idempotencyKey }).from(chatPublications)
+          .where(eq(chatPublications.conversationId, context.conversation.id));
+        expect((await rows()).map(row => row.key)).toContain(`run:${failedRun.runId}:failed:${context.endpoint.id}`);
+        expect((await rows()).some(row => row.key.includes(":native:"))).toBe(false);
+        if (mode === "separate owners") {
+          await expect(enqueueChatRunLifecycleMilestones(db, input)).resolves.toBe(0);
+        }
+        await expect((mode === "separate owners" ? enqueueSafeNativeChatProgress : enqueueChatRunMilestones)(db, input)).resolves.toBe(1);
+        expect((await rows()).filter(row => row.key.includes(":native:"))).toEqual([
+          { key: `run:${progressRun.runId}:working:${context.endpoint.id}:native:making_progress:1` },
+        ]);
+        await expect(enqueueChatRunMilestones(db, input)).resolves.toBe(0);
+      } finally {
+        await retirePublicationFixture(context.service, context.endpoint.id);
+      }
+    },
+  );
 
   it.each(["issue", "run"] as const)(
     "skips a locked native progress %s while unrelated final and question publications deliver",
