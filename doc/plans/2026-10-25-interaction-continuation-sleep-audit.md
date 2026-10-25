@@ -103,3 +103,31 @@ new table, expiry policy, attempt cap, or host-sleep exemption was added.
 
 Full acceptance, workspace typecheck/build, and remote review/checks are still
 required. These local results do not prove actual hosting or database suspension.
+
+## Review correction: stop before each publication
+
+At implementation head `6d01f4c730`, workspace typecheck/build passed. Full chat
+and startup acceptance passed 1,523 tests in 465.91 seconds, but the 14 standalone
+publication tests skipped because their suite supported only embedded PostgreSQL.
+This is not evidence those 14 tests passed. The suite now accepts an explicitly
+named disposable `_test` external database and closes its own client afterward.
+
+Greptile review was 4/5 and found a valid stop-boundary gap: the continuation
+checked cancellation/admission after preparing publications, but that preparation
+could start another send after drain, standby, or shutdown began. The three new
+real-queue regressions each reproduced the second publication becoming published
+when it should remain pending (`/tmp/sleep33-stop-before.log`). They hold the
+first provider edit in flight, change the lifecycle state, and release the edit.
+
+The existing queue now accepts an optional `canContinue` callback. The
+continuation owner passes its current admission/abort check through preparation.
+The queue checks before entry, each batch, each reservation, and each newly
+started send. Already-started work is joined and settled. Deferred actions and
+publications survive resume/restart. Default callers retain their current
+behavior, with shutdown also checked before invoking a reserved send.
+
+All 14 new continuation cases pass after this correction
+(`/tmp/sleep33-stop-fixed.log`). The previously skipped publication suite and
+startup guards pass separately, 27 cases total
+(`/tmp/sleep33-publication-startup.log`). Fresh broad acceptance and remote gates
+on the corrected head remain required. No failed run has been relabelled passing.

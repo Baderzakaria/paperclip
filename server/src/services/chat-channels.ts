@@ -3479,7 +3479,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   });
   const { processSelectedPublication } = publicationWorker;
   const { processPendingInteractionWakeups, registerInteractionContinuationWork } = createChatInteractionContinuations(db, {
-    preparePublications: scope => processPendingPublications(25, { maintenance: false, scope }),
+    preparePublications: (scope, canContinue) => processPendingPublications(25, { maintenance: false, scope, canContinue }),
     redactError, CONFIRMATION_WAKEUP_RETRY_BACKOFF_MS, get heartbeat() { return options.heartbeat; },
   });
   const { handleAction, handleModalSubmit, reconcileTerminalConfirmationActions, registerTerminalConfirmationWork } = createChatInteractionCallbacks(db, {

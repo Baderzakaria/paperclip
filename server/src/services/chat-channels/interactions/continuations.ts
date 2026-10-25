@@ -39,7 +39,7 @@ import { issueThreadInteractionService } from "../../issue-thread-interactions.j
 
 type InteractionContinuationsOptions = {
   heartbeat: IssueAssignmentWakeupDeps;
-  preparePublications: (scope: { companyId: string; endpointId: string; conversationId: string }) => Promise<unknown>;
+  preparePublications: (scope: { companyId: string; endpointId: string; conversationId: string }, canContinue: () => boolean) => Promise<unknown>;
   redactError: (error: unknown) => string;
   CONFIRMATION_WAKEUP_RETRY_BACKOFF_MS: number;
 };
@@ -86,7 +86,7 @@ export function createChatInteractionContinuations(db: Db, options: InteractionC
     for (const candidate of candidates) {
       if (preparePublications && candidate.conversationId) {
         await options.preparePublications({ companyId: candidate.companyId,
-          endpointId: candidate.endpointId, conversationId: candidate.conversationId });
+          endpointId: candidate.endpointId, conversationId: candidate.conversationId }, canContinue);
       }
       if (!canContinue()) break;
       const writeAction = <T>(write: (tx: Parameters<Parameters<Db["transaction"]>[0]>[0]) => PromiseLike<T>) =>

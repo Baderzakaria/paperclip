@@ -1867,3 +1867,11 @@ and future-retry publication behavior. Eleven new real-database cases pass,
 including outer rollback/commit, historical prefixes, and concurrent response
 commit. Existing Telegram acceptance also passes. Broad acceptance and fresh
 PR gates remain pending; no merge or full-stack completion is claimed.
+
+Slice 33 is [#17653](https://github.com/paperclipai/paperclip/pull/17653), draft
+and unmerged. Initial broad acceptance passed 1,523 tests with 14 skipped;
+workspace types/build passed. Review found that publication preparation could
+start another send after drain/standby/shutdown. Three regressions reproduced
+it. Per-send admission/abort checks now pass all 14 new lifecycle cases, and the
+previously skipped publication suite plus startup guards pass 27 cases with the
+external test database. Fresh corrected-head verification remains required.

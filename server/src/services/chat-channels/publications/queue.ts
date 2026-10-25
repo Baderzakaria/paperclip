@@ -181,16 +181,17 @@ export function createChatPublicationQueue(db: Db, options: PublicationQueueOpti
 
   async function processPendingPublications(
     limit = 25,
-    { waitForCompletion = true, maintenance = true, scope }: {
-      waitForCompletion?: boolean; maintenance?: boolean;
+    { waitForCompletion = true, maintenance = true, scope, canContinue = () => true }: {
+      waitForCompletion?: boolean; maintenance?: boolean; canContinue?: () => boolean;
       scope?: { companyId: string; endpointId: string; conversationId: string };
     } = {},
   ) {
-    if (isShuttingDown()) return 0;
+    if (isShuttingDown() || !canContinue()) return 0;
     if (maintenance) {
       await enqueueInboundWakeupPublications();
       await reconcileTerminalConfirmationActions(limit);
     }
+    if (isShuttingDown() || !canContinue()) return 0;
     const scopeCondition = scope ? and(eq(chatPublications.companyId, scope.companyId),
       eq(chatPublications.endpointId, scope.endpointId), eq(chatPublications.conversationId, scope.conversationId)) : undefined;
     const pendingTasks = () => scope
@@ -287,7 +288,7 @@ export function createChatPublicationQueue(db: Db, options: PublicationQueueOpti
     let failed = false;
     let firstError: unknown;
     try {
-      while (attemptedIds.length < limit && !failed && !isShuttingDown()) {
+      while (attemptedIds.length < limit && !failed && !isShuttingDown() && canContinue()) {
         if (publicationEndpointTasks.size >= PUBLICATION_ENDPOINT_CONCURRENCY) {
           if (!waitForCompletion) break;
           await Promise.race(publicationEndpointTasks.values());
@@ -328,7 +329,7 @@ export function createChatPublicationQueue(db: Db, options: PublicationQueueOpti
             publicationEndpointTasks.size >= PUBLICATION_ENDPOINT_CONCURRENCY ||
             attemptedIds.length >= limit ||
             failed ||
-            isShuttingDown()
+            (isShuttingDown() || !canContinue())
           )
             break;
           if (publicationEndpointTasks.has(selectedPublication.endpointId))
@@ -340,6 +341,7 @@ export function createChatPublicationQueue(db: Db, options: PublicationQueueOpti
           // endpoint-exclusive credential fence instead of timing out behind it.
           const task = Promise.resolve()
             .then(async () => {
+              if (isShuttingDown() || !canContinue()) return;
               await processSelectedPublication(selectedPublication);
               await settleExternalConversation(db, selectedPublication.companyId, selectedPublication.issueId).catch((err) => {
                 logger.warn({ err, publicationId: selectedPublication.id }, "Slack conversation settlement deferred to reconciliation");

@@ -27,7 +27,13 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const externalTestDatabaseUrl = process.env.PAPERCLIP_TEST_DATABASE_URL;
+if (externalTestDatabaseUrl && !new URL(externalTestDatabaseUrl).pathname.endsWith("_test")) {
+  throw new Error("PAPERCLIP_TEST_DATABASE_URL must name a disposable _test database");
+}
+const embeddedPostgresSupport = externalTestDatabaseUrl
+  ? { supported: true }
+  : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported
   ? describe
   : describe.skip;
@@ -43,16 +49,18 @@ describeEmbeddedPostgres(
 
     beforeAll(async () => {
       process.env.PAPERCLIP_PUBLIC_URL = "https://paperclip.example";
-      tempDb = await startEmbeddedPostgresTestDatabase(
-        "paperclip-terminal-chat-interaction-",
-      );
-      db = createDb(tempDb.connectionString);
+      if (externalTestDatabaseUrl) db = createDb(externalTestDatabaseUrl);
+      else {
+        tempDb = await startEmbeddedPostgresTestDatabase("paperclip-terminal-chat-interaction-");
+        db = createDb(tempDb.connectionString);
+      }
     }, 20_000);
 
     afterAll(async () => {
       if (previousPublicUrl === undefined)
         delete process.env.PAPERCLIP_PUBLIC_URL;
       else process.env.PAPERCLIP_PUBLIC_URL = previousPublicUrl;
+      await db?.$client.end({ timeout: 1 });
       await tempDb?.cleanup();
     });
 

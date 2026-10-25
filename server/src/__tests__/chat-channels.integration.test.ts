@@ -45158,6 +45158,64 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     }
   });
 
+  it.each(["drain", "standby", "shutdown"] as const)("stops starting continuation publications during %s", async mode => {
+    const context = await telegramConfirmationRecoveryFixture();
+    await expect(context.onAction(context.actionEvent)).rejects.toThrow("injected post-interaction confirmation settlement crash");
+    const next = await issueThreadInteractionService(db).create(
+      { id: context.conversation.issueId, companyId: context.fixture.companyId },
+      { kind: "request_confirmation", continuationPolicy: "wake_assignee", title: "Next decision",
+        payload: { version: 1, prompt: "A second decision after the accepted response?" } },
+      { agentId: context.fixture.assignedAgentId },
+    );
+    const nextPublication = () => db.select({ state: chatPublications.state }).from(chatPublications).where(
+      eq(chatPublications.idempotencyKey, `interaction:${next.id}:${context.endpoint.id}`));
+    expect(await nextPublication()).toEqual([{ state: "pending" }]);
+    const provider = (context.service.runtime as unknown as FakeChatSdkRuntime).endpoints.get(context.endpoint.id)!;
+    const originalThread = provider.thread.bind(provider);
+    let entered = false;
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const threadSpy = vi.spyOn(provider, "thread").mockImplementation(threadId => {
+      const thread = originalThread(threadId), edit = thread.adapter.editMessage.bind(thread.adapter);
+      thread.adapter.editMessage = async (...args) => { entered = true; await gate; return edit(...args); };
+      return thread;
+    });
+    let canRun = true;
+    const errors: unknown[] = [];
+    let coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => canRun,
+      canReconcile: () => true, onError: error => errors.push(error) });
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    const ready = context.service.registerInteractionContinuationWork(coordinator, () => canRun).ready;
+    let stopping: Promise<void> | undefined;
+    try {
+      await vi.waitFor(() => expect(entered).toBe(true), { timeout: 10_000 });
+      if (mode === "shutdown") stopping = coordinator.stop(); else canRun = false;
+      release(); await ready; await stopping;
+      await vi.waitFor(() => expect(idleWorkSnapshot().active).toBe(0));
+      expect(provider.edits).toHaveLength(1);
+      expect(await nextPublication()).toEqual([{ state: "pending" }]);
+      expect(context.wakeup).not.toHaveBeenCalled();
+      if (mode === "shutdown") {
+        coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => canRun,
+          canReconcile: () => true, onError: error => errors.push(error) });
+        await context.service.registerInteractionContinuationWork(coordinator, () => canRun).ready;
+      } else {
+        canRun = true;
+        await vi.advanceTimersByTimeAsync(Math.max(0, coordinator.nextWakeAt()! - Date.now()));
+      }
+      await vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(10);
+        expect(context.wakeup).toHaveBeenCalledTimes(1);
+        expect(await nextPublication()).toEqual([{ state: "published" }]);
+        expect(idleWorkSnapshot().active).toBe(0); expect(coordinator.nextWakeAt()).toBeNull();
+      }, { timeout: 10_000 });
+      expect(errors).toEqual([]);
+    } finally {
+      release(); await ready; await stopping; await coordinator.stop(); vi.useRealTimers();
+      threadSpy.mockRestore(); await context.service.shutdown();
+    }
+  });
+
   it("defers continuation dispatch until the outer response transaction commits", async () => {
     const context = await telegramConfirmationRecoveryFixture();
     const errors: unknown[] = [];
