@@ -220,3 +220,72 @@ fresh `paperclip_sleep30_full_chat_20261025_test` database, with output at
 `/tmp/sleep30-full-chat-acceptance.log`; its result must be read before claiming
 acceptance. Typecheck after merging the second parent repair passed in
 `/tmp/sleep30-after-parent-typecheck.log`.
+
+## Producer and lifecycle completion (2026-10-25)
+
+The full chat suite at `c579148977` finished successfully: 1,458 tests in
+`/tmp/sleep30-full-chat-acceptance.log`. This was the baseline before the
+cancellation and privacy changes below, not acceptance of later edits.
+
+Real service regressions reproduced stale visible queue notices after agent
+cancellation, budget cancellation, and company archival. Signals now belong to
+those owners' transactions, as well as Slack Stop and deferred queue cancellation
+and failure. Agent cancellation now rechecks pending status and absence of a run
+at update time, so it cannot cancel a receipt promoted after candidate selection.
+Caller-owned transactions preserve outer commit and rollback. Company lifecycle
+intentionally owns its root transaction; its test respects that contract.
+
+Task status/assignment changes and privacy changes can restore eligibility.
+Task privacy can affect descendants, so it invalidates the company scope. Explicit
+task grants and private-project membership use their existing persistence owners;
+the project-member helper owns a small transaction that also nests under callers.
+Project visibility changes use the existing project transaction. Shared chat
+identity, endpoint, resource and membership signals already cover the other
+current-authority predicates. Ordinary health refreshes and receipt cursor touches
+do not signal this worker. Run-bound settlement and Dot/Muse consumption do not
+create a not-started notice; their existing response/progress owners retain that
+policy. Failed-run retry notices remain a separate owner.
+
+Failed inbound-action settlement and repaired delivery acceptance now invalidate
+normal notices when a valid durable request exists. Preparing actions whose
+underlying deliveries were rejected cannot satisfy the notice predicate and do
+not acquire a notice obligation. Publication completion already signals the task
+inside the transaction that saves the provider receipt and message link. A new
+race test holds provider I/O, removes the source, observes the notice worker
+settle before the receipt exists, and proves that the eventual receipt commit
+reactivates the removed-source edit.
+
+The app now registers `chatInboundWakeNoticeWork` with the existing coordinator.
+`processPublicationMaintenance` retains only the separate failed-run retry notice
+pass, plus its other unmigrated duties. The explicit/manual combined
+`enqueueInboundWakeupPublications` API remains available.
+
+Focused acceptance at the current source passes 42 cases in
+`/tmp/sleep30-wired-acceptance.log`. These include actual admission after idle,
+scoped/manual cursor pagination, denied history, receipt-lock contention,
+transaction rollback and commit, queue rejection/failure, agent/budget/company
+cancellation, privacy restoration through task grants and project membership,
+signed Slack Stop, late provider receipt, restart deduplication, writes after
+shutdown, first write and failed selection during drain, and a commit arriving
+while an empty selection returns. Quiet assertions observe root SQL entry points
+after advancing fake time by two minutes. The lifecycle tests do not prove host
+or database suspension, and no Cloud sleep-safety blocker is relaxed.
+
+Preserved failures and fixture corrections:
+- `/tmp/sleep30-cancellation-before.log`: agent cancellation missed its wake;
+  an attempted agent reassignment fixture was rejected by the existing external
+  channel binding rule. The unsupported fixture was removed, not bypassed.
+- `/tmp/sleep30-budget-company-before.log`: budget cancellation missed its wake;
+  company lifecycle correctly rejected a caller transaction. The root-company
+  reproduction in `/tmp/sleep30-company-root-before.log` then showed its missing
+  wake. All five initial retirement cases passed after the repair.
+- `/tmp/sleep30-notice-privacy-before.log`: opening a private task did not wake
+  its saved notice. The repair passes. Initial grant tests used an unlinked
+  external principal as a user; corrected fixtures establish a linked board user
+  through the normal chat setup before admission.
+- The first signed Stop fixture had an invalid Slack channel ID and a verifying,
+  rather than qualified active, endpoint. Correcting both makes the signed event
+  reach cancellation. `/tmp/sleep30-signed-stop-qualified.log` passes.
+
+Workspace typecheck/build, full acceptance after startup wiring, PR publication,
+and latest-head CI/review are still required before this slice is ready.

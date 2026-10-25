@@ -1737,3 +1737,19 @@ base-publication hook. The hook fixes a reproduced commit-order wake gap; its
 16 cases at `bcf2f38ff5`; final typecheck passes too. Remote checks/review are pending.
 Parent #17606 now has passing checks and Greptile 5/5 on `ed76256b97`; all three
 review threads are resolved. This is not completion of the broader stack.
+
+## Current gate update: native progress and inbound notices (2026-10-25)
+
+#17639 at `6c40618ec1bb098e1c7fe4098133d1de71d287ee` now has all checks
+passing (CI run 40218349023), a fresh Greptile 5/5 review of that commit, and
+zero review threads. The circular signal-payload and over-wide atomic-event
+selection failures were repaired, not bypassed by rerunning unchanged failures.
+The PR remains unmerged.
+
+Slice 30 now registers its scoped notice worker and removes normal inbound
+notices from periodic publication maintenance. Focused acceptance passes 42
+cases. Its full verification and new PR are still pending. See the dated inbound
+wake notice audit for the producer inventory, regressions and fixture corrections.
+This update does not clear the older Grok/runtime-discovery CI failures, voice
+session recovery review, or inbound voice cleanup ownership findings, and it does
+not shrink the remaining original checklist.

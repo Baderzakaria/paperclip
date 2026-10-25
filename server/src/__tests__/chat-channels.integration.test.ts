@@ -178,6 +178,9 @@ import {
 } from "../services/chat-teams-personal-recipient.js";
 import * as discordQuestionForms from "../services/chat-discord-question-forms.js";
 import { issueService } from "../services/issues.js";
+import { companyService } from "../services/companies.js";
+import { ensureProjectAccessMember } from "../services/projects.js";
+import { createPostgresWakeQueueAdapter } from "../modules/wake-queue/adapters/postgres.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { getExternalChannelBindingSummary } from "../services/chat-channel-binding.js";
 import { PaperclipRunnerToolAuthority } from "../services/native-runtime/paperclip-runner-tool-authority.js";
@@ -71008,10 +71011,11 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     expect(committed.providerRuntime.slackFilePublicationAttempts).toBe(2);
   });
 
-  async function deferredChatQueueFixture(admissionFails = false, beforeAdmission?: (service: ChatChannelService) => Promise<void>) {
+  async function deferredChatQueueFixture(admissionFails = false, beforeAdmission?: (service: ChatChannelService) => Promise<void>, linkedBoardUser = false) {
     const fixture = await seedCompany();
     let ownerId: string | null = null;
     const configured = await configuredSlackEndpoint(fixture, {
+      linkedBoardUser,
       wakeup: async (agentId, opts) => {
         if (admissionFails)
           throw new Error("PRIVATE admission failure token=do-not-publish");
@@ -71067,8 +71071,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       },
     });
     const thread = makeThread({
-      channelId: "C-DEFERRED-NOTICE",
-      id: "slack:C-DEFERRED-NOTICE:1999000.1",
+      channelId: "CDEFERREDNOTICE",
+      id: "slack:CDEFERREDNOTICE:1999000.1",
     });
     const send = async (id = "1999000.1") =>
       deliverMessage({
@@ -71078,6 +71082,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         message: makeMessage({
           id,
           text: "@maya exact queued request",
+          userId: linkedBoardUser ? "UBOARD" : undefined,
           mentioned: id === "1999000.1",
         }),
         trigger: id === "1999000.1" ? "mention" : "subscribed_message",
@@ -71170,8 +71175,158 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     }
   });
 
-  it.each(["tree cancellation", "source removal"] as const)("wakes a visible pre-run FIFO retirement only after %s commits", async change => {
+  it("reconstructs inbound admission committed after the notice worker stops", async () => {
+    let coordinator: ReturnType<typeof createDeliveryWorkCoordinator> | undefined;
+    let service: ChatChannelService | undefined;
+    const errors: unknown[] = [];
+    try {
+      const context = await deferredChatQueueFixture(false, async channel => {
+        service = channel;
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+        coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true,
+          canReconcile: () => true, onError: error => errors.push(error) });
+        await chatInboundWakeNoticeWork(channel).register(coordinator, () => true).ready;
+        await coordinator.stop();
+      });
+      const select = vi.spyOn(db, "select"), transaction = vi.spyOn(db, "transaction");
+      try {
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(select).not.toHaveBeenCalled(); expect(transaction).not.toHaveBeenCalled();
+      } finally { select.mockRestore(); transaction.mockRestore(); }
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(0);
+      coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true,
+        canReconcile: () => true, onError: error => errors.push(error) });
+      await chatInboundWakeNoticeWork(context.service).register(coordinator, () => true).ready;
+      await vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(1);
+        expect(idleWorkSnapshot().active).toBe(0); expect(coordinator!.nextWakeAt()).toBeNull();
+      }, { timeout: 10_000 });
+      expect(errors).toEqual([]);
+    } finally { await coordinator?.stop(); vi.useRealTimers(); await service?.shutdown(); }
+  });
+
+  it.each(["task visibility", "project membership", "task grant"] as const)("wakes a saved inbound notice when %s restores privacy access", async kind => {
+    const context = await deferredChatQueueFixture(false, undefined, true);
+    await db.update(issues).set({ visibility: "private", privacyRootIssueId: context.conversation.issueId,
+      createdByUserId: null, responsibleUserId: null, assigneeUserId: null,
+    }).where(eq(issues.id, context.conversation.issueId));
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true,
+      canReconcile: () => true, onError: error => errors.push(error) });
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    const settle = async () => vi.waitFor(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(idleWorkSnapshot().active).toBe(0); expect(coordinator.nextWakeAt()).toBeNull();
+    }, { timeout: 10_000 });
+    try {
+      await chatInboundWakeNoticeWork(context.service).register(coordinator, () => true).ready;
+      await settle();
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(0);
+      if (kind === "task visibility") {
+        await issueService(db).update(context.conversation.issueId, { visibility: "open" });
+      } else if (kind === "project membership") {
+        const [project] = await db.insert(projects).values({ companyId: context.fixture.companyId,
+          name: "Private notice project", visibility: "private",
+        }).returning();
+        await db.update(issues).set({ projectId: project.id }).where(eq(issues.id, context.conversation.issueId));
+        await ensureProjectAccessMember(db, { companyId: context.fixture.companyId, projectId: project.id,
+          subjectType: "user", subjectId: String(context.action.payload.requestedByActorId),
+        });
+      } else {
+        const app = express();
+        app.use(express.json());
+        app.use((req, _res, next) => { req.actor = { ...boardActor(context.fixture.companyId), isInstanceAdmin: true }; next(); });
+        app.use("/api", issueRoutes(db, createStorageService().storage)); app.use(errorHandler);
+        await request(app).post(`/api/issues/${context.conversation.issueId}/access-grants`).send({
+          subjectType: "user", subjectId: String(context.action.payload.requestedByActorId),
+        }).expect(201);
+      }
+      await settle();
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toEqual([expect.objectContaining({
+        payload: { text: "Your follow-up is queued.", progressState: "queued" },
+      })]);
+      expect(errors).toEqual([]);
+    } finally { await coordinator.stop(); vi.useRealTimers(); await context.service.shutdown(); }
+  });
+
+  it.each(["startup", "first admission", "failed selection"] as const)("retains inbound notices through %s during drain without passive SQL", async kind => {
+    let coordinator: ReturnType<typeof createDeliveryWorkCoordinator> | undefined;
+    let service: ChatChannelService | undefined;
+    let canRun = kind !== "startup";
+    const errors: unknown[] = [];
+    try {
+      const context = await deferredChatQueueFixture(false, async channel => {
+        service = channel;
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+        coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => canRun,
+          canReconcile: () => true, onError: error => errors.push(error) });
+        const selection = kind === "failed selection"
+          ? vi.spyOn(channel, "loadInboundWakeNoticeScopes").mockRejectedValueOnce(new Error("temporary notice selection outage"))
+          : undefined;
+        try { await chatInboundWakeNoticeWork(channel).register(coordinator, () => canRun).ready; }
+        finally { selection?.mockRestore(); }
+        canRun = false;
+      });
+      await vi.advanceTimersByTimeAsync(30_000);
+      await vi.waitFor(() => expect(idleWorkSnapshot().active).toBe(0));
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(0);
+      const select = vi.spyOn(db, "select"), transaction = vi.spyOn(db, "transaction");
+      try {
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(select).not.toHaveBeenCalled(); expect(transaction).not.toHaveBeenCalled();
+      } finally { select.mockRestore(); transaction.mockRestore(); }
+      canRun = true;
+      await vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(30_000);
+        expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(1);
+        expect(idleWorkSnapshot().active).toBe(0); expect(coordinator!.nextWakeAt()).toBeNull();
+      }, { timeout: 10_000 });
+      expect(errors).toHaveLength(kind === "failed selection" ? 1 : 0);
+    } finally { await coordinator?.stop(); vi.useRealTimers(); await service?.shutdown(); }
+  });
+
+  it("retains admission committed while an empty inbound-notice selection is returning", async () => {
+    let coordinator: ReturnType<typeof createDeliveryWorkCoordinator> | undefined;
+    let service: ChatChannelService | undefined;
+    let selection: ReturnType<typeof vi.spyOn> | undefined;
+    let ready: Promise<unknown> | undefined;
+    let held = false, release!: () => void;
+    const pending = new Promise<void>(resolve => { release = resolve; });
+    const errors: unknown[] = [];
+    try {
+      const context = await deferredChatQueueFixture(false, async channel => {
+        service = channel;
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+        const load = channel.loadInboundWakeNoticeScopes.bind(channel);
+        selection = vi.spyOn(channel, "loadInboundWakeNoticeScopes").mockImplementationOnce(async (...args) => {
+          const rows = await load(...args); held = true; await pending; return rows;
+        });
+        coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true,
+          canReconcile: () => true, onError: error => errors.push(error) });
+        ready = chatInboundWakeNoticeWork(channel).register(coordinator, () => true).ready;
+        await vi.waitFor(() => expect(held).toBe(true));
+      });
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(0);
+      release(); await ready;
+      await vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(1);
+        expect(idleWorkSnapshot().active).toBe(0); expect(coordinator!.nextWakeAt()).toBeNull();
+      }, { timeout: 10_000 });
+      expect(errors).toEqual([]);
+    } finally { release(); await ready; selection?.mockRestore(); await coordinator?.stop(); vi.useRealTimers(); await service?.shutdown(); }
+  });
+
+  it.each(["tree cancellation", "source removal", "agent cancellation", "budget cancellation", "company archive", "queue rejection", "queue failure"] as const)("wakes a visible pre-run FIFO retirement only after %s commits", async change => {
     const context = await deferredChatQueueFixture();
+    const releaseRunId = randomUUID();
+    if (change === "queue rejection" || change === "queue failure") {
+      await db.insert(heartbeatRuns).values({ id: releaseRunId, companyId: context.fixture.companyId,
+        agentId: context.fixture.assignedAgentId, status: "succeeded", finishedAt: new Date(),
+        contextSnapshot: { issueId: context.conversation.issueId },
+      });
+    }
     const errors: unknown[] = [];
     const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true,
       canReconcile: () => true, onError: error => errors.push(error) });
@@ -71183,26 +71338,51 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const notices = () => readChatPublicationsByEndpointId(context.endpoint.id);
     const expectedText = change === "source removal" ? "This queued message was removed."
       : "This follow-up was not started. Open the task in Paperclip for details.";
-    const retire = (database: typeof db) => change === "source removal"
-      ? issueService(database).tombstoneComment(String(context.action.payload.commentId), {
+    const retire = async (database: typeof db) => {
+      if (change === "source removal") return issueService(database).tombstoneComment(String(context.action.payload.commentId), {
         actorType: "user", userId: String(context.action.payload.requestedByActorId),
-      })
-      : issueTreeControlService(database).cancelUnclaimedWakeupsForTree(
+      });
+      if (change === "agent cancellation") return heartbeatService(database).cancelInvocationsForAgents(
+        [context.fixture.assignedAgentId], "PRIVATE cancellation",
+      );
+      if (change === "budget cancellation") return heartbeatService(database).cancelBudgetScopeWork({
+        companyId: context.fixture.companyId, scopeType: "company", scopeId: context.fixture.companyId,
+      });
+      if (change === "company archive") return companyService(database).update(context.fixture.companyId, { status: "archived" });
+      if (change === "queue rejection" || change === "queue failure") {
+        const adapter = createPostgresWakeQueueAdapter(database, {
+          resolveResponsibleUserId: async () => "owner-user",
+          getRoutineEnv: async () => ({ routineId: null, env: null, responsibleUserId: null }),
+          resolveSessionBeforeForWakeup: async () => null,
+        });
+        return adapter.withIssueExecutionLock({ companyId: context.fixture.companyId, runId: releaseRunId, now: new Date() }, async (_locked, ports) => {
+          const target = { companyId: context.fixture.companyId, wakeId: context.action.id, now: new Date() };
+          if (change === "queue rejection") await ports.transaction.cancelDeferredWake({ ...target, reason: "PRIVATE rejection" });
+          else await ports.transaction.failDeferredWake(target);
+          return { outcome: { kind: "released" }, postCommitEffects: [] };
+        });
+      }
+      return issueTreeControlService(database).cancelUnclaimedWakeupsForTree(
         context.fixture.companyId, context.conversation.issueId, "PRIVATE cancellation",
       );
+    };
     try {
       await chatInboundWakeNoticeWork(context.service).register(coordinator, () => true).ready;
       await settle();
       await context.service.processPendingPublications(100, { maintenance: false });
       await settle();
       expect(await notices()).toEqual([expect.objectContaining({ state: "published" })]);
-      await expect(db.transaction(async tx => {
-        await retire(tx as unknown as typeof db);
-        await vi.advanceTimersByTimeAsync(1000);
-        expect(await notices()).toHaveLength(1);
-        throw new Error("outer cancellation rollback");
-      })).rejects.toThrow("outer cancellation rollback");
-      await settle(); expect(await notices()).toHaveLength(1);
+      // Company lifecycle owns its root transaction and intentionally rejects
+      // caller transactions. The other service producers support nesting.
+      if (change !== "company archive") {
+        await expect(db.transaction(async tx => {
+          await retire(tx as unknown as typeof db);
+          await vi.advanceTimersByTimeAsync(1000);
+          expect(await notices()).toHaveLength(1);
+          throw new Error("outer cancellation rollback");
+        })).rejects.toThrow("outer cancellation rollback");
+        await settle(); expect(await notices()).toHaveLength(1);
+      }
       await retire(db);
       await settle();
       expect(await notices()).toEqual(expect.arrayContaining([expect.objectContaining({
@@ -71219,6 +71399,81 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         await vi.advanceTimersByTimeAsync(120_000);
         expect(select).not.toHaveBeenCalled(); expect(transaction).not.toHaveBeenCalled();
       } finally { select.mockRestore(); transaction.mockRestore(); }
+      expect(errors).toEqual([]);
+    } finally { await coordinator.stop(); vi.useRealTimers(); await context.service.shutdown(); }
+  });
+
+  it("rechecks source retirement after a queued notice's late provider receipt commits", async () => {
+    const context = await deferredChatQueueFixture();
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true,
+      canReconcile: () => true, onError: error => errors.push(error) });
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    let held = false, release!: () => void;
+    const pending = new Promise<void>(resolve => { release = resolve; });
+    let publishing: Promise<number> | undefined;
+    const provider = context.runtime.endpoints.get(context.endpoint.id)!;
+    const settle = async () => vi.waitFor(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(idleWorkSnapshot().active).toBe(0); expect(coordinator.nextWakeAt()).toBeNull();
+    }, { timeout: 10_000 });
+    try {
+      await chatInboundWakeNoticeWork(context.service).register(coordinator, () => true).ready;
+      await settle();
+      provider.postHook = async () => { held = true; await pending; };
+      publishing = context.service.processPendingPublications(100, { maintenance: false });
+      await vi.waitFor(() => expect(held).toBe(true));
+      await issueService(db).tombstoneComment(String(context.action.payload.commentId), {
+        actorType: "user", userId: "owner-user",
+      });
+      await vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(coordinator.nextWakeAt()).toBeNull();
+      });
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(1);
+      release(); await publishing; provider.postHook = undefined;
+      await settle();
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toEqual(expect.arrayContaining([expect.objectContaining({
+        payload: { text: "This queued message was removed.", progressState: "failed" },
+      })]));
+      await context.service.processPendingPublications(100, { maintenance: false });
+      await settle();
+      expect(provider.edits).toEqual([expect.objectContaining({ text: "This queued message was removed." })]);
+      expect(errors).toEqual([]);
+    } finally { release(); await publishing; provider.postHook = undefined; await coordinator.stop(); vi.useRealTimers(); await context.service.shutdown(); }
+  });
+
+  it("wakes inbound notice retirement from a signed Slack Stop without a maintenance scan", async () => {
+    const context = await deferredChatQueueFixture(false, undefined, true);
+    await qualifySetupRoundTrip(context.service, context.endpoint.id, "UBOARD");
+    await context.service.test(context.endpoint.id, "owner-user");
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true,
+      canReconcile: () => true, onError: error => errors.push(error) });
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    const settle = async () => vi.waitFor(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(idleWorkSnapshot().active).toBe(0); expect(coordinator.nextWakeAt()).toBeNull();
+    }, { timeout: 10_000 });
+    try {
+      await chatInboundWakeNoticeWork(context.service).register(coordinator, () => true).ready;
+      await settle(); await context.service.processPendingPublications(100, { maintenance: false }); await settle();
+      const body = JSON.stringify({ type: "event_callback", team_id: "T-PAPERCLIP", event_id: "EvSleepQueueStop",
+        event: { type: "agent_session_stopped", channel: "CDEFERREDNOTICE", thread_ts: "1999000.1",
+          event_ts: `${Math.floor(Date.now() / 1000)}.999999`, streaming_message_ts: [], user: "UBOARD" },
+      });
+      const response = await context.service.handleWebhook(context.endpoint.publicId, "slack", signedSlackWebhookRequest({
+        body, contentType: "application/json", url: `https://paperclip.example/api/chat-webhooks/${context.endpoint.publicId}/slack`,
+      }));
+      expect(response.status).toBe(202);
+      await settle();
+      expect(await db.select({ status: chatActions.status, result: chatActions.result }).from(chatActions)
+        .where(and(eq(chatActions.endpointId, context.endpoint.id), eq(chatActions.kind, "slack_session_stop"))))
+        .toEqual([expect.objectContaining({ status: "processed", result: expect.objectContaining({ code: "slack_session_stop_cancelled" }) })]);
+      expect(await readAgentWakeupRequestsById(context.action.id)).toEqual([expect.objectContaining({ status: "cancelled" })]);
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toEqual(expect.arrayContaining([expect.objectContaining({
+        payload: { text: "This follow-up was not started. Open the task in Paperclip for details.", progressState: "failed" },
+      })]));
       expect(errors).toEqual([]);
     } finally { await coordinator.stop(); vi.useRealTimers(); await context.service.shutdown(); }
   });

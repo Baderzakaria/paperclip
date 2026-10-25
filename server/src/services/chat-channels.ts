@@ -3352,7 +3352,9 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
 
   async function processPublicationMaintenance(limit = 25) {
     scheduleGitHubMaintenance();
-    await enqueueInboundWakeupPublications();
+    // Normal inbound notices are commit-driven. Failed-run retries retain their
+    // separate maintenance owner until its own producer audit is complete.
+    await enqueueFailedChatRetryPublications();
     await reconcileTerminalConfirmationActions(limit);
     await processPendingInteractionWakeups(limit);
   }

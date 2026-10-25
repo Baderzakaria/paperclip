@@ -1,3 +1,4 @@
+import { notifyChatInboundWakeNotices } from "../services/chat-inbound-wake-notice-notifications.js";
 import { taskInterruptionPresentation, taskInterruptionPresentations } from "../services/task-interruption-presentation.js";
 import { parseObject } from "../adapters/utils.js";
 import { prepareRestrictedWorkspaceRetry } from "../services/restricted-workspace-retry.js";
@@ -13373,14 +13374,18 @@ export function issueRoutes(
       const subjectId = req.body.subjectId as string;
       await assertIssueGrantSubjectExists(issue.companyId, subjectType, subjectId);
       const actor = getActorInfo(req);
-      const result = await db.transaction((tx) => ensureActiveIssueAccessGrant(tx, {
-        issueId: managedIssue.id,
-        subjectType,
-        subjectId,
-        source: "explicit",
-        grantedByUserId: actor.actorType === "user" ? actor.actorId : null,
-        grantedByAgentId: actor.agentId,
-      }));
+      const result = await db.transaction(async (tx) => {
+        // Grants on an ancestor can restore current chat authority on descendants.
+        await notifyChatInboundWakeNotices(tx, { companyId: issue.companyId });
+        return ensureActiveIssueAccessGrant(tx, {
+          issueId: managedIssue.id,
+          subjectType,
+          subjectId,
+          source: "explicit",
+          grantedByUserId: actor.actorType === "user" ? actor.actorId : null,
+          grantedByAgentId: actor.agentId,
+        });
+      });
       if (result.created) {
         await logActivity(db, {
           companyId: issue.companyId,
