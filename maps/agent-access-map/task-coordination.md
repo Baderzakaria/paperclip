@@ -27,7 +27,9 @@ API: `present` — representative operation IDs:
 Agent access: `available` — Native create_task/reassign_task; REST / CLI / MCP.
 
 Policy: Task visibility/mutation, task-assignment and ownership policy; review audience
-independent; tree controls board-only.
+independent; tree controls board-only. Resume preview counts only current agent
+assignees on todo, in-progress, and in-review tasks as wake targets. Release keeps
+blocked and backlog statuses intact; existing execution gates still apply.
 
 Evidence: `source-only` —
 [implementation](../../server/src/routes/issue-tree-control.ts#L95) at the reviewed

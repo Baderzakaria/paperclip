@@ -6,6 +6,7 @@ import {
 } from "@paperclipai/db";
 import { and, eq, inArray, isNotNull } from "drizzle-orm";
 import { getExecutionBlocker } from "../services/execution-blocker.js";
+import { ISSUE_TREE_RESUME_EXECUTABLE_STATUSES } from "../services/issue-tree-control.js";
 import { conflict } from "../errors.js";
 import {
   createIssueTreeHoldSchema,
@@ -26,7 +27,6 @@ import { assertBoard, getAccessibleResource, getActorInfo } from "./authz.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
 const TREE_RUN_CANCELLATION_RESPONSE_WAIT_MS = 1_000;
-const RESUME_EXECUTABLE_STATUSES = ["todo", "in_progress", "in_review"];
 
 function errorToMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
@@ -444,7 +444,7 @@ export function issueTreeControlRoutes(
           const candidates = await db.select({ id: issueRows.id, identifier: issueRows.identifier })
             .from(issueRows).where(and(
               eq(issueRows.companyId, root.companyId), inArray(issueRows.id, issueIds),
-              inArray(issueRows.status, RESUME_EXECUTABLE_STATUSES), isNotNull(issueRows.assigneeAgentId),
+              inArray(issueRows.status, ISSUE_TREE_RESUME_EXECUTABLE_STATUSES), isNotNull(issueRows.assigneeAgentId),
             ));
           for (const task of candidates) {
             const blocked = await getExecutionBlocker(db, root.companyId, task.id);
@@ -496,7 +496,7 @@ export function issueTreeControlRoutes(
               !issue ||
               issue.companyId !== root.companyId ||
               !issue.assigneeAgentId ||
-              !RESUME_EXECUTABLE_STATUSES.includes(issue.status)
+              !ISSUE_TREE_RESUME_EXECUTABLE_STATUSES.includes(issue.status)
             )
               continue;
             await heartbeat.wakeup(issue.assigneeAgentId, {
