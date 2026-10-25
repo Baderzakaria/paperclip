@@ -203,3 +203,45 @@ shared-consumer cases (786 selected tests). Workspace typecheck and build passed
 The final added failure case changed tests only after the typecheck; the workspace
 build compiled the current tree. No production changes followed the full run.
 Remote CI/review remains pending until this branch is published.
+
+
+## Review follow-up: shared scheduling and real authority restoration
+
+Paperclip review at `439d0a86eb` requested one scheduling implementation and a
+production-wiring regression. `scoped-deadline-work.ts` now owns coalescing,
+scoped reconstruction, bounded fair batches, per-entry/scope backoff and drain
+retention for both voice workers. The adapters retain their own scope matching,
+load/check contracts, eligibility and provider operations. The helper has no SQL,
+provider knowledge, or feature flags; absent consumers register no work.
+
+The restoration test now registers the real voice service's reply and live-call
+recovery workers. It first lets the reply encounter suspended membership, restores
+membership before the next live-call authority inspection, and verifies exactly
+one send through the production authorization callback. Healthy inspections do
+not resend; confirmed hangup leaves both workers SQL-quiet. This deliberately
+preserves the documented window: if recovery observes denied authority first,
+it closes the call rather than waiting indefinitely for access to return.
+
+A mutation probe removed only the production `authorityAvailable` invocation.
+The new test failed with zero sends instead of one. The production line was
+restored in a finally block; the unmodified case passes. This replaces the older
+test that called the notification directly.
+
+Full voice/startup/coordinator/batching selection passed 180 tests on a fresh
+PostgreSQL database. Initial parent recovery verification passed nine and failed
+two: the extraction captured load methods at registration, bypassing the tests'
+later injected refresh failures and concurrent-write barriers. Adapters now call
+the service methods at dispatch time, preserving the original boundary. All 11
+parent lifecycle tests pass on their separately isolated database. These failures
+are retained here rather than counted as successful initial verification.
+
+The optional review suggestion to cache the feature flag across a batch is not
+applied: current checks retain authority/configuration checks at dispatch, including
+changes while earlier provider calls are in flight. Any optimization must preserve
+that behavior. Workspace checks and fresh remote acceptance are recorded below
+when complete; the prior 5/5 Greptile score does not cover this follow-up yet.
+
+Workspace `pnpm -r typecheck` and `pnpm build` pass after the review repairs.
+The 191 selected tests above are overlapping consumer verification, not an
+additional 191 unique cases on top of the earlier 786. Remote acceptance remains
+required on the published follow-up head.
