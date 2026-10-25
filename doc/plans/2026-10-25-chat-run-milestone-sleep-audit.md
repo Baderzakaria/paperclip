@@ -1350,3 +1350,66 @@ register the lifecycle worker, retain the separate native-progress duty, remove
 only the lifecycle poll, and complete current-head CI/review. Fresh master
 34409a92c4 is fetched but not yet reconciled into the stack. Older parent CI and
 voice security/deletion findings plus every original remaining reason stay open.
+
+
+## Restoring current publication authority
+
+Post-control lineage reads current connection enablement/status, resource reach,
+endpoint reach/unlinked policy, linked human membership, and task visibility.
+Restoring one of those facts can make a retained notice eligible without a run
+transition. Nine real service-owner cases now cover that change after the worker
+has exhausted startup: connection enablement, resource selection, unlinked reach,
+identity confirmation, updateMember, updateMemberAndPermissions, ensureMembership,
+setUserCompanyAccess, and task visibility. All keep the original authorization
+reader and exact admitted source proof. No new run is dispatched to get a notice.
+
+Owner changes:
+- The existing notifyChatEndpointWork contract now requires the already-known
+  company identity and also wakes milestones. Its configuration/status callers
+  pass that identity; ordinary health-only callbacks still use the narrower
+  notifyChatEndpointConfiguration/notifyChatConnectionConfiguration contracts.
+  This is a bounded wake on an actual configuration operation, not a health poll.
+- Endpoint policy edits signal only newly enabled direct/group/unlinked reach.
+  Identity confirmation signals inside its existing advisory/row-lock transaction.
+- Resource selection signals only a net disabled-to-enabled grant, covering both
+  individual and bulk GitHub selection through their common owner. Unchanged
+  inventory/defaults/selection does not create milestone work.
+- Membership mutation owners signal human activation or viewer-to-active-role
+  restoration before writing. ensureMembership now owns its read/write transaction;
+  agent memberships and unchanged human state do not emit milestone intents.
+- The issue update owner signals only hidden-to-visible restoration. Ordinary
+  chat-bound assignee changes are rejected by the existing chat_binding_agent_locked
+  guard, not treated as a supported restoration path.
+
+Evidence and corrected failures:
+- /tmp/sleep28-authority-before.log: seven actual missed-wake failures, plus an
+  invalid Discord group-reach test. Discord channels use resource.enabled rather
+  than allowGroupChats; that fixture was already eligible before restoration.
+  Do not count that invalid failure as a production defect.
+- /tmp/sleep28-authority-tests.log: the seven valid cases pass after repair; the
+  incorrect reach test still fails its precondition. It was replaced with actual
+  connection enablement, which fails before repair in
+  /tmp/sleep28-connection-authority-before.log.
+- /tmp/sleep28-resource-selection-before.log: real resource grant restoration
+  misses its notice. Existing NOWAIT retry logs are retained; the assertion
+  failure is absence of the terminally eligible publication.
+- /tmp/sleep28-authority-final-acceptance.log: all 50 selected integration cases
+  pass (the full post-close authority group plus ingress/revocation/Telegram
+  migration). Nine restoration cases include unchanged replay quietness where
+  supported; one-time link confirmation retains its existing consumed-token
+  behavior. Explicit connection updates retain their configuration wake.
+- /tmp/sleep28-access-acceptance.log: all 18 access service regressions pass.
+- /tmp/sleep28-authority-action-tests.log: all six action-worker cases pass.
+- Initial typecheck caught a caller using connection.companyId that its query
+  did not select. It now uses the owning operation's companyId. Final server
+  typecheck/build pass in /tmp/sleep28-authority-final-{typecheck,build}.log.
+
+Alternate human-membership producers remain: middleware/auth.ts Cloud trusted-
+header synchronization and board-claim.ts. Startup local-board insertion runs
+before worker reconstruction; compatibility backfill only inserts agent members.
+Cloud sign-in and board claim can restore humans while a worker is running and
+must be covered before removing its poll. Credential rotation advances the
+runtime fence; old sources must not regain authority from a new credential
+fingerprint. Keep the existing generation/chronology denial tests. Remaining
+producer dispositions, production wiring, full remote gates and original stack
+scope are still required; this checkpoint is not a completed sleep migration.

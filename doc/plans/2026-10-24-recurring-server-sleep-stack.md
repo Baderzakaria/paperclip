@@ -1677,3 +1677,14 @@ milestone cases, 89 recovery-action cases and server types/build pass. Four
 classification callers reuse their issue identity, with no new queue table or
 provider policy in shared code. Authority/configuration audit and production
 wiring remain next; the original full stack and remote gates remain incomplete.
+
+
+Slice 28 now covers nine real authority-restoration owners: connection/resource
+reach, unlinked policy, identity confirmation, four membership paths and task
+visibility. Seven initial causal failures plus connection/resource reproductions
+now pass; the invalid Discord group-reach fixture is explicitly retained in the
+failure record. Final local selection: 50 chat integrations, 18 access tests,
+six action-worker tests, server typecheck/build. No provider authorization was
+relaxed. Cloud trusted-header membership sync and board claim remain alternate
+writers to cover before production registration/poll removal. Older parent
+findings and the complete original stack remain open.

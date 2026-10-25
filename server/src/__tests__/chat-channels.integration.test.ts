@@ -1,3 +1,4 @@
+import { accessService } from "../services/access.js";
 import { signalDatabaseWork, subscribeDatabaseWork } from "@paperclipai/db";
 import { restoreNativeChatReviewPresentationInTransaction } from "../services/native-runtime/native-chat-review-presentation.js";
 import { notifyChatEndpointConfiguration, notifyChatCompanyConfiguration } from "../services/chat-channels/configuration-work-notifications.js";
@@ -52619,6 +52620,75 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           expect(onError).not.toHaveBeenCalled();
         } finally { await coordinator.stop(); await f.close(); }
       });
+
+      it.each(["connection", "resource", "unlinked", "identity", "member", "member_permissions", "ensure_membership", "company_access", "visibility"] as const)(
+        "wakes a post-close milestone when %s authority is restored", async owner => {
+          const f = await reopenedFixture();
+          const onError = vi.fn();
+          const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError });
+          const notice = () => db.select().from(chatPublications).where(and(
+            eq(chatPublications.issueId, f.conversation.issueId),
+            eq(chatPublications.idempotencyKey, `run:${f.fresh.runId}:working:${f.endpoint.id}`),
+          ));
+          const access = accessService(db);
+          const membership = (await db.select().from(companyMemberships).where(and(
+            eq(companyMemberships.companyId, f.fixture.companyId), eq(companyMemberships.principalId, "owner-user"),
+          )))[0];
+          try {
+            let restore: () => Promise<unknown>;
+            if (owner === "connection") {
+              await toolAccessService(db).updateConnection(f.endpoint.connectionId, { enabled: false });
+              restore = () => toolAccessService(db).updateConnection(f.endpoint.connectionId, { enabled: true });
+            } else if (owner === "resource") {
+              const [conversation] = await db.select().from(chatConversations).where(eq(chatConversations.id, f.conversation.id));
+              expect(conversation.resourceId).not.toBeNull();
+              await f.service.replaceResources(f.endpoint.id, [{ id: conversation.resourceId!, enabled: false }], "owner-user");
+              restore = () => f.service.replaceResources(f.endpoint.id, [{ id: conversation.resourceId!, enabled: true }], "owner-user");
+            } else if (owner === "identity" || owner === "unlinked") {
+              await f.service.update(f.endpoint.id, { allowUnlinkedPeople: false }, "owner-user");
+              await f.service.revokeLink(f.endpoint.id, f.fresh.action.principalId!);
+              if (owner === "unlinked") {
+                restore = () => f.service.update(f.endpoint.id, { allowUnlinkedPeople: true }, "owner-user");
+              } else {
+                const intent = await f.service.createLinkIntent(f.endpoint.id, f.fresh.action.principalId!, 1800);
+                restore = () => f.service.confirmIdentityLink(new URL(intent.confirmationUrl).searchParams.get("token")!, "owner-user");
+              }
+            } else if (owner === "visibility") {
+              await issueService(db).update(f.conversation.issueId, { hiddenAt: new Date() });
+              restore = () => issueService(db).update(f.conversation.issueId, { hiddenAt: null });
+            } else {
+              // Model existing denied authority without exercising revocation's
+              // unrelated credential cleanup; restoration uses its actual owner.
+              await db.update(companyMemberships).set({ status: "suspended" }).where(eq(companyMemberships.id, membership.id));
+              if (owner === "member") restore = () => access.updateMember(f.fixture.companyId, membership.id, { status: "active" });
+              else if (owner === "member_permissions") restore = () => access.updateMemberAndPermissions(f.fixture.companyId, membership.id, { status: "active", grants: [] }, "owner-user");
+              else if (owner === "ensure_membership") restore = () => access.ensureMembership(f.fixture.companyId, "user", "owner-user", membership.membershipRole, "active");
+              else {
+                const existing = await db.select().from(companyMemberships).where(and(
+                  eq(companyMemberships.principalType, "user"), eq(companyMemberships.principalId, "owner-user"),
+                ));
+                restore = () => access.setUserCompanyAccess("owner-user", existing.map(row => row.companyId));
+              }
+            }
+            await chatRunMilestoneWork(db).register(coordinator, () => true).ready;
+            await vi.waitFor(() => expect(coordinator.nextWakeAt()).toBeNull());
+            expect(await notice()).toEqual([]);
+            await restore();
+            await expect.poll(notice, { timeout: 5000 }).toEqual([
+              expect.objectContaining({ idempotencyKey: `run:${f.fresh.runId}:working:${f.endpoint.id}` }),
+            ]);
+            await vi.waitFor(() => expect(coordinator.nextWakeAt()).toBeNull());
+            if (owner !== "identity" && owner !== "connection") {
+              const notices: string[] = [];
+              const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.chatRunMilestones, event => notices.push(event));
+              try { await restore(); expect(notices).toEqual([]); }
+              finally { unsubscribe(); }
+              expect(await notice()).toHaveLength(1);
+            }
+            expect(onError).not.toHaveBeenCalled();
+          } finally { await coordinator.stop(); await f.close(); }
+        },
+      );
 
       it("publishes working and the exact fresh final after pinned close without resurrecting the old source", async () => {
         const f = await reopenedFixture();

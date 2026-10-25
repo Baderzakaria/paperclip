@@ -284,6 +284,9 @@ export function createChatResourceReconciliation(db: Db, options: ResourceReconc
               before: { enabled: row.enabled, ...(JSON.stringify(row.executionDefaults) !== JSON.stringify(finalDefaults.get(row.id)) ? { executionDefaults: row.executionDefaults } : {}) },
               after: { enabled: finalEnabled.get(row.id)!, ...(JSON.stringify(row.executionDefaults) !== JSON.stringify(finalDefaults.get(row.id)) ? { executionDefaults: finalDefaults.get(row.id) } : {}) },
             }));
+          if (changes.some(change => !change.before.enabled && change.after.enabled)) {
+            await notifyChatRunMilestones(tx, { companyId: endpoint.companyId });
+          }
           if (bulk) {
             // One atomic database update, independent of pagination/search and
             // serialized with refresh, reconnect, and individual row changes.
@@ -500,7 +503,7 @@ export function createChatResourceReconciliation(db: Db, options: ResourceReconc
                       ? "verifying"
                       : currentEndpoint.status;
                 await notifyChatEndpointConfiguration(tx, currentEndpoint);
-                if (status !== currentEndpoint.status) await notifyChatEndpointWork(tx, currentEndpoint.connectionId);
+                if (status !== currentEndpoint.status) await notifyChatEndpointWork(tx, currentEndpoint.connectionId, currentEndpoint.companyId);
                 await tx
                   .update(chatEndpoints)
                   .set({

@@ -42,7 +42,10 @@ export async function notifyChatVerificationWork(tx: object): Promise<void> {
   await notifyDeliveryWork(tx, DELIVERY_QUEUES.chatVerification);
 }
 
-export async function notifyChatEndpointWork(tx: object, connectionId: string): Promise<void> {
+export async function notifyChatEndpointWork(tx: object, connectionId: string, companyId: string): Promise<void> {
+  // Configuration/status transitions can restore post-control publication
+  // authority. Ordinary health checks use the narrower configuration signals.
+  await notifyChatRunMilestones(tx, { companyId });
   await notifyChatDeliveryWork(tx);
   await notifyChatPublicationWork(tx);
   for (const queue of Object.values(CHAT_ACTION_QUEUES)) await notifyDeliveryWork(tx, queue);
