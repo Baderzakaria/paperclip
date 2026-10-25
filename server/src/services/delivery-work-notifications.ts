@@ -47,6 +47,7 @@ export const DELIVERY_QUEUES = {
   voiceInboundCleanup: "voice-inbound-cleanup",
   voiceReplies: "voice-reply-delivery",
   chatTeamsConsentExpiry: "chat-teams-consent-expiry",
+  chatTeamsAttemptRecovery: "chat-teams-attempt-recovery",
   chatCommandRegistration: "chat-command-registration",
   chatTelegramSubscriptions: "chat-telegram-subscriptions",
   chatSessionSyncs: "chat-session-syncs",

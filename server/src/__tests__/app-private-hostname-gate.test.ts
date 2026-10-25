@@ -81,10 +81,11 @@ describe("createChatReconciliationCoordinator", () => {
     expect(source).toContain("chatChannels.registerReceiverWork(deliveryWork,");
     expect(source).toContain("chatChannels.registerTeamsConsentExpiryWork(deliveryWork,");
     const teams = readFileSync(new URL("../services/chat-channels/microsoft-teams/file-delivery.ts", import.meta.url), "utf8");
-    const remainingMaintenance = teams.slice(teams.indexOf("function scheduleTeamsFileMaintenance"), teams.indexOf("function registerTeamsConsentExpiryWork"));
-    expect(remainingMaintenance).toContain("protocol.recoverAbandonedAttempts(");
-    expect(remainingMaintenance).not.toContain("protocol.expireAndRecover(");
-    expect(remainingMaintenance).not.toContain("chatTeamsFileTransfers.expiresAt");
+    expect(source).toContain("chatChannels.registerTeamsAttemptRecoveryWork(deliveryWork,");
+    expect(teams).not.toContain("scheduleTeamsFileMaintenance");
+    expect(teams).not.toContain("selectDistinct");
+    const chat = readFileSync(new URL("../services/chat-channels.ts", import.meta.url), "utf8");
+    expect(chat).not.toContain("scheduleTeamsFileMaintenance");
   });
 
   it("separates live voice recovery from the remaining periodic maintenance", () => {

@@ -1,3 +1,4 @@
+import { notifyTeamsAttemptRecovery } from "./chat-channels/microsoft-teams/attempt-recovery-work.js";
 import { notifyTeamsConsentExpiry, unusedTeamsConsentPhases } from "./chat-channels/microsoft-teams/consent-expiry-work.js";
 import { createHash, randomUUID } from "node:crypto";
 import { and, eq, gt, inArray, lte, or, sql } from "drizzle-orm";
@@ -390,6 +391,7 @@ export function teamsFileTransferService(
     patch: Partial<typeof chatTeamsFileTransfers.$inferInsert>,
   ): Promise<Row> {
     await notifyTeamsConsentExpiry(tx, row.id);
+    await notifyTeamsAttemptRecovery(tx, row.id);
     const [next] = await tx
       .update(chatTeamsFileTransfers)
       .set({ ...patch, version: row.version + 1, updatedAt: now() })
@@ -1159,6 +1161,7 @@ export function teamsFileTransferService(
     get,
     expireAndRecover: (companyId: string, limit = 25) => expireAndRecover(companyId, limit),
     recoverAbandonedAttempts: (companyId: string, limit = 25) => expireAndRecover(companyId, limit, "attempts"),
+    recoverAbandonedAttempt: (companyId: string, id: string) => recoverTransfer(companyId, id, "attempts"),
     expireUnusedConsent: (companyId: string, id: string) => recoverTransfer(companyId, id, "consent"),
     cancel,
     canCancelConflict,

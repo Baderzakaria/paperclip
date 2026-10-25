@@ -1377,3 +1377,16 @@ Slice 26 is published as [#17590](https://github.com/paperclipai/paperclip/pull/
 at 5ddb4543ed, based on #17586. It is attached; remote gates remain required.
 Slice 27 begins the separate Teams abandoned transport-attempt audit. The full
 original inventory, older findings and final master reconciliation remain open.
+
+
+## Slice 27: Teams abandoned transport attempts
+
+Attempt recovery now follows committed claims and saved 90-second deadlines.
+It preserves unknown outcomes and performs no provider I/O. This removes the last
+Teams periodic maintenance callback; unused consent remains the separate parent
+owner. The [audit](2026-10-25-teams-attempt-recovery-sleep-audit.md) records 235
+unique selected passing cases and preserved initial test failures. Workspace
+typecheck and build pass; publication and remote acceptance remain open.
+#17590 has Greptile 5/5; CI is running. #17586 has new review findings for writer
+support and report-query indexing. Fix at that parent and propagate before
+acceptance. All original remaining work and previous unresolved findings remain.

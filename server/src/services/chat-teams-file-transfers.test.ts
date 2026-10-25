@@ -1,3 +1,4 @@
+import { teamsAttemptRecoveryWork } from "./chat-channels/microsoft-teams/attempt-recovery-work.js";
 import { teamsConsentExpiryWork } from "./chat-channels/microsoft-teams/consent-expiry-work.js";
 import { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
 import { idleWorkSnapshot } from "./task-admission.js";
@@ -331,6 +332,200 @@ suite(
         },
       };
     }
+
+    describe("scheduled abandoned attempt recovery", () => {
+      let coordinator: ReturnType<typeof createDeliveryWorkCoordinator> | undefined;
+      const transferIds: string[] = [], errors: unknown[] = [];
+      let enabled = true;
+      afterEach(async () => {
+        await coordinator?.stop(); coordinator = undefined;
+        vi.useRealTimers(); vi.restoreAllMocks();
+        if (transferIds.length) await db.delete(chatTeamsFileTransfers).where(inArray(chatTeamsFileTransfers.id, transferIds.splice(0)));
+        errors.length = 0; enabled = true;
+      });
+      async function transfer() {
+        const f = await fixture(600_000); transferIds.push(f.created.id);
+        f.opts.now = () => new Date();
+        return f;
+      }
+      async function abandon(f: Awaited<ReturnType<typeof transfer>>, stage = "consent") {
+        if (stage !== "consent") {
+          await f.service().process(f.a.companyId, f.created.id);
+          await f.service().recordConsent(await f.event());
+          if (stage === "file_info") await f.service().process(f.a.companyId, f.created.id);
+        }
+        const outcome = stage === "consent" ? "awaiting_consent" : stage === "upload" ? "file_info_pending" : "delivered";
+        f.opts.project = async (_tx, row) => { if (row.phase === outcome) throw new Error("receipt projection interrupted"); };
+        await expect(f.service().process(f.a.companyId, f.created.id)).rejects.toThrow("receipt projection interrupted");
+        delete f.opts.project;
+        return (await f.read()).attemptExpiresAt!.getTime();
+      }
+      function worker(recover: (companyId: string, id: string) => Promise<boolean>) {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+        coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => enabled, canReconcile: () => true, onError: error => errors.push(error) });
+        const work = teamsAttemptRecoveryWork(db, recover);
+        return { work, ready: work.register(coordinator, () => enabled).ready };
+      }
+      async function settled() {
+        await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(1000); expect(idleWorkSnapshot().active).toBe(0); }, { timeout: 5000 });
+      }
+      async function quiet(ms = 10_000) {
+        const select = vi.spyOn(db, "select"), transaction = vi.spyOn(db, "transaction"), execute = vi.spyOn(db, "execute");
+        try { await vi.advanceTimersByTimeAsync(ms); expect(select).not.toHaveBeenCalled(); expect(transaction).not.toHaveBeenCalled(); expect(execute).not.toHaveBeenCalled(); }
+        finally { select.mockRestore(); transaction.mockRestore(); execute.mockRestore(); }
+      }
+      it("leaves unused consent and retained terminal history quiet", async () => {
+        const f = await transfer(), cancelled = await transfer();
+        await cancelled.service().cancel(cancelled.a.companyId, cancelled.created.id);
+        await worker(f.service().recoverAbandonedAttempt).ready; await settled();
+        expect(coordinator!.nextWakeAt()).toBeNull(); await quiet(180_000);
+        expect((await f.read()).phase).toBe("consent_pending"); expect(errors).toEqual([]);
+      });
+      it.each(["consent", "upload", "file_info"])("restores the actual %s claim deadline and quarantines without repeating provider I/O", async stage => {
+        const f = await transfer(); const due = await abandon(f, stage);
+        const calls = [f.opts.postConsent, f.opts.uploadRequest!, f.opts.postFileInfo].map(fn => vi.mocked(fn).mock.calls.length);
+        await worker(f.service().recoverAbandonedAttempt).ready; await settled();
+        expect(coordinator!.nextWakeAt()).toBe(due); await quiet();
+        await coordinator!.stop(); await worker(f.service().recoverAbandonedAttempt).ready;
+        expect(coordinator!.nextWakeAt()).toBe(due); await quiet();
+        await vi.advanceTimersByTimeAsync(due - Date.now() + 1000); await settled();
+        expect(await f.read()).toMatchObject({ phase: `${stage}_unknown`, attemptId: null, attemptExpiresAt: null, reason: "worker_outcome_unknown" });
+        expect(coordinator!.nextWakeAt()).toBeNull(); await quiet(180_000);
+        expect([f.opts.postConsent, f.opts.uploadRequest!, f.opts.postFileInfo].map(fn => vi.mocked(fn).mock.calls.length)).toEqual(calls);
+        expect(errors).toEqual([]);
+      });
+      it("wakes from the real first claim and removes the deadline after normal settlement", async () => {
+        const f = await transfer(); let release!: () => void, entered!: () => void;
+        const hold = new Promise<void>(resolve => { release = resolve; }), ready = new Promise<void>(resolve => { entered = resolve; });
+        f.opts.postConsent = vi.fn(async () => { entered(); await hold; return { id: "card-1" }; });
+        await worker(f.service().recoverAbandonedAttempt).ready; await settled();
+        expect(coordinator!.nextWakeAt()).toBeNull();
+        const send = f.service().process(f.a.companyId, f.created.id);
+        try {
+          await ready; await settled(); const row = await f.read();
+          expect(coordinator!.nextWakeAt()).toBe(row.attemptExpiresAt!.getTime()); await quiet();
+        } finally { release(); }
+        expect((await send).phase).toBe("awaiting_consent"); await settled();
+        expect(coordinator!.nextWakeAt()).toBeNull(); await quiet(180_000);
+        expect(f.opts.postConsent).toHaveBeenCalledTimes(1);
+      });
+      it("retains a first committed attempt across drain and recovers on resume", async () => {
+        const f = await transfer(); enabled = false;
+        await worker(f.service().recoverAbandonedAttempt).ready;
+        let release!: () => void, entered!: () => void;
+        const hold = new Promise<void>(resolve => { release = resolve; }), ready = new Promise<void>(resolve => { entered = resolve; });
+        f.opts.postConsent = vi.fn(async () => { entered(); await hold; return { id: "late-card" }; });
+        const send = f.service().process(f.a.companyId, f.created.id);
+        try {
+          await ready; await f.service().recordConsent(await f.event());
+          await f.service().recordConsent(await f.event("decline"));
+        } finally { release(); await send; }
+        await quiet(120_000);
+        expect((await f.read()).phase).toBe("conflict"); expect((await f.read()).attemptId).not.toBeNull();
+        enabled = true; await vi.advanceTimersByTimeAsync(30_000); await settled();
+        expect((await f.read()).phase).toBe("conflict"); expect((await f.read()).attemptId).toBeNull();
+        expect(coordinator!.nextWakeAt()).toBeNull(); await quiet(); expect(errors).toEqual([]);
+      });
+      it("retains atomic recovery after projection failure without leaking its error", async () => {
+        const f = await transfer(); const due = await abandon(f); let fail = true;
+        f.opts.project = async tx => {
+          await tx.update(chatPublications).set({ state: "failed" }).where(eq(chatPublications.id, f.a.publicationId));
+          if (fail) throw new Error("PRIVATE-TEAMS-UPLOAD-CANARY");
+        };
+        await worker(f.service().recoverAbandonedAttempt).ready;
+        await vi.advanceTimersByTimeAsync(due - Date.now() + 1000); await settled();
+        expect((await f.read()).phase).toBe("consent_sending");
+        expect((await db.select().from(chatPublications).where(eq(chatPublications.id, f.a.publicationId)))[0].state).toBe("pending");
+        expect(errors).toHaveLength(1); expect(String((errors[0] as AggregateError).errors[0])).not.toContain("CANARY");
+        fail = false; await vi.advanceTimersByTimeAsync(30_000); await settled();
+        expect((await f.read()).phase).toBe("consent_unknown");
+        expect(coordinator!.nextWakeAt()).toBeNull(); await quiet(); expect(f.opts.postConsent).toHaveBeenCalledTimes(1);
+      });
+      it("preserves conflict evidence and clears only its expired ownership", async () => {
+        const f = await transfer(); let release!: () => void, entered!: () => void;
+        const hold = new Promise<void>(resolve => { release = resolve; }), ready = new Promise<void>(resolve => { entered = resolve; });
+        f.opts.postConsent = vi.fn(async () => { entered(); await hold; return { id: "late-card" }; });
+        await worker(f.service().recoverAbandonedAttempt).ready;
+        const send = f.service().process(f.a.companyId, f.created.id);
+        try {
+          await ready; await f.service().recordConsent(await f.event());
+          await f.service().recordConsent(await f.event("decline"));
+        } finally { release(); }
+        await send; const before = await f.read(); expect(before.phase).toBe("conflict");
+        await settled(); expect(coordinator!.nextWakeAt()).toBe(before.attemptExpiresAt!.getTime());
+        await vi.advanceTimersByTimeAsync(before.attemptExpiresAt!.getTime() - Date.now() + 1000); await settled();
+        const after = await f.read(); expect(after).toMatchObject({ phase: "conflict", attemptId: null, attemptExpiresAt: null, reason: before.reason, privateState: before.privateState });
+        expect(coordinator!.nextWakeAt()).toBeNull(); await quiet(180_000);
+        expect(f.opts.postConsent).toHaveBeenCalledTimes(1); expect(errors).toEqual([]);
+      });
+      it("does not observe a rolled-back claim or contact the provider before commit", async () => {
+        const f = await transfer(); let release!: () => void, entered!: () => void;
+        const hold = new Promise<void>(resolve => { release = resolve; }), ready = new Promise<void>(resolve => { entered = resolve; });
+        f.opts.project = async (_tx, row) => { if (row.phase === "consent_sending") { entered(); await hold; throw new Error("claim rolled back"); } };
+        await worker(f.service().recoverAbandonedAttempt).ready; await settled();
+        const send = f.service().process(f.a.companyId, f.created.id);
+        const failure = expect(send).rejects.toThrow("claim rolled back");
+        try {
+          await ready; await vi.advanceTimersByTimeAsync(10_000);
+          expect(await teamsAttemptRecoveryWork(db, f.service().recoverAbandonedAttempt).load()).toEqual([]);
+          expect((await f.read()).phase).toBe("consent_pending"); expect(f.opts.postConsent).not.toHaveBeenCalled();
+        } finally { release(); await failure; }
+        await settled();
+        expect((await f.read()).phase).toBe("consent_pending"); expect(coordinator!.nextWakeAt()).toBeNull(); await quiet();
+      });
+      it("rounds submillisecond attempts up and rechecks a changed claim", async () => {
+        const f = await transfer(); await abandon(f);
+        const whole = Date.now() + 60_000;
+        await db.update(chatTeamsFileTransfers).set({ attemptExpiresAt: sql`${new Date(whole).toISOString()}::timestamptz + interval '0.0005 second'` }).where(eq(chatTeamsFileTransfers.id, f.created.id));
+        vi.useFakeTimers({ toFake: ["Date"] });
+        const work = teamsAttemptRecoveryWork(db, f.service().recoverAbandonedAttempt), [entry] = await work.load();
+        expect(entry.dueAt).toBe(whole + 1); vi.setSystemTime(whole); await work.check(entry);
+        expect((await f.read()).phase).toBe("consent_sending");
+        const changed = whole + 90_000;
+        await db.update(chatTeamsFileTransfers).set({ attemptId: randomUUID(), attemptExpiresAt: new Date(changed) }).where(eq(chatTeamsFileTransfers.id, f.created.id));
+        vi.setSystemTime(whole + 1); expect(await work.check(entry)).toMatchObject({ dueAt: changed });
+        expect((await f.read()).phase).toBe("consent_sending");
+        vi.setSystemTime(changed); expect(await work.check(entry)).toBeNull(); expect((await f.read()).phase).toBe("consent_unknown");
+      });
+      it("pages and drains healthy attempts across companies while a corrupt claim retains recovery", async () => {
+        const f = await transfer(), other = await transfer(); await abandon(f); await abandon(other);
+        for (let index = 0; index < 100; index++) {
+          const publicationId = randomUUID();
+          await db.insert(chatPublications).values({ id: publicationId, companyId: f.a.companyId,
+            endpointId: f.a.endpointId, conversationId: f.a.conversationId, issueId: f.a.issueId,
+            commentId: f.a.commentId, idempotencyKey: `attempt-page:${publicationId}`,
+            payload: { text: "Same authorized file", attachmentIds: [f.a.attachmentId] } });
+          const a = { ...f.a, publicationId };
+          const service = teamsFileTransferService(db, { ...f.opts, authorize: async () => a,
+            project: async (_tx, row) => { if (row.phase === "awaiting_consent") throw new Error("receipt interrupted"); } });
+          const created = await service.issue(a, new Date(Date.now() + 600_000)); transferIds.push(created.id);
+          await expect(service.process(a.companyId, created.id)).rejects.toThrow("receipt interrupted");
+        }
+        await db.update(chatTeamsFileTransfers).set({ authorityDigest: "0".repeat(64) }).where(eq(chatTeamsFileTransfers.id, f.created.id));
+        const { work, ready } = worker(f.service().recoverAbandonedAttempt); await ready;
+        const entries = await work.load(); expect(entries).toHaveLength(102);
+        const calls = vi.mocked(f.opts.postConsent).mock.calls.length;
+        await vi.advanceTimersByTimeAsync(Math.max(...entries.map(row => row.dueAt)) - Date.now() + 1000);
+        await vi.waitFor(async () => {
+          await vi.advanceTimersByTimeAsync(1000); expect((await other.read()).phase).toBe("consent_unknown");
+          expect((await work.load()).map(row => row.id)).toEqual([f.created.id]);
+        }, { timeout: 10_000 });
+        expect((await f.read()).phase).toBe("consent_sending"); expect(errors.length).toBeGreaterThan(0);
+        expect(f.opts.postConsent).toHaveBeenCalledTimes(calls);
+      }, 30_000);
+      it("joins recovery projection before shutdown completes", async () => {
+        const f = await transfer(); const due = await abandon(f); let release!: () => void, entered!: () => void;
+        const hold = new Promise<void>(resolve => { release = resolve; }), ready = new Promise<void>(resolve => { entered = resolve; });
+        f.opts.project = async () => { entered(); await hold; };
+        await worker(f.service().recoverAbandonedAttempt).ready;
+        try {
+          await vi.advanceTimersByTimeAsync(due - Date.now() + 1000); await ready;
+          let stopped = false; const stop = coordinator!.stop().then(() => { stopped = true; });
+          await Promise.resolve(); expect(stopped).toBe(false); release(); await stop;
+          expect((await f.read()).phase).toBe("consent_unknown");
+        } finally { release(); }
+      });
+    });
 
     describe("scheduled unused consent expiry", () => {
       let coordinator: ReturnType<typeof createDeliveryWorkCoordinator> | undefined;
