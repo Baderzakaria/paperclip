@@ -1192,3 +1192,22 @@ loops or changing domain backoff. All 152 selected command/coordinator/health,
 producer/Slack, delivery/standby/startup cases and server types/build pass. Publish
 for fresh CI/review. The full inventory, #17490 CI failure, and stack/master
 reconciliation remain open; no merge authority is implied.
+
+
+## Slice 20 receiver implementation
+
+Receiver discovery now uses scoped committed configuration changes, startup
+reconstruction, foreign-lease deadlines, and listener-stop completion. Voice and
+all other maintenance reasons remain separate. See
+[the receiver audit](2026-10-25-chat-receiver-discovery-sleep-audit.md).
+A failed-scope deadline regression and a real concurrent listener-stop race were
+reproduced and repaired. All 218 selected receiver/startup, Discord, Photon,
+command/delivery and standby cases pass, with workspace typechecking passing.
+Workspace build, publication and fresh remote gates remain open. This is not
+completion of the slice or the full stack. Master is refreshed at 0d73505098;
+final stack/master reconciliation remains required.
+
+Parent Discord #17557 at d3187f76a4 and company cleanup #17561 at e8febb30eb now
+have no failed or pending checks (Paperclip Review skipped). No merge was made.
+The older #17490 E2E cancellation failure remains unresolved. The entire original
+inventory stays in scope, with voice the next separate reason after receivers.

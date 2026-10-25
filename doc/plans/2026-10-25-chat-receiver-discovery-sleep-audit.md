@@ -3,7 +3,7 @@
 Parent: Discord command registration #17557, head d3187f76a4.
 Master refreshed during this continuation: e6ec781a1a.
 Branch: codex/sleep-20-chat-runtime-discovery.
-Status: owner audit; no implementation or passing migration claim yet.
+Status: implementation and focused lifecycle verification; publication and final acceptance pending.
 
 ## One reason for this PR
 
@@ -142,3 +142,92 @@ failed checks, passing security, and fresh Greptile 5/5. Its three reviewed find
 verified, and their threads resolved. This is acceptance of that current head,
 not a claim that the full stack is complete or reconciled with moving master.
 Company cleanup and Discord still have live current-head checks.
+
+
+## Implementation and verification update
+
+The aggregate chat lane now calls voice reconciliation only. Receiver discovery
+registers with the existing delivery coordinator. The receiver owner loads UUID
+pages of 100, keeps owned identities with no discovery deadline, and processes
+25 due receivers per fair company batch. Configuration hints refresh only their
+endpoint, connection, or company. A foreign owner schedules its saved lease
+expiry; a changed lease is reread before another attempt. Failures retain scoped
+30-second exponential backoff capped at five minutes. Dirty scopes suppress their
+cached deadlines until refresh succeeds; otherwise an old takeover deadline could
+cause repeated useless dispatch while the required refresh is in backoff.
+
+The generic configuration notifier replaces the misleading command-only helper
+name. Existing producers now notify both relevant owners. Shared delivery code
+still receives only a queue topic and scope hint. Provider selection and lease
+keys remain in the chat receiver owner. No schema or new per-worker table exists.
+
+Audited producer groups:
+
+| Owner | Receiver-relevant changes and integration |
+| --- | --- |
+| Configuration and setup probes | Existing connection helper covers configure, rotation, resume, pause, removal and completed setup before transaction writes |
+| Credential persistence and removal | Configuration notifier before reference changes, including Photon |
+| Inbound activation and resource reconciliation | Endpoint/connection notifier before status and health transitions |
+| Publication, interaction and provider-effect failures | Endpoint configuration notifier before attention/failed-health writes |
+| Discord Gateway lifecycle | Receiver hints before recovery/failure transitions; metadata-only writes do not create discovery work |
+| Photon transport failure and runtime recovery | Failure callback now signals before attention/disable; existing assert-owned recovery uses the shared endpoint helper |
+| Generic tool update/removal, manual health and access revocation | Existing chat connection helper, broadened configuration dispatch, and SDK transport filter |
+| Company deletion | Company hint precedes endpoint removal in the owning deletion transaction |
+| Ownership loss / invalidation | Local completion callback after listener stop and lease release; suppressed during shutdown |
+
+The additional direct-writer audit found publication-resolution, publication
+success, provider-effect success, inbound filtering, and Discord root-thread
+writes that only update timestamps. Endpoint display/reach preferences do not
+change receiver eligibility or the runtime generation. Photon configuration
+invalidates the runtime, writes allocation metadata, and proceeds through the
+credential/configuration owner; its allocation metadata is not an independent
+receiver identity. Slack/GitHub-only setup writers do not create leased receiver
+work. Capability projection in Discord reconciliation retains its existing owner.
+
+A real token-loss regression found a concurrent configuration wake could acquire
+another lease while the old listener was still stopping. The ownership map now
+retains the stopping owner until listener shutdown and lease release complete.
+Acquisition joins that owner's existing stop promise. Current-authority checks
+still reject stopping owners. The test uses real timing and holds listener stop;
+an earlier fake-clock observation returned before async SQL completed and did not
+prove absence of overlap. The strengthened test failed before the ownership fix.
+
+Current passing evidence: 32 receiver/startup cases, 90 selected Discord
+integration cases, all 20 Photon channel cases, and server typechecking. The
+Discord selection includes configuration, credential rotation, pause/resume,
+company deletion, token-loss stop ordering, and existing takeover/admission fences.
+The dedicated real-DB worker takeover test also passes, as do 75 command/delivery/
+standby consumer cases and full workspace typechecking. This is 218 unique selected
+passing cases. Workspace build and remote review/check gates remain pending.
+The full local test matrix is not claimed: embedded PostgreSQL is unavailable
+on this host, so these database suites use validated disposable external URLs.
+Remote CI must run the full matrix before acceptance.
+
+Recorded failures remain part of acceptance: initial receiver teardown omitted
+agent deletion; initial Discord pause used incomplete onboarding; failed-scope
+backoff initially selected the blocked cached takeover deadline; the real-timing
+stop race reproduced overlapping listeners. The first two were fixture defects;
+the latter two required implementation repairs. An initial backoff test expected
+zero idle holds during failed intent recovery; the correct contract retains the
+intent hold until reconciliation succeeds, so the test now checks the retry
+deadline and SQL silence rather than weakening that hold.
+
+## Writer and sleep boundaries
+
+Notifications cover the active database owner and its transaction-sharing clients.
+Warm standby does not run discovery; activation reconstructs its pending startup
+inventory. An already known foreign receiver remains recoverable from lease expiry,
+with real token CAS and callback fences. Arbitrary new configuration written by
+an independent process or direct SQL is not discovered by process-local hints;
+that deployment needs an explicit wake integration. This follows the existing
+single active writer contract and must not be described as multi-writer support.
+The manual reconciliation method remains available for explicit callers.
+
+Active sockets and lease renewals remain required work, and no Cloud admission
+exemption is added. Voice, Teams, publication maintenance, milestones and other
+inventory reasons remain separate PRs. The full stack is not complete.
+
+Master was fetched again at 0d73505098. Company prerequisite #17561 at e8febb30eb
+and Discord parent #17557 at d3187f76a4 now have no failed or pending checks;
+Paperclip Review is skipped. Fresh review-content reconciliation and final stack
+rebasing/verification remain distinct from these check results.

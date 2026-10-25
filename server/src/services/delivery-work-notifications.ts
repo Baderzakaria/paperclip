@@ -40,6 +40,7 @@ export const DELIVERY_QUEUES = {
   chatGitHubPublications: "chat-github-publications",
   chatFailedRunRetries: "chat-failed-run-retries",
   chatTelegramMaintenance: "chat-telegram-maintenance",
+  chatReceivers: "chat-receivers",
   chatCommandRegistration: "chat-command-registration",
   chatTelegramSubscriptions: "chat-telegram-subscriptions",
   chatSessionSyncs: "chat-session-syncs",

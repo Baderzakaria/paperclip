@@ -1,4 +1,4 @@
-import { notifyChatCommandRegistration } from "./command-work-notifications.js";
+import { notifyChatEndpointConfiguration } from "./configuration-work-notifications.js";
 import { notifyChatConnectionHealth } from "./connection-health-notifications.js";
 import { imessageResourceParticipants } from "./imessage-photon/resources.js";
 import { createGitHubResources, reconcileGitHubRepositoryCoordinates } from "./github/resources.js";
@@ -510,7 +510,7 @@ export function createChatResourceReconciliation(db: Db, options: ResourceReconc
                     : currentEndpoint.status === "attention"
                       ? "verifying"
                       : currentEndpoint.status;
-                await notifyChatCommandRegistration(tx, currentEndpoint);
+                await notifyChatEndpointConfiguration(tx, currentEndpoint);
                 if (status !== currentEndpoint.status) await notifyChatEndpointWork(tx, currentEndpoint.connectionId);
                 await tx
                   .update(chatEndpoints)
@@ -540,7 +540,7 @@ export function createChatResourceReconciliation(db: Db, options: ResourceReconc
                   .where(eq(toolConnections.id, currentEndpoint.connectionId));
               }
             } else {
-              await notifyChatCommandRegistration(tx, currentEndpoint);
+              await notifyChatEndpointConfiguration(tx, currentEndpoint);
               await tx
                 .update(chatEndpoints)
                 .set({
