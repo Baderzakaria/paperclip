@@ -42,6 +42,11 @@ index covers unconfirmed admission identities; startup inventory is paged.
 
 ## Deadlines and quiet state
 
+Rejection returns after its decision transaction commits. Its notification wakes
+the registered cleanup worker; the HTTP request does not wait for provider account
+verification, inspection, or hangup. The saved denial immediately rejects further
+unauthorized call input while physical termination remains tracked separately.
+
 Pending unbound admissions retain their original two-minute approval or ten-minute
 guest-intake expiry. Rejection is immediately due. A cleanup claim saves a
 30-second retry before provider I/O. An unconfirmed end receipt keeps that retry;

@@ -78,6 +78,39 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     return { companyId, endpointId, agentId, connectionId, issueId, conversationId, callerId, sessionId, store, request, reserved, accept, toolInput, publication };
   }
 
+  it("returns a committed denial while provider cleanup is still waiting", async () => {
+    const f = await inboundFixture();
+    let release!: () => void;
+    const pendingProvider = new Promise<void>(resolve => { release = resolve; });
+    f.transport.verifyAgent.mockImplementation(async () => {
+      await pendingProvider;
+      return { id: "agent_test", organizationId: `org_${f.companyId}`, name: "Test voice" };
+    });
+    const onError = vi.fn(), coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError });
+    let denial: ReturnType<typeof f.service.inbound.decide> | undefined;
+    try {
+      await f.service.inbound.registerCleanupWork(coordinator, () => true).ready;
+      let returned = false;
+      denial = f.service.inbound.decide(f.companyId, f.endpointId, f.call.id, f.input.caller,
+        { approve: false, approvalCode: f.call.approvalCode }).then(result => { returned = true; return result; });
+      await vi.waitFor(() => expect(returned).toBe(true), { timeout: 2000 });
+      expect(await denial).toMatchObject({ state: "denied" });
+      await vi.waitFor(() => expect(f.transport.verifyAgent).toHaveBeenCalled(), { timeout: 5000 });
+      expect(f.transport.endSession).not.toHaveBeenCalled();
+      const [pending] = await db.select().from(chatVoiceInboundCalls).where(eq(chatVoiceInboundCalls.id, f.call.id));
+      expect(pending.cleanupConfirmedAt).toBeNull();
+      expect(pending.cleanupNextAttemptAt).not.toBeNull();
+      release();
+      await vi.waitFor(async () => {
+        const [settled] = await db.select().from(chatVoiceInboundCalls).where(eq(chatVoiceInboundCalls.id, f.call.id));
+        expect(settled.cleanupConfirmedAt).not.toBeNull();
+      }, { timeout: 5000 });
+      expect(f.transport.endSession).toHaveBeenCalledOnce(); expect(onError).not.toHaveBeenCalled();
+    } finally {
+      release(); await denial; await coordinator.stop();
+    }
+  });
+
   it("wakes inbound cleanup from a real signed pre-call and retains an unconfirmed end", async () => {
     const f = await inboundFixture();
     const ended = f.sign({ type: "call.status", call_id: f.call.providerSessionId, status: "ended" });
@@ -126,6 +159,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     const result = await f.service.inbound.decide(f.companyId, f.endpointId, f.call.id, f.input.caller,
       { approve: false, approvalCode: f.call.approvalCode });
     expect(result.state).toBe("ended");
+    await f.service.inbound.reconcile(1000);
     const [pending] = await db.select().from(chatVoiceInboundCalls).where(eq(chatVoiceInboundCalls.id, f.call.id));
     expect(pending.cleanupConfirmedAt).toBeNull(); expect(pending.cleanupNextAttemptAt).not.toBeNull();
     await db.update(chatVoiceInboundCalls).set({ expiresAt: new Date(0), updatedAt: new Date(0) }).where(eq(chatVoiceInboundCalls.id, f.call.id));
@@ -150,6 +184,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     f.transport.verifyAgent.mockResolvedValue({ id: "other-agent", organizationId: "another-account", name: "Other voice" });
     await f.service.inbound.decide(f.companyId, f.endpointId, f.call.id, f.input.caller,
       { approve: false, approvalCode: f.call.approvalCode });
+    await f.service.inbound.reconcile(1000);
     expect(f.transport.inspectSession).not.toHaveBeenCalled(); expect(f.transport.endSession).not.toHaveBeenCalled();
     const [pending] = await db.select().from(chatVoiceInboundCalls).where(eq(chatVoiceInboundCalls.id, f.call.id));
     expect(pending.cleanupConfirmedAt).toBeNull(); expect(pending.cleanupNextAttemptAt).not.toBeNull();
@@ -1436,6 +1471,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
   it("denies expired and rejected calls and closes the existing provider leg without creating work", async () => {
     const f = await inboundFixture();
     expect(await f.service.inbound.decide(f.companyId, f.endpointId, f.call.id, f.input.caller, {approve: false, approvalCode: f.call.approvalCode})).toMatchObject({state: "denied"});
+    await f.service.inbound.reconcile(1000);
     expect(f.transport.endSession).toHaveBeenCalledWith(f.event.session_id);
     expect(await f.tool("submit_request", {text: "Try again"})).toMatchObject({authorization: "denied", requestAccepted: false});
     const expired = await inboundFixture();

@@ -247,9 +247,9 @@ export function voiceInboundService(db: Db, options: {
     });
     if (admission.state === "approved") return projection(admission);
     if (!input.approve) {
-      // Bound calls have already been handed to live-session recovery. Unbound
-      // rejection uses the same durable claim as scheduled cleanup.
-      await cleanup.check(admission.id).catch(error => logger.warn({ err: error, callId: admission.id }, "Incoming call termination remains pending"));
+      // The committed admission signal owns cleanup. Return the saved denial
+      // without waiting for provider account verification or physical hangup.
+      // Bound calls have already been handed to live-session recovery.
       return projection(admission);
     }
     const row = await endpoint(companyId, endpointId), credentials = await options.credentials(row, admission.credentialFingerprint);
