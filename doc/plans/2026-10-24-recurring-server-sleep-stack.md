@@ -1371,3 +1371,9 @@ failures. Publication and fresh remote checks/review remain required.
 Parent #17586 Actions/security/Greptile pass at 250fca6cff; Paperclip Review is
 still running. The original full inventory, older E2E failure, deletion-policy
 finding and master reconciliation remain outstanding. No stack PR is merged.
+
+
+Slice 26 is published as [#17590](https://github.com/paperclipai/paperclip/pull/17590)
+at 5ddb4543ed, based on #17586. It is attached; remote gates remain required.
+Slice 27 begins the separate Teams abandoned transport-attempt audit. The full
+original inventory, older findings and final master reconciliation remain open.
