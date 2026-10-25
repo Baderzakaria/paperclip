@@ -62607,6 +62607,107 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     }
   });
 
+  it.each(["manual", "scoped"] as const)("advances failed retry notices past denied history with microsecond timestamps (%s)", async mode => {
+    const context = await failedChatRetryFixture("telegram");
+    const rejectedIds = Array.from({ length: 50 }, () => randomUUID());
+    let stagedActionId: string | undefined;
+    try {
+      const staged = await db.transaction(tx => context.service.prepareFailedChatRunRetry(tx, {
+        companyId: context.fixture.companyId, issueId: context.issue.id,
+        agentId: context.fixture.assignedAgentId, failedRunId: context.runId, initiatedByUserId: "owner-user",
+      }));
+      stagedActionId = staged.actionId;
+      await context.service.processFailedChatRunRetry(staged.actionId);
+      const [receipt] = await db.update(agentWakeupRequests).set({ status: "deferred_issue_execution" })
+        .where(eq(agentWakeupRequests.id, staged.actionId)).returning();
+      const [action] = await db.select().from(chatActions).where(eq(chatActions.id, staged.actionId));
+      const before = new Date(action.createdAt.getTime() - 1000).toISOString();
+      await db.insert(chatActions).values(rejectedIds.map(id => ({
+        ...action, id, providerActionId: `failed-run-retry:${id}`,
+        payload: { ...action.payload, failedRunId: randomUUID() },
+        createdAt: sql`${before}::timestamptz + interval '0.000123 seconds'`,
+      })));
+      await db.insert(agentWakeupRequests).values(rejectedIds.map(id => ({
+        ...receipt, id, idempotencyKey: `retry-notice-cursor:${id}`,
+      })));
+      if (mode === "manual") {
+        expect(await context.service.enqueueInboundWakeupPublications(50)).toBe(0);
+        expect(await context.service.enqueueInboundWakeupPublications(50)).toBe(1);
+      } else {
+        const scope = { companyId: context.fixture.companyId, issueId: context.issue.id };
+        const transaction = vi.spyOn(db, "transaction");
+        try {
+          const first = await context.service.reconcileFailedRetryNotices({ scope, limit: 50 });
+          expect(first).toMatchObject({ inserted: 0, contended: false, nextCursor: expect.any(Object) });
+          expect(transaction).toHaveBeenCalledTimes(50); transaction.mockClear();
+          expect(await context.service.reconcileFailedRetryNotices({ scope, limit: 50, cursor: first.nextCursor }))
+            .toEqual({ inserted: 1, contended: false, nextCursor: null });
+          expect(transaction).toHaveBeenCalledTimes(1);
+        } finally { transaction.mockRestore(); }
+      }
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toEqual([expect.objectContaining({
+        idempotencyKey: `wake:${staged.actionId}:queued:${context.endpoint.id}:${context.conversation.id}`,
+        payload: { text: "Your retry is queued.", progressState: "queued" },
+      })]);
+    } finally {
+      await context.service.shutdown();
+      const actionIds = stagedActionId ? [...rejectedIds, stagedActionId] : rejectedIds;
+      await db.delete(chatActions).where(inArray(chatActions.id, actionIds));
+      await db.delete(agentWakeupRequests).where(inArray(agentWakeupRequests.id, actionIds));
+    }
+  });
+
+  it("scopes failed retry notices and retains receipt contention without retrying settled history", async () => {
+    const context = await failedChatRetryFixture("telegram");
+    const other = await failedChatRetryFixture("telegram");
+    let release = () => {};
+    let holder: Promise<unknown> | undefined;
+    try {
+      const staged = [];
+      for (const target of [context, other]) {
+        const action = await db.transaction(tx => target.service.prepareFailedChatRunRetry(tx, {
+          companyId: target.fixture.companyId, issueId: target.issue.id,
+          agentId: target.fixture.assignedAgentId, failedRunId: target.runId, initiatedByUserId: "owner-user",
+        }));
+        await target.service.processFailedChatRunRetry(action.actionId);
+        await db.update(agentWakeupRequests).set({ status: "deferred_issue_execution" })
+          .where(eq(agentWakeupRequests.id, action.actionId));
+        staged.push(action);
+      }
+      const scope = { companyId: context.fixture.companyId, issueId: context.issue.id };
+      expect(await context.service.loadFailedRetryNoticeScopes({ companyId: scope.companyId })).toEqual([scope]);
+      let locked!: () => void;
+      const ready = new Promise<void>(resolve => { locked = resolve; });
+      const hold = new Promise<void>(resolve => { release = resolve; });
+      holder = db.transaction(async tx => {
+        await tx.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, staged[0].actionId)).for("update");
+        locked(); await hold;
+      });
+      await ready;
+      expect(await context.service.reconcileFailedRetryNotices({ scope }))
+        .toEqual({ inserted: 0, contended: true, nextCursor: null });
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toEqual([]);
+      release(); await holder;
+      expect(await context.service.reconcileFailedRetryNotices({ scope }))
+        .toEqual({ inserted: 1, contended: false, nextCursor: null });
+      expect(await context.service.loadFailedRetryNoticeScopes(scope)).toEqual([]);
+      expect(await readChatPublicationsByEndpointId(other.endpoint.id)).toEqual([]);
+      await db.update(agentWakeupRequests).set({ status: "cancelled" })
+        .where(eq(agentWakeupRequests.id, staged[0].actionId));
+      expect(await context.service.reconcileFailedRetryNotices({ scope }))
+        .toEqual({ inserted: 1, contended: false, nextCursor: null });
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toEqual(expect.arrayContaining([expect.objectContaining({
+        payload: { text: "This retry was not started. Open the task in Paperclip for details.", progressState: "failed" },
+      })]));
+      expect(await context.service.reconcileFailedRetryNotices({ scope }))
+        .toEqual({ inserted: 0, contended: false, nextCursor: null });
+      expect(await context.service.loadFailedRetryNoticeScopes(scope)).toEqual([]);
+      await db.update(agentWakeupRequests).set({ runId: other.runId })
+        .where(eq(agentWakeupRequests.id, staged[1].actionId));
+      expect(await other.service.loadFailedRetryNoticeScopes({ companyId: other.fixture.companyId })).toEqual([]);
+    } finally { release(); await holder; await context.service.shutdown(); await other.service.shutdown(); }
+  });
+
   it.each(["slack", "telegram"] as const)(
     "keeps a %s retry's queue, working, and selected final on its own provider identity",
     async (provider) => {
