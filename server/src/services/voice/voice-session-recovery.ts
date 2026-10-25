@@ -71,7 +71,7 @@ export function voiceSessionRecovery(db: Db, operations: {
           const state = await operations.inspect(session);
           await withVoiceSessionChange(db, id, tx => tx.update(chatVoiceSessions).set({
             ...(state?.endedAt ? { state: "ended" as const, endedAt: new Date(), errorCode: null } : {}), updatedAt: new Date(),
-          }).where(and(eq(chatVoiceSessions.id, id), inArray(chatVoiceSessions.state, ["connecting", "active"]))));
+          }).where(and(eq(chatVoiceSessions.id, id), inArray(chatVoiceSessions.state, ["connecting", "active"]))), { replyDelivery: Boolean(state?.endedAt) });
         } else if (session.providerSessionId) await operations.close(session);
         else if (session.expiresAt.getTime() + 120_000 < Date.now()) {
           await withVoiceSessionChange(db, id, tx => tx.update(chatVoiceSessions).set({ state: "expired", endedAt: new Date(), updatedAt: new Date() })
@@ -79,7 +79,7 @@ export function voiceSessionRecovery(db: Db, operations: {
         }
       } catch (error) {
         await withVoiceSessionChange(db, id, tx => tx.update(chatVoiceSessions).set({ errorCode: "cleanup_pending", updatedAt: new Date() })
-          .where(and(eq(chatVoiceSessions.id, id), inArray(chatVoiceSessions.state, [...LIVE_VOICE_STATES]))));
+          .where(and(eq(chatVoiceSessions.id, id), inArray(chatVoiceSessions.state, [...LIVE_VOICE_STATES]))), { replyDelivery: false });
         throw error;
       }
     }

@@ -85,6 +85,7 @@ describe("createChatReconciliationCoordinator", () => {
   it("separates live voice recovery from the remaining periodic maintenance", () => {
     const source = readFileSync(new URL("../app.ts", import.meta.url), "utf8");
     expect(source).toContain("chatChannels.voice.registerRecoveryWork(deliveryWork,");
+    expect(source).toContain("chatChannels.voice.registerReplyWork(deliveryWork,");
     expect(source).toContain("chatChannels.voice.reconcileMaintenance()");
     expect(source).not.toContain("chatChannels.voice.reconcile()");
   });

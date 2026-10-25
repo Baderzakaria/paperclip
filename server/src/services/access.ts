@@ -1,4 +1,4 @@
-import { notifyVoiceRecovery } from "./voice/voice-recovery-notifications.js";
+import { notifyVoiceChange } from "./voice/voice-recovery-notifications.js";
 import { notifyChatEndpointWork } from "./chat-work-notifications.js";
 import { notifyToolConnectionHealth } from "./tool-connection-health-notifications.js";
 import { and, eq, inArray, ne, notInArray, sql } from "drizzle-orm";
@@ -329,7 +329,7 @@ export function accessService(db: Db) {
             && grant.credentialSecretRefs.every((ref) => !connectionSecretIdsToRemove.has(ref.secretId)),
           );
           if (connection.transport === "chat_sdk") await notifyChatEndpointWork(tx, connection.id);
-          if (connection.transport === "voice") await notifyVoiceRecovery(tx, { kind: "connection", id: connection.id });
+          if (connection.transport === "voice") await notifyVoiceChange(tx, { kind: "connection", id: connection.id });
           if (!hasUnaffectedActiveGrant) await notifyToolConnectionHealth(tx, { companyId, id: connection.id });
           await tx.update(toolConnections).set({
             credentialRefs,

@@ -1,4 +1,4 @@
-import { notifyVoiceRecovery } from "./voice/voice-recovery-notifications.js";
+import { notifyVoiceChange } from "./voice/voice-recovery-notifications.js";
 import { notifyToolConnectionHealth } from "./tool-connection-health-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import type { Db } from "@paperclipai/db";
@@ -615,7 +615,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.mcpEvents, "*");
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.dotEvents, "*");
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.grokDispatch);
-        if (patch.enableChatConnectors !== undefined) await notifyVoiceRecovery(tx);
+        if (patch.enableChatConnectors !== undefined) await notifyVoiceChange(tx);
         await notifyToolConnectionHealth(tx, "*");
         return tx
           .update(instanceSettings)

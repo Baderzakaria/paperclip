@@ -1,6 +1,8 @@
+import { voiceReplySchedule } from "./voice-reply-schedule.js";
+import { registerVoiceReplyWork } from "./voice-reply-work.js";
 import { voiceSessionRecovery } from "./voice-session-recovery.js";
 import { registerVoiceRecoveryWork } from "./voice-recovery-work.js";
-import { notifyVoiceRecovery, withVoiceSessionChange } from "./voice-recovery-notifications.js";
+import { notifyVoiceChange, withVoiceSessionChange } from "./voice-recovery-notifications.js";
 import type { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
 import { logger } from "../../middleware/logger.js";
 import { captureVoiceDeliveryDiagnostics } from "./voice-delivery-diagnostics.js";
@@ -145,7 +147,7 @@ export function voiceSessionService(db: Db, options: {
   async function closeProviderOnce(session: VoiceSessionRow) {
     if (terminalStates.some(state => state === session.state)) return session;
     await db.transaction(async (tx) => {
-      await notifyVoiceRecovery(tx, { kind: "session", id: session.id });
+      await notifyVoiceChange(tx, { kind: "session", id: session.id });
       const [changed] = await tx.update(chatVoiceSessions).set({ state: "ending", updatedAt: new Date() }).where(and(eq(chatVoiceSessions.id, session.id), inArray(chatVoiceSessions.state, [...liveStates].filter((state) => state !== "ending")))).returning({ id: chatVoiceSessions.id });
       if (changed) await tx.insert(activityLog).values({ companyId: session.companyId, actorType: "system", actorId: "voice-session-service", action: "voice.session.ending", entityType: "voice_session", entityId: session.id, details: { issueId: session.issueId } });
     });
@@ -204,9 +206,15 @@ export function voiceSessionService(db: Db, options: {
     if (verified.envelope.tool === "answer_question") options.onQuestionAnswered(verified.envelope.args.interactionId);
     return session.mode === "inbound_phone" ? {...result, authorization: session.authority === "guest_intake" ? "guest_intake" : "approved"} : result;
   }
+  const replies = voiceReplySchedule(db, {
+    store, push: sessionId => pushVoiceReplies(db, { store, credentials: options.credentials, provider, limit: 1, sessionId, recoverDispatches: false }),
+  });
   const recovery = voiceSessionRecovery(db, {
     authorize: async session => {
-      await db.transaction(tx => store.authorizeSession(tx, session.companyId, session.id));
+      await db.transaction(async tx => {
+        await store.authorizeSession(tx, session.companyId, session.id);
+        await replies.authorityAvailable(tx, session.id);
+      });
     },
     inspect: async session => {
       const endpoint = await endpointFor(session.companyId, session.endpointId);
@@ -218,14 +226,18 @@ export function voiceSessionService(db: Db, options: {
   function registerRecoveryWork(coordinator: ReturnType<typeof createDeliveryWorkCoordinator>, canRun: () => boolean) {
     return registerVoiceRecoveryWork(coordinator, recovery, canRun);
   }
+  function registerReplyWork(coordinator: ReturnType<typeof createDeliveryWorkCoordinator>, canRun: () => boolean) {
+    return registerVoiceReplyWork(coordinator, replies, canRun);
+  }
   async function reconcileMaintenance(limit = 25) {
-    await pushReplies(limit);
     await inbound.reconcile(limit);
     await reconcileReports(limit);
   }
+  /** Explicit one-shot recovery for diagnostics/tests; never register on a recurring lane. */
   async function reconcile(limit = 25) {
     const due = (await recovery.load()).filter(row => row.dueAt <= Date.now()).sort((a, b) => a.dueAt - b.dueAt || a.id.localeCompare(b.id)).slice(0, limit);
     for (const row of due) await recovery.check(row.id).catch(() => undefined);
+    await pushReplies(limit);
     await reconcileMaintenance(limit);
     return due.length;
   }
@@ -339,7 +351,7 @@ export function voiceSessionService(db: Db, options: {
     const result = await start({ ...binding, mode: "outbound_phone", phoneNumber: preference.phoneNumber, idempotencyKey: invocationId, maxDurationSeconds: 600 });
     return { session: result.session };
   });
-  return { start, inspect, end, tool, reconcile, reconcileMaintenance, registerRecoveryWork, pushReplies, inbound, notification: store.notification, callbackPreference, saveCallbackPreference, history, callDetail, unregisterAgentTools };
+  return { start, inspect, end, tool, reconcile, reconcileMaintenance, registerRecoveryWork, registerReplyWork, pushReplies, inbound, notification: store.notification, callbackPreference, saveCallbackPreference, history, callDetail, unregisterAgentTools };
 
 }
 export type VoiceSessionService = ReturnType<typeof voiceSessionService>;

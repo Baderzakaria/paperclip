@@ -1,8 +1,10 @@
+import { notifyVoiceReplies } from "./voice-reply-notifications.js";
+import { recoverVoiceReplyDispatches } from "./voice-reply-dispatch-recovery.js";
 import { notifyVoiceRecovery } from "./voice-recovery-notifications.js";
 import { VOICE_REPLY_ACTION_KIND } from "./voice-reply-policy.js";
 import { readVoiceReplyState } from "./voice-reply-state.js";
 export { splitSpekoReplyText } from "./voice-reply-policy.js";
-import { and, asc, eq, gt, inArray, isNull, lt } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNull } from "drizzle-orm";
 import { chatActions, chatEndpoints, chatVoiceReplies, chatVoiceSessions, type Db } from "@paperclipai/db";
 import { instanceSettingsService } from "../instance-settings.js";
 import { HttpError } from "../../errors.js";
@@ -21,16 +23,13 @@ export async function pushVoiceReplies(db: Db, options: {
   limit: number;
   companyId?: string;
   endpointId?: string;
+  sessionId?: string;
+  recoverDispatches?: boolean;
 }) {
   if (!(await instanceSettingsService(db).getExperimental()).enableChatConnectors) return;
-  const abandoned = await db.update(chatActions).set({status: "unknown", result: {errorCode: "message_delivery_unknown"}, updatedAt: new Date()})
-    .where(and(eq(chatActions.kind, kind), eq(chatActions.status, "dispatching"), lt(chatActions.updatedAt, new Date(Date.now() - 30_000)),
-      options.companyId ? eq(chatActions.companyId, options.companyId) : undefined,
-      options.endpointId ? eq(chatActions.endpointId, options.endpointId) : undefined)).returning({id: chatActions.id, companyId: chatActions.companyId, endpointId: chatActions.endpointId});
-  for (const action of abandoned) logger.warn({event: "voice.reply.push.abandoned", companyId: action.companyId, endpointId: action.endpointId,
-    actionId: action.id, outcomeUnknown: true}, "Speko dispatch intent expired without a durable receipt; no resend");
+  if (options.recoverDispatches !== false) await recoverVoiceReplyDispatches(db, options);
   const sessions = await db.select({id: chatVoiceSessions.id, companyId: chatVoiceSessions.companyId}).from(chatVoiceSessions)
-    .where(and(inArray(chatVoiceSessions.mode, ["inbound_phone", "outbound_phone"]), inArray(chatVoiceSessions.state, ["connecting", "active"]), gt(chatVoiceSessions.expiresAt, new Date()),
+    .where(and(options.sessionId ? eq(chatVoiceSessions.id, options.sessionId) : undefined, inArray(chatVoiceSessions.mode, ["inbound_phone", "outbound_phone"]), inArray(chatVoiceSessions.state, ["connecting", "active"]), gt(chatVoiceSessions.expiresAt, new Date()),
       options.companyId ? eq(chatVoiceSessions.companyId, options.companyId) : undefined,
       options.endpointId ? eq(chatVoiceSessions.endpointId, options.endpointId) : undefined))
     .orderBy(asc(chatVoiceSessions.updatedAt)).limit(options.limit);
@@ -44,6 +43,7 @@ export async function pushVoiceReplies(db: Db, options: {
         const state = await readVoiceReplyState(tx, session);
         if (state.kind !== "reply" || state.plan.kind !== "dispatch") return null;
         const { reply, questionNotification, plan } = state;
+        await notifyVoiceReplies(tx, { kind: "session", id: session.id });
         const values = { status: "dispatching", result: null, updatedAt: new Date() };
         const action = plan.priorActionId
           ? (await tx.update(chatActions).set(values).where(eq(chatActions.id, plan.priorActionId)).returning())[0]!
@@ -80,6 +80,7 @@ export async function pushVoiceReplies(db: Db, options: {
           : providerError?.outcomeUnknown ? "unknown"
           : providerError?.httpStatus === 429 ? "retry" : "failed";
         await db.transaction(async tx => {
+          await notifyVoiceReplies(tx, { kind: "session", id: candidate.id });
           await tx.update(chatActions).set({status, result: {errorCode: providerError?.code ?? "voice_authority_unavailable", ...(status === "retry" ? {retryAt: Date.now() + 10_000} : {})}, updatedAt: new Date()}).where(eq(chatActions.id, claim.action.id));
           if (status === "call_ended" || status === "unknown") await notifyVoiceRecovery(tx, { kind: "session", id: candidate.id });
           if (status === "call_ended") await tx.update(chatVoiceSessions).set({state: "ended", endedAt: new Date(), updatedAt: new Date()}).where(and(eq(chatVoiceSessions.id, candidate.id), eq(chatVoiceSessions.companyId, candidate.companyId)));
@@ -96,6 +97,7 @@ export async function pushVoiceReplies(db: Db, options: {
       // Receipt means accepted by Speko, not that the caller heard the answer.
       // If this commit fails, the dispatch intent remains uncertain; never resend.
       await db.transaction(async tx => {
+        await notifyVoiceReplies(tx, { kind: "session", id: candidate.id });
         await tx.update(chatActions).set({status: "completed", result: {messageId, playback: "unknown", acceptedAt, dispatchDurationMs: Date.now() - startedAt}, updatedAt: new Date()}).where(eq(chatActions.id, claim.action.id));
         if (!claim.questionNotification && claim.partIndex === claim.partCount - 1) await tx.update(chatVoiceReplies).set({deliveredAt: new Date()}).where(and(eq(chatVoiceReplies.id, claim.reply.id), eq(chatVoiceReplies.companyId, candidate.companyId), isNull(chatVoiceReplies.deliveredAt)));
       }).catch(error => {

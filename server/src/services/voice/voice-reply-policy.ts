@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 
+export const VOICE_REPLY_DISPATCH_TIMEOUT_MS = 30_000;
 export const VOICE_REPLY_ACTION_KIND = "speko_voice_reply_push";
 
 /** Plain voice text stays inside the provider's UTF-16 limit, without splitting

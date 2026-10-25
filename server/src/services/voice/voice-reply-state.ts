@@ -1,7 +1,7 @@
 import { and, asc, eq, isNull, sql } from "drizzle-orm";
 import { chatActions, chatPublications, chatVoiceReplies } from "@paperclipai/db";
 import type { VoiceSessionRow, VoiceTransaction } from "./voice-session-store.js";
-import { planVoiceReply, VOICE_REPLY_ACTION_KIND } from "./voice-reply-policy.js";
+import { planVoiceReply, VOICE_REPLY_ACTION_KIND, VOICE_REPLY_DISPATCH_TIMEOUT_MS } from "./voice-reply-policy.js";
 
 /** Read the ordered delivery barrier under the caller's existing session lock. */
 export async function readVoiceReplyState(
@@ -13,7 +13,7 @@ export async function readVoiceReplyState(
       eq(chatActions.kind, VOICE_REPLY_ACTION_KIND), eq(chatActions.status, "dispatching"),
       sql`${chatActions.payload}->>'sessionId' = ${session.id}`))
     .orderBy(asc(chatActions.updatedAt)).limit(1);
-  if (inFlight) return { kind: "in_flight" as const, retryAt: inFlight.updatedAt.getTime() + 30_001 };
+  if (inFlight) return { kind: "in_flight" as const, retryAt: inFlight.updatedAt.getTime() + VOICE_REPLY_DISPATCH_TIMEOUT_MS + 1 };
   const [row] = await tx.select({ reply: chatVoiceReplies, payload: chatPublications.payload }).from(chatVoiceReplies)
     .innerJoin(chatPublications, and(eq(chatPublications.id, chatVoiceReplies.publicationId), eq(chatPublications.companyId, session.companyId)))
     .where(and(eq(chatVoiceReplies.companyId, session.companyId), eq(chatVoiceReplies.sessionId, session.id), isNull(chatVoiceReplies.deliveredAt),

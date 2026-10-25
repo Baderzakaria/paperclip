@@ -129,3 +129,43 @@ Implementation direction for the next step:
 - Notify before reply creation, presentation and action mutation. Wire session and
   configuration changes without giving reply delivery its own active-call polling
   deadline. Reconstruct on startup/resume; explicit feature changes invalidate it.
+
+## Worker and producer implementation checkpoint
+
+Implemented scoped session/action reconstruction, per-entry reply execution,
+commit-aware producer notifications, and coordinator registration. The normal
+periodic push and the pre-publication direct push are removed; manual one-shot
+entry points remain. Abandoned dispatch recovery pages independently of session
+state and atomically quarantines only still-expired dispatching actions. Passive
+live-call inspection does not wake healthy empty reply queues. Previously denied
+reply checks can reactivate through the already-required successful live-call
+authorization boundary; no notification fan-out across every authority table.
+See ../idle-voice-reply-delivery.md for the owned contract.
+
+Evidence so far: the first three scheduling integration cases passed. A fixture
+name collision (pushFixture exposes publication as a row, not the factory method)
+failed one added producer test; corrected to create the publication inside the
+actual transaction. All 15 selected producer/delivery cases then passed. A fresh
+PostgreSQL full voice run passed 102 tests and parent recovery passed 11. Server
+typechecking passed after producer changes and again after final startup wiring.
+
+The first final wiring command accidentally matched the whole suite through its
+"voice" describe title while using a retained-fixture database. Eight existing
+startup recovery assertions observed unrelated saved deadlines; 98 tests passed.
+That is not acceptance evidence. A fresh isolated database full run is now required
+and its result must be inspected before a PR-ready claim.
+
+Remaining before publication: final full voice/startup result, direct published-state
+producer coverage through the actual shared publication worker/operator resolution,
+reply worker scope/backlog/failure lifecycle tests, relevant shared consumers,
+workspace verification, PR template/body and latest-head CI/reviews. The entire
+remaining stack inventory and older #17490 failure remain outstanding.
+
+The corrected final wiring run passed all 120 tests: 104 full voice integration
+cases and 16 startup/hostname wiring cases, against a newly created PostgreSQL
+database. It includes seven new reply lifecycle cases: publication gating and
+quiet acceptance, saved retry reconstruction across coordinator restart, abandoned
+intent after call termination, nested producer rollback/commit, real question
+retrieval, authority restoration, and drain/resume without passive SQL. Final
+server typechecking also passed. The earlier retained-fixture failures remain
+recorded above; shared publication-path and broader acceptance work remains open.

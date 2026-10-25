@@ -1299,6 +1299,7 @@ export async function createApp(
   registerChatDeliveryWork(deliveryWork, chatChannels, () => !isIdleTaskDrainActive());
   registerChatActionWork(deliveryWork, chatChannels, () => !isIdleTaskDrainActive());
   chatChannels.voice.registerRecoveryWork(deliveryWork, () => !isWarmStandby() && !isIdleTaskDrainActive());
+  chatChannels.voice.registerReplyWork(deliveryWork, () => !isWarmStandby() && !isIdleTaskDrainActive());
   chatChannels.registerReceiverWork(deliveryWork, () => !isWarmStandby() && !isIdleTaskDrainActive());
   chatChannels.registerCommandWork(deliveryWork, () => !isWarmStandby() && !isIdleTaskDrainActive());
   emailChannels.start();
