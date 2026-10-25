@@ -1211,3 +1211,14 @@ Parent Discord #17557 at d3187f76a4 and company cleanup #17561 at e8febb30eb now
 have no failed or pending checks (Paperclip Review skipped). No merge was made.
 The older #17490 E2E cancellation failure remains unresolved. The entire original
 inventory stays in scope, with voice the next separate reason after receivers.
+
+
+Receiver discovery is published and attached as [#17572](https://github.com/paperclipai/paperclip/pull/17572)
+at 643f4766227e15006b684d2cc7bea7ddd5cc2147, based on #17557. Its live CI run is
+40173962833; security and reviews are pending. All 218 selected local cases,
+workspace types and build pass. The next audit splits voice into five separate
+reasons: live-session recovery, reply push, inbound admission expiry/provider
+cleanup, inbound history retention, and call reports. See
+[the voice owner audit](2026-10-25-voice-maintenance-sleep-audit.md).
+Branch codex/sleep-21-voice-session-recovery starts with the first reason; the
+other four remain explicit required slices. No voice migration is implemented yet.
