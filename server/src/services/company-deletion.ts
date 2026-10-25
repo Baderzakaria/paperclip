@@ -65,6 +65,8 @@ export async function deleteCompany(db: Db, id: string) {
         const [existing] = await tx.select({ id: companies.id }).from(companies)
           .where(eq(companies.id, id)).for("no key update");
         if (!existing) return null;
+        await notifyChatCompanyCommandRegistration(tx, id);
+        await chatCompanyDeletion.deleteCompanyData(tx, id);
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillSourceSync);
         await agentObservabilityService(tx as unknown as Db).removeForCompanyDeletion(id);
         // Finance can reference costs and both can reference runs. Incidents
@@ -120,8 +122,6 @@ export async function deleteCompany(db: Db, id: string) {
         await requestRestorePointDeletion(tx, { companyId: id });
         await tx.delete(executionWorkspaces).where(eq(executionWorkspaces.companyId, id));
         await tx.delete(projects).where(eq(projects.companyId, id));
-        await notifyChatCompanyCommandRegistration(tx, id);
-        await chatCompanyDeletion.deleteCompanyData(tx, id);
         await agentLifecycleCompanyDeletion.deleteCompanyData(tx, id);
         await notifyToolConnectionHealth(tx, id);
         const rows = await tx
