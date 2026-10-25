@@ -1896,6 +1896,13 @@ Required UX behaviors:
 - conflict toasts on atomic checkout failure
 - no silent background failures; every failed run visible in UI
 
+Cold opens of ordinary tasks show the instruction and recent conversation before
+related metadata and historical run activity. Earlier messages and diagnostics
+load through **More messages**. Messages observed while the task stays open remain
+visible; deep links still load their target. Compact reads retain the full reads'
+authorization and redaction rules. Agent Chat and the classic task interface keep
+their existing history behavior.
+
 Regular task chats and Agent Chat keep requests as compact, reopenable entries
 at their original position in the feed. Dismissing any composer request clears
 its form and pending reminder, including completion reviews, confirmations,

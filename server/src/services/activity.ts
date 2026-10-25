@@ -396,8 +396,8 @@ export function activityService(db: Db) {
         .then((rows) => rows.map((r) => r.activityLog));
     },
 
-    forIssue: (issueId: string) =>
-      db
+    forIssue: (issueId: string, limit?: number) => {
+      const query = db
         .select()
         .from(activityLog)
         .where(
@@ -407,11 +407,13 @@ export function activityService(db: Db) {
               sql`${activityLog.companyId} = (select company_id from issues where id = ${issueId})`),
           ),
         )
-        .orderBy(desc(activityLog.createdAt)),
+        .orderBy(desc(activityLog.createdAt), desc(activityLog.id));
+      return limit === undefined ? query : query.limit(limit);
+    },
 
-    runsForIssue: async (companyId: string, issueId: string, viewerUserId: string | null = null) => {
+    runsForIssue: async (companyId: string, issueId: string, viewerUserId: string | null = null, limit?: number) => {
       scheduleRunLivenessBackfill(companyId, issueId);
-      const runs = await db
+      const runsQuery = db
         .select({
           runId: heartbeatRuns.id,
           runtimeMode: heartbeatRuns.runtimeMode,
@@ -473,7 +475,8 @@ export function activityService(db: Db) {
             ),
           ),
         )
-        .orderBy(desc(heartbeatRuns.createdAt));
+        .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id));
+      const runs = await (limit === undefined ? runsQuery : runsQuery.limit(limit));
 
       if (runs.length === 0) return runs;
       const runIds = runs.map((run) => run.runId);

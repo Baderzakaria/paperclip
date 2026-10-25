@@ -46,6 +46,7 @@ const TASK_VIEW_MAX_BYTES_PER_RUN = 2_000_000;
 const RUN_ABSENCE_PRUNE_GRACE_MS = 20_000;
 
 export interface RunTranscriptSource {
+  createdAt?: string | Date;
   id: string;
   status: string;
   adapterType: string;

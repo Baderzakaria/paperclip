@@ -51,6 +51,8 @@ vi.mock("../api/grokBot", () => ({ grokBotApi: mockGrokBotApi }));
 
 const mockIssuesApi = vi.hoisted(() => ({
   get: vi.fn(),
+  getCore: vi.fn(),
+  recentComments: vi.fn(),
   list: vi.fn(),
   listAll: vi.fn(),
   listAcceptedPlanDecompositions: vi.fn(),
@@ -88,7 +90,9 @@ const mockIssuesApi = vi.hoisted(() => ({
 
 const mockActivityApi = vi.hoisted(() => ({
   forIssue: vi.fn(),
+  recentForIssue: vi.fn(),
   runsForIssue: vi.fn(),
+  recentRunsForIssue: vi.fn(),
 }));
 
 const mockHeartbeatsApi = vi.hoisted(() => ({
@@ -1329,6 +1333,11 @@ describe("IssueDetail", () => {
         mutations: { retry: false },
       },
     });
+    queryClient.setQueryData(["issues", "history-expanded", "PAP-1"], true);
+    mockIssuesApi.getCore.mockImplementation((id) => mockIssuesApi.get(id));
+    mockIssuesApi.recentComments.mockResolvedValue({ comments: [], latestCommentId: null, hasMore: false });
+    mockActivityApi.recentRunsForIssue.mockResolvedValue([]);
+    mockActivityApi.recentForIssue.mockResolvedValue([]);
     consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     vi.spyOn(window, "scrollTo").mockImplementation(() => {});
     vi.spyOn(globalThis, "fetch").mockResolvedValue({
@@ -1669,6 +1678,51 @@ describe("IssueDetail", () => {
       });
     }
     expect(windowOpen).not.toHaveBeenCalled();
+  });
+
+  it("reveals a cold task and recent exchange while full detail and older history are stalled", async () => {
+    queryClient.setQueryData(["issues", "history-expanded", "PAP-1"], false);
+    const stalled = createDeferred<Issue>();
+    mockIssuesApi.getCore.mockResolvedValue(createIssue({ description: "Original instruction" }));
+    mockIssuesApi.get.mockReturnValue(stalled.promise);
+    mockIssuesApi.recentComments.mockResolvedValue({ comments: [createIssueComment({ body: "Latest answer" })], latestCommentId: "comment-1", hasMore: true });
+    await act(async () => { renderIssueView(); });
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Issue detail smoke");
+      expect(mockIssueChatThreadRender.mock.calls.at(-1)?.[0]).toMatchObject({
+        compactHistory: true, initialHistoryPending: false,
+        comments: [expect.objectContaining({ body: "Latest answer" })],
+      });
+    });
+    expect(mockIssuesApi.listComments).not.toHaveBeenCalled();
+    expect(mockActivityApi.forIssue).not.toHaveBeenCalled();
+    expect(mockActivityApi.runsForIssue).not.toHaveBeenCalled();
+    const disclosure = mockIssueChatThreadRender.mock.calls.at(-1)?.[0].historyControl;
+    await act(async () => { disclosure.props.onClick(); });
+    await waitForAssertion(() => {
+      expect(mockIssuesApi.listComments).toHaveBeenCalled();
+      expect(mockActivityApi.runsForIssue).toHaveBeenCalled();
+      expect(mockIssueChatThreadRender.mock.calls.at(-1)?.[0].compactHistory).toBe(false);
+    });
+    expect(queryClient.getQueryData(["issues", "history-expanded", "PAP-1"])).toBe(true);
+  });
+
+  it("retains every recent run observed during an open task", async () => {
+    queryClient.setQueryData(["issues", "history-expanded", "PAP-1"], false);
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+    const run = (id: string) => ({ runId: id, agentId: "agent-1", status: "succeeded", runtimeMode: "native", createdAt: new Date().toISOString() });
+    mockActivityApi.recentRunsForIssue.mockResolvedValue([run("latest"), run("older")]);
+    await act(async () => { renderIssueView(); });
+    await waitForAssertion(() => {
+      expect(mockIssueChatThreadRender.mock.calls.at(-1)?.[0].linkedRuns.map((r: { runId: string }) => r.runId)).toEqual(["latest"]);
+    });
+    for (const id of ["next", "newest"]) {
+      mockActivityApi.recentRunsForIssue.mockResolvedValue([run(id)]);
+      await act(async () => { await queryClient.invalidateQueries({ queryKey: queryKeys.issues.runs("PAP-1") }); });
+    }
+    await waitForAssertion(() => {
+      expect(mockIssueChatThreadRender.mock.calls.at(-1)?.[0].linkedRuns.map((r: { runId: string }) => r.runId)).toEqual(["latest", "next", "newest"]);
+    });
   });
 
   it.each(["comments", "description", "empty"])("coordinates %s with the initial cards and supporting history", async (content) => {
@@ -6115,7 +6169,8 @@ describe("IssueDetail", () => {
     });
   });
 
-  it("keeps a discarded queued comment out of the thread when the queue becomes empty", async () => {
+  it.each([true, false])("keeps a discarded queued comment out of the thread (expanded=%s)", async (expanded) => {
+    queryClient.setQueryData(["issues", "history-expanded", "PAP-1"], expanded);
     const queue = createQueuedCommentQueue();
     const emptyQueue = createQueuedCommentQueue({
       queueId: null,
@@ -6134,6 +6189,7 @@ describe("IssueDetail", () => {
     mockAgentsApi.list.mockResolvedValue([
       createAgent({ adapterType: "paperclip_runner" }),
     ]);
+    mockIssuesApi.recentComments.mockResolvedValue({ comments: [queue.entries[0].comment], latestCommentId: "queued-comment-1", hasMore: false });
     // Keep returning the pre-discard page to exercise the local projection
     // across the queueId -> null transition, as can happen during refetch.
     mockIssuesApi.listComments.mockResolvedValue([queue.entries[0].comment]);

@@ -138,6 +138,11 @@ export const heartbeatsApi = {
     );
   },
   get: (runId: string) => api.get<HeartbeatRun>(`/heartbeat-runs/${runId}`),
+  conversationEvents: (runId: string, afterSeq = 0, limit = 200, options?: RequestOptions) =>
+    api.get<HeartbeatRunEvent[]>(
+      `/heartbeat-runs/${runId}/events?view=conversation&afterSeq=${encodeURIComponent(String(afterSeq))}&limit=${encodeURIComponent(String(limit))}`,
+      options,
+    ),
   events: (runId: string, afterSeq = 0, limit = 200, options?: RequestOptions) =>
     api.get<HeartbeatRunEvent[]>(
       `/heartbeat-runs/${runId}/events?afterSeq=${encodeURIComponent(String(afterSeq))}&limit=${encodeURIComponent(String(limit))}`,

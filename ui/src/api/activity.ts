@@ -80,7 +80,9 @@ export const activityApi = {
     const qs = params.toString();
     return api.get<ActivityEvent[]>(`/companies/${companyId}/activity${qs ? `?${qs}` : ""}`, options);
   },
+  recentForIssue: (issueId: string) => api.get<ActivityEvent[]>(`/issues/${issueId}/activity?view=recent`),
   forIssue: (issueId: string) => api.get<ActivityEvent[]>(`/issues/${issueId}/activity`),
+  recentRunsForIssue: (issueId: string) => api.get<RunForIssue[]>(`/issues/${issueId}/runs?view=recent`),
   runsForIssue: (issueId: string) => api.get<RunForIssue[]>(`/issues/${issueId}/runs`),
   issuesForRun: (runId: string) => api.get<IssueForRun[]>(`/heartbeat-runs/${runId}/issues`),
 };

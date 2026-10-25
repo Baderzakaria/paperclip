@@ -355,7 +355,7 @@ export function activityRoutes(db: Db) {
     const issue = await getAccessibleResource(req, res, resolveIssueByRef(rawId), "Issue not found");
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
-    const result = await svc.forIssue(issue.id);
+    const result = await (req.query.view === "recent" ? svc.forIssue(issue.id, 50) : svc.forIssue(issue.id));
     res.json(result);
   });
 
@@ -364,8 +364,10 @@ export function activityRoutes(db: Db) {
     const issue = await getAccessibleResource(req, res, resolveIssueByRef(rawId), "Issue not found");
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
-    const result = await svc.runsForIssue(issue.companyId, issue.id,
-      req.actor.type === "board" ? getActorInfo(req).actorId : null);
+    const viewerUserId = req.actor.type === "board" ? getActorInfo(req).actorId : null;
+    const result = await (req.query.view === "recent"
+      ? svc.runsForIssue(issue.companyId, issue.id, viewerUserId, 2)
+      : svc.runsForIssue(issue.companyId, issue.id, viewerUserId));
     res.json(result);
   });
 

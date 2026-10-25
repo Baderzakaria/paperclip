@@ -7558,7 +7558,11 @@ export function agentRoutes(
 
     const afterSeq = Number(req.query.afterSeq ?? 0);
     const limit = Number(req.query.limit ?? 200);
-    const events = await heartbeat.listEvents(runId, Number.isFinite(afterSeq) ? afterSeq : 0, Number.isFinite(limit) ? limit : 200);
+    const cursor = Number.isFinite(afterSeq) ? afterSeq : 0;
+    const pageLimit = Number.isFinite(limit) ? limit : 200;
+    const events = await (req.query.view === "conversation"
+      ? heartbeat.listEvents(runId, cursor, pageLimit, true)
+      : heartbeat.listEvents(runId, cursor, pageLimit));
     const currentUserRedactionOptions = await getCurrentUserRedactionOptions();
     const redactedEvents = events.map((event) =>
       redactCurrentUserValue({

@@ -39,7 +39,7 @@ Open `/issues` or a project’s Issues view; legacy `/tasks` links redirect.
 
 ### `task-detail`
 
-Open `/issues/:issueId` from a row, mention, or direct link.
+Open `/issues/:issueId` from a row, mention, or direct link. Cold opens show the instruction and recent exchange first. **More messages** loads earlier messages and run activity; incoming messages remain visible while the task stays open.
 
 ### `task-sharing`
 
@@ -87,7 +87,9 @@ Manual: Filter by status and assignee, change grouping/sort, open a task, and re
 
 ### `task-detail`
 
-Automated: [task detail](../../ui/src/pages/IssueDetail.test.tsx) covers component behavior, while [issue service](../../server/src/__tests__/issues-service.test.ts) covers server contracts.
+Manual: Open a long task with slow historical requests. Read the instruction and recent reply before those requests finish. Expand **More messages**, verify scroll position and no duplicate replies, return to the task, and follow an older comment link. Leave a task open across new messages and runs and confirm none disappear.
+
+Automated: [cold-open reads](../../server/src/__tests__/task-cold-open.test.ts) cover bounded reads, event filtering and company denial. [Task detail](../../ui/src/pages/IssueDetail.test.tsx) covers component behavior, while [issue service](../../server/src/__tests__/issues-service.test.ts) covers server contracts.
 
 Failure markers have no dashed divider rules. An adjacent run error and
 no-live-execution-path notice show only the last error, with its details and

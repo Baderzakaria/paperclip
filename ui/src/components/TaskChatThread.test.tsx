@@ -361,6 +361,16 @@ it.each([true, false])("defers hidden content until history is ready and keeps i
   expect(container.querySelector('.task-chat-history-pending')).toBeNull();
 });
 
+it.each([true, false])("keeps cold-open messages readable while history is pending (mobile=%s)", (mobile) => {
+  sidebarState.isMobile = mobile;
+  render(<TaskChatThread issueId="cold-issue" compactHistory initialHistoryPending
+    comments={createLongThreadComments()} historyControl={<button>More messages</button>} onAdd={async () => {}} />);
+  expect(container.querySelector('[data-testid="task-chat-history-loading"]')).toBeNull();
+  expect(container.textContent).toContain("Thread message 1");
+  expect(container.textContent).toContain("More messages");
+  expect(container.querySelector('[data-testid="mock-editor"]')).not.toBeNull();
+});
+
 it("defers initial history for a saved conversation with its own draft key", () => {
   render(<TaskChatThread comments={[]} onAdd={async () => {}} issueId="saved-chat"
     conversationMode draftKey="agent-chat:company:saved-agent" initialHistoryPending />);

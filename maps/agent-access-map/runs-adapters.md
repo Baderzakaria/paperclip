@@ -210,7 +210,7 @@ API: `present` — representative operation IDs:
 
 - `GET /api/heartbeat-runs/{runId}`.
 - `GET /api/heartbeat-runs/{runId}/log`.
-- `GET /api/heartbeat-runs/{runId}/events`.
+- `GET /api/heartbeat-runs/{runId}/events` (optional `view=conversation` returns assistant messages and request lifecycles through the same access/redaction checks; `afterSeq` remains a sequence cursor).
 - `GET /api/heartbeat-runs/{runId}/workspace-operations`.
 - `GET /api/heartbeat-runs/{runId}/issues`.
 - `GET /api/companies/{companyId}/heartbeat-runs`.
