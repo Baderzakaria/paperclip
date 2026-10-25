@@ -130,6 +130,41 @@ describe("useLiveRunTranscripts", () => {
     }
   });
 
+  it("expands a compact log tail without hiding or duplicating the latest output", async () => {
+    const row = (seq: number, chunk: string) => JSON.stringify({ seq, chunk, ts: `2026-10-24T00:00:0${seq}Z`, stream: "stdout" });
+    const result = (content: string) => ({ runId: "run-1", store: "memory", logRef: "log-1", content, nextOffset: 100_000 });
+    let resolveExpanded!: (value: ReturnType<typeof result>) => void;
+    logMock.mockResolvedValueOnce(result(`${row(2, "Latest answer")}\n`));
+    logMock.mockImplementationOnce(() => new Promise(resolve => { resolveExpanded = resolve; }));
+    function Harness({ limit, bytes = 100_000 }: { limit: number; bytes?: number }) {
+      useLiveRunTranscripts({
+        runs: [{ id: "run-1", status: "succeeded", adapterType: "codex_local", logBytes: bytes }],
+        enableRealtimeUpdates: false,
+        logReadLimitBytes: limit,
+      });
+      return null;
+    }
+    const root = createRoot(document.createElement("div"));
+    const chunks = () => buildTranscriptMock.mock.calls.at(-1)?.[0];
+    try {
+      await act(async () => root.render(<Harness limit={32_000} />));
+      expect(logMock).toHaveBeenLastCalledWith("run-1", 68_000, 32_000, expect.anything());
+      expect(chunks()).toEqual([expect.objectContaining({ chunk: "Latest answer" })]);
+      await act(async () => root.render(<Harness limit={256_000} />));
+      expect(logMock).toHaveBeenLastCalledWith("run-1", 0, 256_000, expect.anything());
+      expect(chunks()).toEqual([expect.objectContaining({ chunk: "Latest answer" })]);
+      await act(async () => resolveExpanded(result(`${row(1, "Earlier activity")}\n${row(2, "Latest answer")}\n`)));
+      expect(chunks()).toEqual([
+        expect.objectContaining({ chunk: "Earlier activity" }),
+        expect.objectContaining({ chunk: "Latest answer" }),
+      ]);
+      await act(async () => root.render(<Harness limit={256_000} bytes={120_000} />));
+      expect(logMock).toHaveBeenLastCalledWith("run-1", 100_000, 256_000, expect.anything());
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   it("waits for a connecting socket to open before closing it during cleanup", async () => {
     function Harness() {
       useLiveRunTranscripts({

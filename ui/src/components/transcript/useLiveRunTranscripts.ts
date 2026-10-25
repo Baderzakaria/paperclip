@@ -143,6 +143,7 @@ export function useLiveRunTranscripts({
   const trimmedSeqFloorByRunRef = useRef(new Map<string, number>());
   const pendingLogRowsByRunRef = useRef(new Map<string, string>());
   const logOffsetByRunRef = useRef(new Map<string, number>());
+  const logReadLimitByRunRef = useRef(new Map<string, number>());
   const missingTerminalLogRunIdsRef = useRef(new Set<string>());
   // PAP-462 B3: buffered runs that dropped out of the `runs` list, mapped to the
   // wall-clock deadline (ms) after which their buffer may be pruned. A run still
@@ -269,6 +270,7 @@ export function useLiveRunTranscripts({
     for (const runId of logOffsetByRunRef.current.keys()) {
       if (!retainedRunIds.has(runId)) {
         logOffsetByRunRef.current.delete(runId);
+        logReadLimitByRunRef.current.delete(runId);
       }
     }
     for (const runId of trimmedSeqFloorByRunRef.current.keys()) {
@@ -312,6 +314,19 @@ export function useLiveRunTranscripts({
         return;
       }
       inFlightRunIds.add(run.id);
+      const previousReadLimit = logReadLimitByRunRef.current.get(run.id);
+      if (previousReadLimit !== undefined && logReadLimitBytes > previousReadLimit) {
+        // Expanding a compact tail must reread the earlier range. Retain the
+        // visible chunks; merging by sequence deduplicates the overlapping tail.
+        const expandedOffset = resolveInitialLogOffset(run, logReadLimitBytes);
+        const previousOffset = logOffsetByRunRef.current.get(run.id);
+        if (previousOffset !== undefined && expandedOffset < previousOffset) {
+          logOffsetByRunRef.current.set(run.id, expandedOffset);
+          pendingLogRowsByRunRef.current.delete(run.id);
+          pendingLogRowsByRunRef.current.delete(`${run.id}:records`);
+        }
+      }
+      logReadLimitByRunRef.current.set(run.id, logReadLimitBytes);
       const offset = logOffsetByRunRef.current.get(run.id) ?? resolveInitialLogOffset(run, logReadLimitBytes);
       try {
         const result = await readTranscriptRequest(
