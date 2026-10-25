@@ -905,7 +905,9 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
   it("retains the first committed wake during drain without periodic SQL", async () => {
     await start(); await flush(); enabled = false;
     await run(); await vi.advanceTimersByTimeAsync(1000);
-    expect(await publications()).toEqual([]); await quiet();
+    await vi.waitFor(() => expect(idleWorkSnapshot().active).toBe(0));
+    const drained = idleWorkSnapshot();
+    expect(await publications()).toEqual([]); await quiet(); expect(idleWorkSnapshot()).toEqual(drained);
     enabled = true; await vi.advanceTimersByTimeAsync(30_000); await flush();
     expect(await publications()).toHaveLength(1); await quiet();
   });
@@ -948,7 +950,11 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await run();
     const select = vi.spyOn(db, "select").mockImplementationOnce(() => { throw new Error("temporary read failure"); });
     await start(); select.mockRestore(); expect(errors.splice(0)).toHaveLength(1);
-    enabled = false; await quiet(); enabled = true; await vi.advanceTimersByTimeAsync(30_000); await flush();
+    enabled = false; await vi.advanceTimersByTimeAsync(30_000);
+    await vi.waitFor(() => expect(idleWorkSnapshot().active).toBe(0));
+    const drained = idleWorkSnapshot();
+    await quiet(); expect(idleWorkSnapshot()).toEqual(drained);
+    enabled = true; await vi.advanceTimersByTimeAsync(30_000); await flush();
     expect(await publications()).toHaveLength(1); await quiet();
   });
   it("retries a failed publication write without idle scans before its deadline", async () => {

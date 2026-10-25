@@ -1044,3 +1044,22 @@ These dispositions do not finish the entire publication/configuration/recovery
 audit. In particular, endpoint and conversation reactivation, policy changes and
 alternate recovery receipts still need complete real-producer coverage before
 production registration and removal of the lifecycle scan.
+
+
+## Shared drain repair acceptance
+
+The voice-recovery review exposed dirty hints retaining a settled intent hold
+while dispatch is paused. The repair is owned by #17576 and propagated through
+#17578's shared scoped-deadline worker into this slice. The milestone first-write
+and failed-selection drain tests now also assert zero active work and a stable
+idle snapshot, then process the retained notice after resume without a new write.
+All 99 lifecycle/governed/voice recovery cases pass in
+`/tmp/sleep28-propagated-drain-tests.log`; server types pass. Both Teams scheduled
+consumer groups pass 24 cases in `/tmp/sleep28-teams-drain-consumers.log`.
+
+Broader acceptance found two tests relying on the old held counter to wait for
+resume: report and retention flush helpers return as soon as active work is zero,
+which is now correct during drain even before the retained retry fires. The run
+in `/tmp/sleep28-shared-drain-consumers.log` has 36 passes and those two failures.
+Confirm the saved deadline runs on resume, strengthen idle assertions, and repair
+these tests at their owning parent PRs before claiming propagated acceptance.
