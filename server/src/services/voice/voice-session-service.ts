@@ -230,7 +230,6 @@ export function voiceSessionService(db: Db, options: {
     return registerVoiceReplyWork(coordinator, replies, canRun);
   }
   async function reconcileMaintenance(limit = 25) {
-    await inbound.pruneHistory();
     await reconcileReports(limit);
   }
   /** Explicit one-shot recovery for diagnostics/tests; never register on a recurring lane. */

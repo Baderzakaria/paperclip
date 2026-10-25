@@ -64,3 +64,58 @@ its latest Paperclip reviewer stopped before completion.
 
 The full original recurring-server ledger, older #17490 E2E failure and final
 stack/master reconciliation remain required.
+
+## Implementation and initial evidence
+
+The dedicated voice retention owner now loads eligible deadlines, rounds SQL
+submillisecond dates up, and locks/rechecks before deletion. The existing producer
+helper signals both voice admission cleanup and retention. App wiring registers
+the owner; voice maintenance no longer calls `pruneHistory`. Reports remain in
+that lane, and manual diagnostic reconciliation remains compatible.
+
+The initial ten PostgreSQL lifecycle cases had one invalid assertion: an open
+transaction was expected to have no coordinator deadline. Intent reconciliation
+correctly retains a deadline until settlement. The test now checks invisible
+uncommitted state and the row still present within its owning transaction; it
+requires deletion only after commit and quiet after rollback. All ten then passed.
+An additional real concurrent binding-lock regression and production service
+confirmation tests are being verified. Full voice acceptance uses a fresh database
+created through the repaired application migrator, not direct SQL replay.
+
+Parent #17580 required repair 4f0364d269: register migration 0388 as top-level
+because of its concurrent index. A new migration-runner regression reproduced the
+failure, then proved fresh setup, invalid-index repair and concurrent/repeat
+replay after the fix. This parent repair was merged into this branch; its fresh
+CI is running. See the parent's audit for preserved failure evidence.
+
+## Acceptance evidence
+
+- 11 retention lifecycle tests and 13 parent cleanup tests pass (24 total).
+  The added concurrent-binding test holds the real row lock, commits a task
+  binding while deletion waits, and proves retention rechecks and keeps the row.
+- Full voice integration and app wiring pass 131 cases on a fresh database.
+  Two new service tests start retention while the admission is unconfirmed, then
+  use a signed terminal callback or real rejection/provider cleanup to establish
+  confirmation. Each observes its saved seven-day deadline, SQL quiet before it,
+  deletion at it, and quiet afterwards.
+- The first acceptance run waited 120 seconds before rejection, exceeding the
+  original call's approval window. That correctly rejected the test operation and
+  left an unconfirmed fixture affecting two later global cleanup assertions. The
+  corrected test checks pre-confirmation quiet for ten seconds and the full suite
+  passes on a newly migrated database. Production expiry policy did not change.
+- Workspace typecheck and build pass. A final server typecheck covers the last
+  added concurrent-binding test. Shared deletion/startup and parent recovery
+  checks are tracked below when their current processes finish.
+- No repository-wide `pnpm test:run` success is claimed: the local embedded
+  PostgreSQL initialization limitation from earlier slices remains. The selected
+  database suites use isolated real PostgreSQL; fresh remote CI is required.
+
+Logs: `/tmp/sleep24-retention-cleanup-final.log`,
+`/tmp/sleep24-voice-acceptance.log` (preserved initial failure),
+`/tmp/sleep24-voice-acceptance-fixed.log`, `/tmp/sleep24-workspace-types.log`,
+`/tmp/sleep24-workspace-build.log`, `/tmp/sleep24-final-server-types.log`.
+
+Final local consumer checks pass: 52 company-deletion/startup tests, 11 parent
+voice recovery tests, and final server typecheck. Selected nonoverlapping test
+coverage totals 218 passing cases. The implementation and local verification are
+complete; remote PR CI/review and the rest of the original stack remain pending.

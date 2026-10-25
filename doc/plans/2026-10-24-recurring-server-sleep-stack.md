@@ -1306,3 +1306,23 @@ The final migration applies/replays and its backfill is tested twice. Slice 24
 starts the separate inbound-history retention audit. Its deadline preserves both
 seven-day age conditions and requires confirmed cleanup plus no task/session
 binding. Call reports follow separately. No original remaining scope is removed.
+
+## Slice 24: inbound voice history retention
+
+Branch `codex/sleep-24-voice-inbound-retention` follows inbound cleanup #17580
+including its migration runner repair `4f0364d269`. It removes only periodic
+history pruning. The existing admission row owns the seven-day deadline and
+confirmation/binding conditions. The existing notification helper wakes retention
+on outer transaction settlement; no new table or caller wrapper is added.
+
+218 selected tests pass: 131 full voice/app wiring, 24 retention/cleanup lifecycle,
+52 deletion/startup, and 11 parent recovery. Workspace typecheck/build and final
+server typecheck pass. Tests prove real signed-callback and provider-cleanup
+reactivation, pre-deadline quiet, exact deadlines, concurrent binding protection,
+restart, drain, rollback, failure and shutdown. Initial fixture failures remain
+recorded in the slice audit. Remote checks and review are pending publication.
+
+Next separate owner: voice call-report reconciliation. Preserve the existing
+24-hour post-call refresh obligation, transcript ordering, task projection and
+provider diagnostics while removing scans with no eligible calls. Inspect
+completion semantics before treating a report marked available as fully settled.

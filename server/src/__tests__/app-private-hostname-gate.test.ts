@@ -87,6 +87,7 @@ describe("createChatReconciliationCoordinator", () => {
     expect(source).toContain("chatChannels.voice.registerRecoveryWork(deliveryWork,");
     expect(source).toContain("chatChannels.voice.registerReplyWork(deliveryWork,");
     expect(source).toContain("chatChannels.voice.inbound.registerCleanupWork(deliveryWork,");
+    expect(source).toContain("chatChannels.voice.inbound.registerRetentionWork(deliveryWork,");
     expect(source).toContain("chatChannels.voice.reconcileMaintenance()");
     expect(source).not.toContain("chatChannels.voice.reconcile()");
   });
