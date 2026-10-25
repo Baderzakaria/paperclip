@@ -1875,3 +1875,20 @@ start another send after drain/standby/shutdown. Three regressions reproduced
 it. Per-send admission/abort checks now pass all 14 new lifecycle cases, and the
 previously skipped publication suite plus startup guards pass 27 cases with the
 external test database. Fresh corrected-head verification remains required.
+
+## Slice 33 accepted verification and GitHub owner split
+
+#17653 at `276ef23d2a0b01b15e6bfb8ff31ab13495741b19` passes all 53
+remote checks, fresh Greptile 5/5, and has no unresolved review threads. Workspace
+typecheck/build pass. All 1,540 tests across chat integration, standalone
+interaction publication, and startup guards passed on a fresh database with no
+skips in 473.47 seconds. The initial skipped suite and the stop-boundary failure
+remain documented. The PR is unmerged.
+
+Slice 34 starts from that verified head and owns initial GitHub response-comment
+acknowledgement delivery. The same maintenance helper also contains terminal
+response reconciliation, review-check publication, and late stale-head review
+projection repair. Those are separate reasons and remain separate planned PRs.
+See `2026-10-25-github-chat-maintenance-sleep-audit.md` for the inspected owners,
+producer boundaries, and response-slot dependencies. No GitHub migration is yet
+claimed implemented or verified.
