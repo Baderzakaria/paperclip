@@ -3777,15 +3777,18 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         const baseline = f.responseWrites.length;
         sending = githubChatReviewService(db, f.providerFetch).execute(f.session, "comment", { body: "Authored final response", idempotencyKey: "terminal-owner-race" });
         await ready;
-        await expect.poll(() => coordinator.nextWakeAt(), { timeout: 5000 }).toBeNull();
+        await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }),
+          { timeout: 5000 }).toEqual({ active: 0, next: null });
         expect(f.responseWrites).toHaveLength(baseline);
         release(); await sending;
         expect((await action()).status).toBe("cancelled");
         if (!uncertain) await expect.poll(() => [...f.responseComments.values()][0]?.body, { timeout: 5000 }).toContain("stopped before completing");
-        await expect.poll(() => coordinator.nextWakeAt(), { timeout: 5000 }).toBeNull();
+        await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }),
+          { timeout: 5000 }).toEqual({ active: 0, next: null });
         if (uncertain) expect(f.responseWrites).toHaveLength(baseline);
         vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
         const reads = vi.spyOn(db, "select"), writes = vi.spyOn(db, "transaction");
+        onTestFinished(() => { reads.mockRestore(); writes.mockRestore(); });
         await vi.advanceTimersByTimeAsync(120_000);
         expect(reads).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled();
         reads.mockRestore(); writes.mockRestore(); expect(errors).toEqual([]);
@@ -6652,10 +6655,12 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         expect(coordinator.nextWakeAt()).toBeNull();
         await f.enqueue();
         await expect.poll(async () => (await f.action())?.status, { timeout: 5000 }).toBe("processed");
-        await expect.poll(() => coordinator.nextWakeAt(), { timeout: 5000 }).toBeNull();
+        await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }),
+          { timeout: 5000 }).toEqual({ active: 0, next: null });
         expect(f.writes).toEqual([expect.objectContaining({ status: "completed" })]);
         vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
         const reads = vi.spyOn(db, "select"), transactions = vi.spyOn(db, "transaction");
+        onTestFinished(() => { reads.mockRestore(); transactions.mockRestore(); });
         const count = f.requests.length;
         await vi.advanceTimersByTimeAsync(120_000);
         expect(reads).not.toHaveBeenCalled(); expect(transactions).not.toHaveBeenCalled();
@@ -6698,9 +6703,11 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         f.setRemoteHead("c".repeat(40));
         await vi.advanceTimersByTimeAsync(6000);
         await expect.poll(async () => (await f.action()).status, { timeout: 5000 }).toBe("cancelled");
-        await expect.poll(() => coordinator.nextWakeAt(), { timeout: 5000 }).toBeNull();
+        await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }),
+          { timeout: 5000 }).toEqual({ active: 0, next: null });
         expect((await db.select().from(chatGitHubReviews).where(eq(chatGitHubReviews.id, f.review.id)))[0].state).toBe("superseded");
         const reads = vi.spyOn(db, "select"), count = f.requests.length;
+        onTestFinished(() => reads.mockRestore());
         await vi.advanceTimersByTimeAsync(120_000);
         expect(reads).not.toHaveBeenCalled(); expect(f.requests).toHaveLength(count); reads.mockRestore();
         expect(f.writes).toHaveLength(1); expect(errors).toEqual([]);

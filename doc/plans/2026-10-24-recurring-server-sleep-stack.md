@@ -1971,3 +1971,12 @@ existing maintenance/startup cases. Workspace typecheck/build, migration/replay,
 and candidate-index evidence passed. Full local acceptance and remote PR gates
 remain required. See `2026-10-25-github-review-check-sleep-audit.md` for the failed
 attempts, repairs, exact boundary, and external reconciliation limitation.
+
+Slice 36 is draft [#17662](https://github.com/paperclipai/paperclip/pull/17662).
+Its initial full local run had 13 failures and 1,569 passes, and CI failed an
+inherited login-cleanup fixture. The quiet observation and fake-clock settlement
+repairs are documented in its owner audit. The corrected selections passed 23
+chat cases and all 16 login-cleanup tests; full/new-head verification is required.
+The earlier cancellation browser failures were not reproduced in six local
+replays. #17490 and #17572 remain unresolved gates, not inferred green from that
+negative result. The next untouched duty remains late stale-head projection repair.

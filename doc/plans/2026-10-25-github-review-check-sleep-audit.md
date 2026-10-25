@@ -119,3 +119,32 @@ The earlier source checkpoint is `219061a159`. No full local acceptance or remot
 CI success is claimed for this slice until the running checks finish. Open parent
 stack failures and review findings remain independent obligations; this slice does
 not make the whole stack ready or authorize merging it.
+
+## Full acceptance and CI repairs
+
+Draft [#17662](https://github.com/paperclipai/paperclip/pull/17662) was published at
+`c0d91f553994ba898edc2701c6879c10a46b8b50`. Its first full local run completed with
+1,569 passes and 13 failures in 541.25 seconds. The first failure observed a final
+terminal-response state read after the scheduler removed its deadline but before
+the in-flight pass finished. `nextWakeAt() === null` does not prove quiescence.
+That assertion also skipped restoring its SQL spies, causing cascading failures.
+The affected quiet checks now require both zero tracked active work and no next
+wake. Their spies also restore on test completion if an assertion fails. All 23
+affected chat cases passed in a fresh database after this repair.
+
+The same head's CI had 51 successes and the server 1/12 plus aggregate failure.
+Server 1/12 failed the inherited setup-token consume fixture while it waited for
+an idle hold. Cleanup can signal another generation during a sweep, leaving a
+coalesced deadline beyond the fixture's single fake-clock jump. The fixture now
+advances to actual registered deadlines while tracked work remains. It keeps the
+existing observation timeout and all production intervals. All 16 login-cleanup
+cases passed in a separate disposable database. Fresh full acceptance and new-
+head CI/review remain required; the old head is not reported green.
+
+An independent diagnostic replayed the earlier stack's two failing cancellation
+browser cases three times each: all six passed on this head in 33.6 seconds.
+Scoped lock observation did not capture a deadlock. A second minimal FK/row-lock
+hypothesis also did not reproduce a cycle. These are negative diagnostic results,
+not a fix for #17490 or #17572. An initial database-name collision stopped setup;
+the existing database was preserved and a newly named disposable database was
+used instead. No blind CI rerun was consumed.
