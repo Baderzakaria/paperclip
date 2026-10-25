@@ -1421,3 +1421,14 @@ worker cases, nine native chat recovery integrations, and server production type
 pass after repair. Real late continuation receipts now reactivate projection.
 Next is heartbeat queue/admission/recovery producer coverage. Periodic projection
 and all remaining inventory/remote acceptance duties remain outstanding.
+
+
+Slice 28 queue checkpoint: issue admission, ordinary/comment claims, drain
+release, coalesced lineage and native review claims now notify from their owning
+transactions. Real missing-wake regressions were reproduced for admission,
+coalescence and all ordinary/comment claim/release paths. The 24 milestone worker
+cases and 92 existing queue/policy cases pass, as does server production typecheck.
+The audit records the initial fixture FK failure, exact logs, remaining raw
+cancellation/promotion/receipt writers, and native reviewer acceptance gap.
+Periodic projection remains until producer coverage is complete; no new PR or
+full-goal completion is claimed.

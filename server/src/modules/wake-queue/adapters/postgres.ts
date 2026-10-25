@@ -1,3 +1,4 @@
+import { notifyChatRunMilestones } from "../../../services/chat-run-milestone-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../../../services/delivery-work-notifications.js";
 import { isAcknowledgedNativeReassignmentStop, isAcknowledgedNativeStop } from "../../../services/acknowledged-native-stop.js";
 import { readRunCancellation } from "../../../services/run-cancellation.js";
@@ -948,6 +949,7 @@ export function createWakeAdmissionWriter(): WakeAdmissionWriter {
     async coalesceIntoActiveExecutionRun(scope, input) {
       const tx = requireAdmissionTx(scope, input.companyId);
       const now = new Date();
+      await notifyChatRunMilestones(tx, { companyId: input.companyId });
       const mergedRun = await tx
         .update(heartbeatRuns)
         .set({ contextSnapshot: input.mergedContextSnapshot, updatedAt: now })

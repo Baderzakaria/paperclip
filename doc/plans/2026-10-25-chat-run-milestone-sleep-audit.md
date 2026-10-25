@@ -331,3 +331,69 @@ Remaining interaction, publication, conversation/configuration, question
 claim/retry, and monitor/semantic-receipt dependencies still require coverage.
 The new worker is still not production-registered, and the periodic combined
 projector remains until that audit and its real producer tests are complete.
+
+
+## Queue admission, claim, release and coalescence checkpoint
+
+The issue-bound admission transaction signals before inserting its run. Ordinary,
+legacy-comment and queued-comment claims signal before changing run/wake state.
+Queued-comment discard and committed chat-close cancellation branches also signal
+before their terminal writes. The native review claim owner signals after its
+review/ownership checks and before changing the run to running. No claim inspection
+or admission-marker-only update gets a signal merely because it was inspected.
+
+Drain release now selects and locks the still-running candidate in its existing
+transaction, obtains its scope, then registers intent before releasing the run,
+wake and issue lock. A repeated release after the run is queued returns without
+an intent or update. The added selection follows the same run-first locking order
+as the previous UPDATE; it is not a periodic discovery query.
+
+The wake-queue PostgreSQL admission adapter owns coalesced run-context writes and
+signals from that existing transaction. Its port carries company identity, so
+this writer uses company-scoped reconstruction rather than adding feature fields
+to the module contract or interpreting chat/provider payloads. The actual
+conversation/lineage decision remains in the chat projection owner.
+
+The fallback company-run admission/coalescing branch of `heartbeat/queue.ts` is
+outside the issue-bound path and cannot create a chat milestone. It intentionally
+has no new notification or wrapper. Any later task-binding writer still needs
+its own signal. This is separate from claiming a historically bound run, for
+which a missing context issue ID conservatively uses company scope.
+
+Verification and failures:
+
+- Initial claim fixtures incorrectly inserted a run before its referenced wake.
+  Three failed on the real FK, while the drain-release missing-wake regression
+  failed at its publication assertion. `/tmp/sleep28-queue-claim-before.log`.
+  Fixing insertion and cleanup dependency order required no production change.
+- With valid fixtures, all four claim/release regressions failed at the missing
+  notice assertion before wiring: `/tmp/sleep28-queue-claim-corrected-before.log`.
+  After repair all 22 then-current worker cases passed:
+  `/tmp/sleep28-queue-claim-tests.log`.
+- Real issue admission during a held execution drain and the actual PostgreSQL
+  coalescing writer each reproduced a missing notice independently before their
+  notification was added: `/tmp/sleep28-queue-admission-before.log` and
+  `/tmp/sleep28-coalescing-before.log`.
+- All 24 worker cases now pass: `/tmp/sleep28-queue-producers-tests.log`. Queue
+  tests call the actual admission/claim/release implementations and database;
+  dependency callbacks hold execution and prevent provider dispatch. The
+  coalescing case exercises the actual adapter inside an outer transaction.
+  These do not claim provider execution or a full native reviewer admission test.
+- All 92 existing queue-module and wake-admission policy tests pass:
+  `/tmp/sleep28-queue-module-tests.log`. The queue module now accepts the standard
+  guarded external test URL through `PAPERCLIP_QUEUE_TEST_DATABASE_URL`; its
+  destructive per-case fixture reset ran only on the new isolated database
+  `paperclip_sleep28_queue_claim_20261025_test`. Embedded tests remain the default.
+- Server production typecheck passes: `/tmp/sleep28-queue-producers-typecheck.log`.
+  This excludes test files and is not workspace/PR acceptance.
+
+Remaining queue producer audit is explicit: the general chat-control recovery
+gate's terminal write, early case-handoff cancellation, stale retry/reassignment
+cancellation, native status-wake dispatch receipts, deferred-run promotion in the
+wake-queue adapter, queued-comment mutations and run-dispatch cancellation. The
+native review claim signal also needs its dedicated real admission acceptance
+case before final slice acceptance. Other recovery, interaction, presentation,
+conversation/configuration, question claim/retry and monitor/semantic receipt
+writers from the dependency table remain. Production still uses the periodic
+combined projector; the new worker is not registered yet. No original inventory
+or PR-stack acceptance requirement is removed by this checkpoint.

@@ -1,3 +1,4 @@
+import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js";
 import { authorizationService } from "../authorization.js";
 import { assertTaskRetryConversationAllowed, readTaskRetryIntent, retireSupersededTaskRetry } from "../task-retry.js";
 import { insertIssueComment } from "../issue-comment-writes.js";
@@ -1315,6 +1316,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                 if (proof.kind === "stopped") {
                   const error =
                     "Automatic continuation stopped by the committed chat conversation close. Send a fresh request in chat or on the Board.";
+                  await notifyChatRunMilestones(tx, { companyId: run.companyId, issueId });
                   const [cancelled] = await tx
                     .update(heartbeatRuns)
                     .set({
@@ -1393,6 +1395,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                 // explicitly bound queued-message envelope is subject to the
                 // live-comment discard gate below.
                 await withExternalAdmissionGuard(tx, run.companyId, run.agentId, () => assertNoExternalOverlap(tx, run.companyId, run.agentId));
+                await notifyChatRunMilestones(tx, { companyId: run.companyId, issueId });
                 const [claimedRun] = await tx
                   .update(heartbeatRuns)
                   .set({
@@ -1434,6 +1437,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               });
               if (liveIds.length === 0) {
                 const reason = "Queued messages were discarded before dispatch";
+                await notifyChatRunMilestones(tx, { companyId: run.companyId, issueId });
                 const [cancelled] = await tx
                   .update(heartbeatRuns)
                   .set({
@@ -1481,6 +1485,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               }
 
               await withExternalAdmissionGuard(tx, run.companyId, run.agentId, () => assertNoExternalOverlap(tx, run.companyId, run.agentId));
+              await notifyChatRunMilestones(tx, { companyId: run.companyId, issueId });
               await tx
                 .update(agentWakeupRequests)
                 .set({
@@ -1591,6 +1596,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             )).for("update");
             if (!lockedRun || lockedRun.status !== "queued") return null;
             await withExternalAdmissionGuard(claimTx, run.companyId, run.agentId, () => assertNoExternalOverlap(claimTx, run.companyId, run.agentId));
+            await notifyChatRunMilestones(claimTx, { companyId: run.companyId, issueId: issueId ?? undefined });
             const claimedRun = await claimTx.update(heartbeatRuns).set(claimValues).where(and(
               eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued"),
             )).returning().then((rows) => rows[0] ?? null);
@@ -1688,6 +1694,11 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
   async function releaseRunClaimedJustBeforeSuppression(runId: string) {
     const now = new Date();
     await db.transaction(async (tx) => {
+      const [candidate] = await tx.select({ companyId: heartbeatRuns.companyId, contextSnapshot: heartbeatRuns.contextSnapshot })
+        .from(heartbeatRuns).where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.status, "running"))).for("update");
+      if (!candidate) return;
+      await notifyChatRunMilestones(tx, { companyId: candidate.companyId,
+        issueId: readNonEmptyString(parseObject(candidate.contextSnapshot).issueId) ?? undefined });
       const released = await tx
         .update(heartbeatRuns)
         .set({
@@ -4255,6 +4266,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             adoptedCommentIds = await undeliveredLegacyUserCommentIds(tx as unknown as Db,
               agent.companyId, issueId, agentId, adoptedCommentIds);
           }
+          await notifyChatRunMilestones(tx, { companyId: agent.companyId, issueId: issueId ?? undefined });
           const newRun = await tx
             .insert(heartbeatRuns)
             .values({

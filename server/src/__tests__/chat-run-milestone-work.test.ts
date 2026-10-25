@@ -10,6 +10,10 @@ import { chatRunMilestoneWork } from "../services/chat-run-milestone-work.js";
 import { notifyChatRunMilestones } from "../services/chat-run-milestone-notifications.js";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
 import { questionResponseDeliveryService } from "../services/question-response-delivery.js";
+import { createAdmissionTransactionScope, createWakeAdmissionWriter } from "../modules/wake-queue/adapters/postgres.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
+import { createHeartbeatQueue } from "../services/heartbeat/queue.js";
+import { createHeartbeatQueueTestDependencies } from "./helpers/heartbeat-queue.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { commitNativeStatusDecision, dispatchPendingNativeStatusEffects } from "../services/native-runtime/status-decision-committer.js";
 import { finalizeNativeRun } from "../services/native-runtime/native-run-finalizer.js";
@@ -72,9 +76,9 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       await db.delete(statusDecisionEffects).where(eq(statusDecisionEffects.companyId, companyId));
       await db.delete(statusDecisions).where(eq(statusDecisions.companyId, companyId));
       await db.delete(workAssessments).where(eq(workAssessments.companyId, companyId));
-      await db.delete(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId));
       await db.delete(nativeRunResults).where(eq(nativeRunResults.companyId, companyId));
       await db.delete(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId));
+      await db.delete(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId));
       await db.delete(completionContracts).where(eq(completionContracts.companyId, companyId));
       await db.delete(issues).where(eq(issues.companyId, companyId));
       await db.delete(agents).where(eq(agents.companyId, companyId));
@@ -135,6 +139,75 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect((await publications()).map(publication => publication.idempotencyKey).sort()).toEqual([
       `run:${row.id}:failed:${f.endpointId}`, `run:${row.id}:queued:${f.endpointId}`,
     ].sort());
+    await quiet();
+  });
+  async function queue() {
+    const dependencies = createHeartbeatQueueTestDependencies(db);
+    const [agent] = await db.select().from(agents).where(eq(agents.id, f.agentId));
+    dependencies.getAgent.mockResolvedValue(agent);
+    dependencies.instanceSettings.getExperimental.mockImplementation(() => instanceSettingsService(db).getExperimental());
+    return { service: createHeartbeatQueue(db, dependencies), dependencies };
+  }
+  it("wakes on real queue admission while execution is held by drain", async () => {
+    const { service, dependencies } = await queue();
+    dependencies.getSchedulingSuppression.mockResolvedValue({ suppressed: true, reason: "task_drain" });
+    await start(); await flush(); await quiet();
+    const admitted = await service.enqueueWakeup(f.agentId, { source: "on_demand", reason: "issue_commented",
+      contextSnapshot: runValues().contextSnapshot, requestedByActorType: "user", requestedByActorId: f.userId,
+    });
+    expect(admitted).toMatchObject({ status: "queued", companyId: f.companyId });
+    await flush();
+    expect((await publications()).map(row => row.idempotencyKey)).toContain(`run:${admitted!.id}:queued:${f.endpointId}`);
+    expect(dependencies.executeRun).not.toHaveBeenCalled();
+    await quiet();
+  });
+  it.each(["ordinary", "legacy_comments", "queued_comments"] as const)("wakes on a real %s queue claim", async kind => {
+    const wakeId = randomUUID();
+    const context = runValues().contextSnapshot;
+    await db.insert(agentWakeupRequests).values({ id: wakeId, companyId: f.companyId, agentId: f.agentId,
+      source: "on_demand", status: "queued",
+      payload: kind === "queued_comments" ? { _paperclipWakeContext: { wakeCommentIds: [f.commentId] } } : {},
+    });
+    const seeded = await run(f, { status: "queued", runtimeMode: "legacy", wakeupRequestId: wakeId,
+      contextSnapshot: kind === "ordinary" ? context : { ...context, wakeCommentIds: [f.commentId] },
+    });
+    await db.update(agentWakeupRequests).set({ runId: seeded.id }).where(eq(agentWakeupRequests.id, wakeId));
+    const [before] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.id));
+    const { service, dependencies } = await queue();
+    await start(); await flush(); await quiet();
+    expect(await service.claimQueuedRun(before)).toMatchObject({ id: seeded.id, status: "running" });
+    await flush();
+    expect((await publications()).map(row => row.idempotencyKey)).toContain(`run:${seeded.id}:working:${f.endpointId}`);
+    expect(dependencies.executeRun).not.toHaveBeenCalled();
+    await quiet();
+    expect(await service.claimQueuedRun(before)).toBeNull();
+    await quiet();
+  });
+  it("wakes when the real coalescing writer gives an existing run chat lineage", async () => {
+    const seeded = await run(f, { contextSnapshot: { issueId: f.issueId, source: "issue_assigned" } });
+    await start(); await flush(); expect(await publications()).toEqual([]); await quiet();
+    await db.transaction(async tx => {
+      await createWakeAdmissionWriter().coalesceIntoActiveExecutionRun(
+        createAdmissionTransactionScope(f.companyId, tx as unknown as typeof db), {
+          companyId: f.companyId, activeExecutionRunId: seeded.id, mergedContextSnapshot: runValues().contextSnapshot,
+          agentId: f.agentId, source: "on_demand", triggerDetail: null, payload: { issueId: f.issueId },
+          requestedByActorType: "user", requestedByActorId: f.userId, idempotencyKey: null,
+        });
+      expect(await publications()).toEqual([]);
+    });
+    await flush();
+    expect((await publications()).map(row => row.idempotencyKey)).toContain(`run:${seeded.id}:working:${f.endpointId}`);
+    await quiet();
+  });
+  it("wakes on a claim released for drain and leaves repeated release quiet", async () => {
+    const seeded = await run();
+    const { service } = await queue();
+    await start(); await flush(); await quiet();
+    await service.releaseRunClaimedJustBeforeSuppression(seeded.id);
+    await flush();
+    expect((await publications()).map(row => row.idempotencyKey)).toContain(`run:${seeded.id}:queued:${f.endpointId}`);
+    await quiet();
+    await service.releaseRunClaimedJustBeforeSuppression(seeded.id);
     await quiet();
   });
   async function nativeFixture(phase = "committed") {
