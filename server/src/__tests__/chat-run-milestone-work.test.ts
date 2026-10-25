@@ -597,6 +597,73 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect((await publications()).map(row => row.idempotencyKey)).toContain(`run:${targetId}:queued:${f.endpointId}`);
     await quiet();
   });
+  it.each(["retry", "stale claim", "live claim", "rolled-back reset"] as const)("rechecks question prompt binding after %s", async (mode) => {
+    const source = await run();
+    const interactions = issueThreadInteractionService(db);
+    const interaction = await interactions.create({ id: f.issueId, companyId: f.companyId }, {
+      kind: "ask_user_questions", continuationPolicy: "wake_assignee", sourceRunId: source.id,
+      title: "Choose", payload: { version: 1, title: "Choose", questions: [{
+        id: "choice", prompt: "Continue?", selectionMode: "single", required: true,
+        options: [{ id: "yes", label: "Yes" }],
+      }] },
+    }, { agentId: f.agentId, runId: source.id });
+    await interactions.answerQuestions({ id: f.issueId, companyId: f.companyId, status: "in_progress" }, interaction.id,
+      { answers: [{ questionId: "choice", optionIds: ["yes"] }] }, { userId: f.userId });
+    const other = await fixture(f.companyId);
+    await db.update(chatEndpoints).set({ assignedAgentId: f.agentId }).where(eq(chatEndpoints.id, other.endpointId));
+    await db.update(chatConversations).set({ issueId: f.issueId }).where(eq(chatConversations.id, other.conversationId));
+    await db.insert(chatPublications).values({ companyId: f.companyId, endpointId: other.endpointId, conversationId: other.conversationId,
+      issueId: f.issueId, idempotencyKey: `interaction:${interaction.id}:${other.endpointId}`,
+      payload: { text: "Continue?", interactionId: interaction.id }, state: "published", providerMessageId: "other-question",
+    });
+    const events: string[] = [];
+    let claimEvents: string[] = [];
+    let duringClaimNotices: string[] | undefined;
+    const unsubscribe = subscribeDatabaseWork(db, "chat-run-milestones", event => events.push(event));
+    const delivery = questionResponseDeliveryService(db, { heartbeat: {
+      cancelRun: async () => {
+        claimEvents = [...events];
+        await start(); await flush();
+        duringClaimNotices = (await publications()).map(row => row.idempotencyKey);
+        throw new Error("temporary cancellation failure");
+      },
+      wakeup: async () => { throw new Error("Must retain the still-active source"); },
+    } });
+    try {
+      if (mode === "retry") {
+        await expect(delivery.deliver(interaction.id)).resolves.toBeNull();
+      } else {
+        await db.update(issueQuestionResponseDeliveries).set({ status: "delivering", attemptCount: 1,
+          lastAttemptAt: new Date(Date.now() - (mode === "live claim" ? 0 : 60_000)),
+        }).where(eq(issueQuestionResponseDeliveries.interactionId, interaction.id));
+        await start(); await flush();
+        duringClaimNotices = (await publications()).map(row => row.idempotencyKey);
+        if (mode === "rolled-back reset") {
+          await expect(db.transaction(async tx => {
+            await questionResponseDeliveryService(tx as unknown as typeof db, { heartbeat: {} as never }).sweepPending(0);
+            expect(events).toEqual(["intent"]);
+            throw new Error("rollback reset");
+          })).rejects.toThrow("rollback reset");
+        } else {
+          await delivery.sweepPending(0);
+        }
+      }
+      expect(duringClaimNotices).toBeDefined();
+      expect(duringClaimNotices!.some(key => key.startsWith(`run:${source.id}:`))).toBe(false);
+      expect((await db.select().from(issueQuestionResponseDeliveries).where(eq(issueQuestionResponseDeliveries.interactionId, interaction.id)))[0].status).toBe(mode === "live claim" || mode === "rolled-back reset" ? "delivering" : "pending");
+      await flush();
+      const noticeExists = (await publications()).some(row => row.idempotencyKey === `run:${source.id}:working:${f.endpointId}`);
+      expect(noticeExists).toBe(mode === "retry" || mode === "stale claim");
+      if (mode === "retry") expect(claimEvents).toEqual(["intent", "settled"]);
+      else if (mode === "live claim") expect(events).toEqual([]);
+      else {
+        expect(events[0]).toBe("intent");
+        expect(events.slice(1)).toContain("settled");
+        expect(events.filter(event => event === "intent")).toHaveLength(1);
+      }
+      await quiet();
+    } finally { unsubscribe(); }
+  });
   it("waits for outer commit and ignores rolled-back nested writes", async () => {
     await start(); await flush();
     await expect(db.transaction(async tx => {

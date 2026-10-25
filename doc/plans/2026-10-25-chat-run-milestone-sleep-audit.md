@@ -579,3 +579,51 @@ slice. Publication/interaction, conversation/configuration, question claim/retry
 and monitor/semantic receipt producers still need their own audit and proof.
 The production periodic projector remains; no slice publication or full-goal
 completion is claimed.
+
+## Question claim and retry checkpoint
+
+Question response claim state is publication lineage, not merely delivery
+bookkeeping. A delivering answer can temporarily bind its source run to an
+already published prompt on another conversation. Returning that claim to
+pending restores the original chat lineage and can make a previously suppressed
+working notice eligible.
+
+The question service now registers issue-scoped milestone intent before entering
+that claim state and before an owned retry releases it. Retry release locks and
+rechecks the existing attempt generation before signaling or updating; exhausted
+claims retain ownership until the existing terminal receipt commits. Stale-claim
+reset locks the actual stale rows, signals their distinct issue scopes, and resets
+only those rows in the same transaction. Updates use batches of 500 IDs to avoid
+an unbounded statement parameter count. This preserves the existing reset-all
+semantics; it does not make the stale-row scan itself bounded. Live lease renewal,
+still-owned exhausted claims and no-op claim attempts add no milestone wake.
+Provider cancellation and execution remain outside these transactions.
+
+Verification:
+
+- `/tmp/sleep28-question-retry-corrected-before.log` reproduces a missing working
+  notice after real delivery retry. The callback captures observations for
+  assertions outside the service's error handler so assertions cannot be swallowed.
+- `/tmp/sleep28-question-claims-before.log`: retry and stale reset fail before
+  the fix; a live claim remains unchanged and emits no notification.
+- `/tmp/sleep28-question-final-tests.log`: 76 pass, one test expectation failed:
+  rollback emits settlement again when shared XID reconciliation confirms abort.
+  State and publication assertions passed. The corrected test checks intent,
+  eventual settlement, preserved claim, absent notice and subsequent idle quiet
+  without assuming settlement notifications are delivered exactly once.
+- `/tmp/sleep28-question-final-fixed-tests.log`: all 77 cases pass: 42 milestone
+  worker cases plus 35 existing question-delivery cases, including lease renewal,
+  stale-worker fencing, retries and adapter behavior.
+- `/tmp/sleep28-question-typecheck.log`: server production typecheck passed.
+  Test files are outside that compiler configuration. `git diff --check` passed.
+
+Existing question-delivery tests now support guarded
+`PAPERCLIP_QUESTION_DELIVERY_TEST_DATABASE_URL`, retaining embedded mode by default
+and closing their client. Their broad cleanup ran only on the dedicated migrated
+`paperclip_sleep28_question_delivery_20261025_test` database. Milestone fixtures
+used their separate dedicated database.
+
+Fresh origin/master inspected at `8c6bd5a83b`; reconciliation of the stack remains
+outstanding. Publication/interaction, conversation/configuration and monitor
+receipt producers remain under audit. Production registration and periodic-loop
+removal are still pending, so this checkpoint is not a completed migration PR.
