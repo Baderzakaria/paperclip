@@ -768,3 +768,44 @@ interaction creation/source changes, provider-specific receipts, conversation
 bindings, configuration and alternate recovery writers. Production registration,
 removal of only the lifecycle polling lane, complete latest-head checks and final
 stack/master reconciliation remain required. No merge or full-goal completion.
+
+
+## Confirmation verdicts and comment invalidation
+
+The interaction service owns verdict and invalidation writes. Acceptance and
+rejection now register milestone intent before the caller's optional in-transaction
+resolution hook. Existing authorization, issue/proposal/interaction lock order,
+workspace finalization checks and postcommit effects remain unchanged. Only
+request_confirmation affects the current milestone response-slot policy;
+checkbox confirmations do not acquire this additional intent.
+
+Live human-comment invalidation registers intent for question/confirmation rows
+before changing their state. Historical-comment reconciliation registers one
+issue-scoped intent per relevant bulk write. A historical checkbox-only group
+remains outside this notification. No new wrapper, table or periodic retry was
+introduced. All paths continue using the existing outer-transaction protocol.
+
+Evidence:
+
+- `/tmp/sleep28-confirmation-before.log`: real acceptance/rejection both fail to
+  produce the newly eligible failure notice; confirmation skip/withdraw/terminal
+  expiry already pass using the previous checkpoint's signals.
+- `/tmp/sleep28-confirmation-invalidation-before.log`: six missing-notice
+  regressions fail: acceptance/rejection and question/confirmation supersession
+  by live/historical comments. The invalidation tests verify the actual service
+  expired their original interaction before asserting the missing notice.
+- `/tmp/sleep28-confirmation-tests.log`: 169 cases pass, comprising all 63 worker
+  cases and 106 existing interaction-service cases, using the same separate
+  self-cleaning PostgreSQL databases as the previous checkpoint.
+- `/tmp/sleep28-confirmation-typecheck.log`: production server typecheck passes.
+  It excludes test files. `git diff --check` passes.
+
+The latest fetched master is 3536b3649f98155d92b45cfb5dc3abcc2fea97d6; it has
+not yet been reconciled into this stack. CI run 40198785531 for parent checkpoint
+20f8c301f5 was still live with no reported failures at inspection. This does not
+establish current-head final acceptance.
+
+Remaining interaction producers include document-target invalidation, deleted
+addressees, startup supersession and creation/replacement. Provider receipt,
+conversation/configuration and alternate recovery audits also remain. Production
+worker registration and lifecycle polling removal are still intentionally pending.

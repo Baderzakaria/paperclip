@@ -1488,3 +1488,11 @@ existing chat acceptance cases, publication policy cases, and server production
 typecheck passed at their recorded checkpoints. See the detailed milestone audit
 for retained regression/setup failures, controlled ports and remaining coverage.
 The initial draft CI was running; no final green-check or readiness claim is made.
+
+
+Slice 28 now also wakes lifecycle projection from confirmation accept/reject and
+live/historical comment invalidation of questions and confirmations. Six real
+producer regressions failed before the added intent signals. All 169 cases across
+the worker and interaction-service suites pass, as does production server
+typechecking. The draft remains incomplete: other producers and production
+registration/polling removal are still pending. See the milestone audit for logs.

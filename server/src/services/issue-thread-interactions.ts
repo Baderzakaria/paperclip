@@ -2175,6 +2175,7 @@ export function issueThreadInteractionService(
     const postCommitActivityPublications: ActivityPublication[] = [];
     const result = await db.transaction(async (tx) => {
       await assertInteractionRunWriteAllowed(tx as unknown as Db, args.issue, args.actor);
+      if (args.current.kind === "request_confirmation") await notifyChatRunMilestones(tx, args.current);
       await args.mutationOptions?.beforeResolveInTransaction?.(tx);
       // Policy mutations and review transitions use the same issue-row lock,
       // so the authoritative review policy and requester are stable through
@@ -2458,6 +2459,7 @@ export function issueThreadInteractionService(
     const now = new Date();
     const updated = await db.transaction(async (tx) => {
       await assertInteractionRunWriteAllowed(tx as unknown as Db, args.issue, args.actor);
+      if (args.current.kind === "request_confirmation") await notifyChatRunMilestones(tx, args.current);
       await args.mutationOptions?.beforeResolveInTransaction?.(tx);
       const issueContext = await tx
         .select({
@@ -4401,6 +4403,7 @@ export function issueThreadInteractionService(
       const expired: IssueThreadInteraction[] = [];
       for (const row of superseded) {
         const updated = await db.transaction(async (tx) => {
+          if (["ask_user_questions", "request_confirmation"].includes(row.kind)) await notifyChatRunMilestones(tx, row);
           if (row.kind === "connection_intent") {
             await tx
               .delete(toolOauthStates)
@@ -4537,6 +4540,7 @@ export function issueThreadInteractionService(
           );
           if (!sampleQuestionRow) continue;
           const updatedInteractions = await db.transaction(async (tx) => {
+            await notifyChatRunMilestones(tx, sampleQuestionRow);
             const updatedRows = await tx
               .update(issueThreadInteractions)
               .set({
@@ -4575,6 +4579,7 @@ export function issueThreadInteractionService(
           );
           if (!sampleConfirmationRow) continue;
           const updatedInteractions = await db.transaction(async (tx) => {
+            if (commentRows.some(row => row.kind === "request_confirmation")) await notifyChatRunMilestones(tx, sampleConfirmationRow);
             await notifyDeliveryWork(tx, DELIVERY_QUEUES.toolReviewProjection);
             const updatedRows = await tx
               .update(issueThreadInteractions)
