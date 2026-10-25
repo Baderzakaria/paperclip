@@ -3,7 +3,8 @@
 Voice report reconciliation uses the shared delivery coordinator and scheduler.
 It no longer runs from the chat maintenance interval. Existing
 `chat_voice_sessions` and `chat_voice_reports` rows own its durable state; this
-change adds no queue table, schema, provider endpoint, or independent timer.
+change adds no queue table, provider endpoint, or independent timer. A concurrent
+partial index supports bounded reconstruction of the existing report window.
 
 ## Trigger and deadline
 
@@ -20,7 +21,9 @@ result does the same. Healthy active-session observations do not activate report
 work. Nested transactions wait for the outer commit; rollback does not publish
 new work. The existing work-signals protocol owns uncertain outcomes.
 
-Startup reconstructs eligible sessions in pages. Committed hints reload their
+Startup reconstructs eligible sessions in pages ordered by `(ended_at, id)`.
+A partial index restricts the search to terminal sessions with provider IDs and
+the current 24-hour window. The cursor retains PostgreSQL timestamp precision. Committed hints reload their
 session, endpoint, connection, or company scope. Each cached entry carries the
 saved report deadline or the first millisecond after the refresh window ends,
 whichever comes first. Submillisecond PostgreSQL timestamps round in the safe
@@ -57,9 +60,12 @@ work. Restart reconstructs the persisted retry instead of immediately repeating
 the provider GET. The explicit one-shot voice reconciliation method remains for
 diagnostics; production maintenance does not call it periodically.
 
-Signals cover supported writes through the owning database client in this
-process. Independent SQL writers and another process need their own notification
-contract. This is worker quiet, not a claim of physical host sleep. Cloud alarm
+The supported deployment has one active server process writing voice session
+and report state through its owning database client. Active-active servers and
+out-of-band SQL writers are not supported by this worker. Process-local signals
+do not reach another process; such a deployment needs a durable cross-process
+wake contract before removing its reconciliation backstop. This PR neither adds
+that transport nor asserts that startup reconstruction covers concurrent writers. This is worker quiet, not a claim of physical host sleep. Cloud alarm
 coverage and conservative sleep eligibility are unchanged; a local deadline
 cannot wake stopped compute.
 

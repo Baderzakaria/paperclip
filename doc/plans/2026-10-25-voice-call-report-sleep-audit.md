@@ -150,3 +150,45 @@ After both merges, all 138 full voice/app cases pass on a fresh migrated databas
 those worker implementations are unchanged by the parent repairs. Remote checks
 and reviews are required for the final pushed head. Parent #17580's company
 deletion finding remains unresolved; denial latency finding is resolved.
+
+
+## Paperclip review: report window index and writer scope
+
+Review findings 4370594150 and 4370594357 identified deployment-contract clarity
+and expensive report reconstruction. The supported writer model is now explicit:
+one active server process owns voice writes through its DB client. Active-active
+servers and independent SQL mutation are unsupported without a separate durable
+wake contract. This is a documented scope restriction, not enforcement added by
+this PR, and not a claim that startup recovers concurrent foreign writers.
+
+The query finding reproduces on fresh PostgreSQL with 20,001 old sessions and
+205 eligible sessions: an actual reconstruction query filters 20,001 historical
+rows. The repair adds partial `(ended_at, id)` index 0389 and uses that order and
+keyset cursor. The cursor retains PostgreSQL text timestamp precision, so sessions
+100 microseconds apart do not repeat or disappear across a page. All 14 report
+lifecycle cases pass after the migration; the query-plan regression checks all
+three pages and each stays below 1,000 rows removed by filtering. Report scope,
+24-hour policy, and provider behavior are unchanged.
+
+The generated migration is concurrent and idempotent and registered with the
+application's top-level migration runner. It applies and a second application is
+a no-op. Migration numbering/safety checks pass. The generator retained exactly
+five snapshots, 0385 through 0389, pruning 0384 per repository policy.
+
+Retained failures: the first probe reused a database with two unrelated eligible
+fixture sessions and failed its exact fixture count. It is not performance proof.
+A fresh database reproduced the 20,001-row filtering problem. The first migration
+invocation used unsupported top-level await in tsx eval and did not apply; its
+subsequent test still failed without the index. The corrected chained invocation
+applied/replayed successfully and all 14 cases passed. No assertion was relaxed.
+Logs: /tmp/sleep25-report-index-before.log (fixture contamination),
+/tmp/sleep25-report-index-clean-before.log (cost reproduction),
+/tmp/sleep25-report-index-apply.log (invalid invocation),
+/tmp/sleep25-report-index-after.log (unapplied index),
+/tmp/sleep25-report-index-apply-fixed.log (application/replay),
+/tmp/sleep25-report-index-fixed-tests.log (14 pass).
+Workspace typecheck and build pass. Fresh full voice integration and app wiring
+pass all 138 cases after the index repair. Logs:
+/tmp/sleep25-report-review-{types,build,acceptance}.log.
+Publish and propagate through Teams #17590/#17592 after acceptance. Fresh remote
+review/checks and all prior full-stack requirements remain open.
