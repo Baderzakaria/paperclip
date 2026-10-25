@@ -1966,7 +1966,7 @@ export function routineService(
         return updated ?? createdRun;
       } catch (error) {
         if (createdIssue) {
-          await notifyApprovalWork(txDb);
+          await notifyApprovalWork(txDb, createdIssue.companyId);
           await notifyDecisionTargetWork(txDb);
           await txDb.delete(issues).where(eq(issues.id, createdIssue.id));
         }

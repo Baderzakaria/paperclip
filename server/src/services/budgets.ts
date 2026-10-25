@@ -260,7 +260,9 @@ async function markApprovalStatus(
   decidedByUserId: string,
 ) {
   if (!approvalId) return;
-  await notifyApprovalWork(db);
+  const [approval] = await db.select({ companyId: approvals.companyId }).from(approvals).where(eq(approvals.id, approvalId));
+  if (!approval) return;
+  await notifyApprovalWork(db, approval.companyId);
   await db
     .update(approvals)
     .set({
@@ -298,7 +300,7 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
 
     const scope = await resolveScopeRecord(db, "company", policy.scopeId);
     if (scope.paused) return;
-    await notifyCompanyRetentionWork(db);
+    await notifyCompanyRetentionWork(db, policy.companyId);
     await notifyDeliveryWork(db, DELIVERY_QUEUES.agentLifecycle, policy.companyId);
     await notifyDeliveryWork(db, DELIVERY_QUEUES.skillSourceSync);
     await db
@@ -355,7 +357,7 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
     await notifyDeliveryWork(db, DELIVERY_QUEUES.skillSourceSync);
     const scope = await resolveScopeRecord(db, "company", policy.scopeId);
     if (scope.pauseReason !== "budget") return;
-    await notifyCompanyRetentionWork(db);
+    await notifyCompanyRetentionWork(db, policy.companyId);
     await notifyDeliveryWork(db, DELIVERY_QUEUES.agentLifecycle, policy.companyId);
     await db
       .update(companies)
@@ -458,7 +460,7 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
       windowEnd: end,
     });
 
-    if (thresholdType === "hard") await notifyApprovalWork(db);
+    if (thresholdType === "hard") await notifyApprovalWork(db, policy.companyId);
     const approval = thresholdType === "hard"
       ? await db
         .insert(approvals)

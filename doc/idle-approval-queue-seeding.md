@@ -67,18 +67,21 @@ unscoped maintenance feed. No new deadline is inferred from those display states
 
 ## Worker lifecycle
 
-Startup reconstructs missing memberships. A committed producer wakes the shared
-coordinator. Each sweep processes at most 100 approvals, with an ID cursor that
+Startup reconstructs missing memberships across the instance. Each later committed
+producer carries its company ID and wakes only that company's reconciliation.
+Pending scopes coalesce in memory; one company's ordinary mutations cannot restart
+a global scan. Scope rotation prevents one failing company from starving another. Each sweep processes at most 100 approvals, with an ID cursor that
 advances past failures and rotates to revisit them. Each row is rechecked under
 an approval lock before the queue writer runs. One bad row cannot permanently
 hide later candidates. Atomic existing membership uniqueness prevents duplicate
 rows and duplicate insertion audit events.
 
 After a sweep, another lookup decides whether actual projection debt remains.
-Only that debt or a failed attempt retains a one-second retry. Once reconciled,
-there is no deadline and no recurring worker SQL. The shared deadline worker
-preserves requested work during drain, does not run passive domain SQL while
-paused, and reconstructs from rows after restart. Shutdown aborts between rows
+Only that debt, a newer committed signal, or a failed attempt retains a one-second
+retry. The generation check follows the final awaited lookup, so a commit arriving
+during an empty read cannot be erased. Once reconciled, there is no deadline and
+no recurring worker SQL. The shared coordinator preserves requested work during
+drain. Passive pending checks inspect memory only; startup reconstructs from rows. Shutdown aborts between rows
 and waits for an admitted transaction; unprocessed rows remain recoverable.
 Registration follows the existing heartbeat-maintenance enablement switch.
 
@@ -118,3 +121,18 @@ membership changes. A two-connection PostgreSQL regression reproduced `deadlock
 detected`. Manual add/remove now lock the queue before touching its items, matching
 the seed writer. The regression and the existing queue route suite pass (27 cases).
 Server typecheck and build pass after the repair. Fresh-head CI/review is required.
+
+Security review found that normal producer wakes could restart a cross-company
+scan. The regression reproduced another company's queue being populated by an
+unrelated company write. Producers now include company hints, including batch
+imports and nested transactions. A separate controlled PostgreSQL test holds the
+final empty read while a real producer commits and verifies the retained wake.
+
+After company scoping, all 169 selected cases pass across approval queue seeding,
+approval retention, queue routes, approval services, work products, and issue
+comment routes. Server typechecking passes. The preceding run suffered timeouts
+and a consequent cleanup foreign-key error; it is not counted as passing. The
+route suite separately exposed cold imports inside timed tests. Moving those
+imports to suite loading preserves assertions and prevents timed-out requests
+from leaking into later mock state. The watchdog fixture collision from CI uses
+monotonic identifiers instead; its 19 real-PostgreSQL cases pass.

@@ -276,7 +276,7 @@ export function workProductService(
       const row = await db.transaction(async (tx) => {
         if (data.type === "pull_request") {
           await notifyTerminalWorkspaceWork(tx, `issue:${issueId}`);
-          await notifyApprovalQueueWork(tx);
+          await notifyApprovalQueueWork(tx, companyId);
         }
         await validateExecutionWorkspace(tx, companyId, data.executionWorkspaceId);
         if (data.isPrimary) {
@@ -315,7 +315,7 @@ export function workProductService(
 
         if (existing.type === "pull_request" || patch.type === "pull_request") {
           await notifyTerminalWorkspaceWork(tx, `issue:${existing.issueId}`);
-          await notifyApprovalQueueWork(tx);
+          await notifyApprovalQueueWork(tx, existing.companyId);
         }
 
         await validateExecutionWorkspace(tx, existing.companyId, patch.executionWorkspaceId);
@@ -385,7 +385,9 @@ export function workProductService(
       // prefix behind (which a retry would then duplicate). Mirrors the
       // per-writer transaction the batched issue/document writers use.
       await db.transaction(async (tx) => {
-        if (values.some(value => value.type === "pull_request")) await notifyApprovalQueueWork(tx);
+        for (const companyId of new Set(values.filter(value => value.type === "pull_request").map(value => value.companyId))) {
+          await notifyApprovalQueueWork(tx, companyId);
+        }
         for (const value of values) {
           if (value.type === "pull_request") await notifyTerminalWorkspaceWork(tx, `issue:${value.issueId}`);
         }
@@ -395,11 +397,11 @@ export function workProductService(
 
     remove: async (id: string) => {
       const row = await db.transaction(async tx => {
-        const [existing] = await tx.select({ type: issueWorkProducts.type, issueId: issueWorkProducts.issueId })
+        const [existing] = await tx.select({ type: issueWorkProducts.type, issueId: issueWorkProducts.issueId, companyId: issueWorkProducts.companyId })
           .from(issueWorkProducts).where(eq(issueWorkProducts.id, id));
         if (existing?.type === "pull_request") {
           await notifyTerminalWorkspaceWork(tx, `issue:${existing.issueId}`);
-          await notifyApprovalQueueWork(tx);
+          await notifyApprovalQueueWork(tx, existing.companyId);
         }
         return tx.delete(issueWorkProducts).where(eq(issueWorkProducts.id, id))
           .returning().then(rows => rows[0] ?? null);

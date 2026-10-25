@@ -38,7 +38,7 @@ export function approvalResolutionRecords(db: Db) {
     }
 
     const now = new Date();
-    const updated = await writeApprovalChange(database, tx => tx
+    const updated = await writeApprovalChange(database, existing.companyId, tx => tx
       .update(approvals)
       .set({
         status: targetStatus,

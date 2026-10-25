@@ -11302,7 +11302,7 @@ export function issueService(db: Db) {
           await notifyDecisionTargetWork(tx, `issue:${id}`);
         }
         if (patch.hiddenAt !== undefined || patch.harnessKind !== undefined || patch.conversationAgentId !== undefined) {
-          await notifyApprovalWork(tx);
+          await notifyApprovalWork(tx, receiptExisting.companyId);
         }
         const updated = await tx
           .update(issues)
@@ -11711,7 +11711,8 @@ export function issueService(db: Db) {
         try {
           await notifyTerminalWorkspaceWork(tx, `issue:${id}`);
           await requestRestorePointDeletion(tx, { sourceIssueId: id });
-          await notifyApprovalWork(tx);
+          const [owner] = await tx.select({ companyId: issues.companyId }).from(issues).where(eq(issues.id, id));
+          if (owner) await notifyApprovalWork(tx, owner.companyId);
           await notifyDecisionTargetWork(tx);
           removedIssue = await tx
             .delete(issues)

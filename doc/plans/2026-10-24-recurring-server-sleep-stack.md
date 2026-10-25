@@ -952,3 +952,17 @@ Separate stack gates remain: #17490 E2E cleanup hit a cancellation lock timeout;
 #17510 has a security finding about unscoped approval queue scans plus CI failures.
 Neither PR is claimed green. Approval retention #17497 is green at `2c5babcabc`.
 The complete original inventory remains in scope; this slice does not finish it.
+
+Slice 16 security review reproduced cross-company work amplification from normal
+producer writes. The repair carries company hints through all supported producers
+and maintains separate pending scopes. Startup recovery remains instance-wide.
+A generation comparison after the final awaited read preserves concurrent commits.
+All 169 affected cases and server typechecking pass. CI fixture repairs move cold
+route imports outside timed tests and replace random watchdog identifiers. The
+initial rerun had timeouts and a cleanup failure; the final selected run passes
+without relaxing timeouts. Fresh remote CI/review remains required.
+
+Plugin scheduling is published as #17518 at 8b4f551dc2. Its Actions checks passed,
+but review found retained completion writes missing from shutdown and a stale
+deadline update race. Repair those and preserve independent job progress when
+one completion write fails before treating the slice as ready.

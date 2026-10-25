@@ -8,8 +8,8 @@ export async function notifyRetentionWork(transaction: object, kind: AttentionSo
   if (kind === "join_request") await notifyDeliveryWork(transaction, DELIVERY_QUEUES.joinRequestRetention);
 }
 
-export async function notifyCompanyRetentionWork(transaction: object) {
-  await notifyApprovalWork(transaction);
+export async function notifyCompanyRetentionWork(transaction: object, companyId: string) {
+  await notifyApprovalWork(transaction, companyId);
   await notifyRetentionWork(transaction, "join_request");
 }
 
