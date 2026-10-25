@@ -1,3 +1,9 @@
+import { reconcileDatabaseWork } from "@paperclipai/db";
+import { DELIVERY_QUEUES } from "./delivery-work-notifications.js";
+import { discordCommandSchedule } from "./chat-channels/discord/command-schedule.js";
+import { registerDiscordCommandWork } from "./chat-channels/discord/command-work.js";
+import { notifyDiscordCommandRegistration } from "./chat-channels/discord/command-work-notifications.js";
+import { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
 import { createHash, randomUUID } from "node:crypto";
 import {
   afterAll,
@@ -23,6 +29,7 @@ import {
 } from "@paperclipai/db";
 import { discordPaperclipCommandDefinition } from "./chat-discord-command-registration.js";
 import {
+  readDiscordCommandRegistrationDeadline,
   readRegisteredDiscordCommandRegistration,
   reconcileStoredDiscordCommandRegistration,
   type StoredDiscordCommandRegistrationOptions,
@@ -55,7 +62,33 @@ suite("Discord command ownership store (real PostgreSQL, no network)", () => {
     await db?.$client.end();
     await temporary?.cleanup();
   });
-  afterEach(() => vi.restoreAllMocks());
+  let coordinator: ReturnType<typeof createDeliveryWorkCoordinator> | undefined;
+  afterEach(async () => {
+    await coordinator?.stop(); coordinator = undefined;
+    vi.useRealTimers(); vi.restoreAllMocks();
+  });
+  async function scheduled(companyId: string, reconcile: (id: string) => Promise<void>, canRun = () => true) {
+    await Promise.all(Array.from({ length: 4 }, () => db.execute(sql`select 1`)));
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    await reconcileDatabaseWork(db, DELIVERY_QUEUES.chatCommandRegistration);
+    const service = discordCommandSchedule(db, reconcile);
+    const errors: unknown[] = [];
+    coordinator = createDeliveryWorkCoordinator({ owner: db, canRun, canReconcile: () => true, onError: error => errors.push(error) });
+    const worker = registerDiscordCommandWork(coordinator, {
+      ...service,
+      load: (scope, signal) => service.load(scope ?? { kind: "company", id: companyId }, signal),
+    }, canRun);
+    await worker.ready;
+    return { service, errors };
+  }
+  async function sqlQuiet(milliseconds: number) {
+    const reads = vi.spyOn(db, "select"), writes = vi.spyOn(db, "transaction"), execute = vi.spyOn(db, "execute");
+    await vi.advanceTimersByTimeAsync(milliseconds);
+    expect(reads).not.toHaveBeenCalled();
+    expect(writes).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+    reads.mockRestore(); writes.mockRestore(); execute.mockRestore();
+  }
 
   async function fixture(applicationId = appId()) {
     const companyId = randomUUID(),
@@ -628,4 +661,148 @@ suite("Discord command ownership store (real PostgreSQL, no network)", () => {
       expect(f.calls).toEqual(["GET", "POST"]);
     },
   );
+  it("exposes saved verification and retry deadlines without contacting the provider", async () => {
+    const f = await fixture();
+    expect(await readDiscordCommandRegistrationDeadline(db, f.scope)).toBe(0);
+    expect(f.calls).toEqual([]);
+    expect(await f.reconcile()).toMatchObject({ kind: "registered" });
+    const row = await f.read();
+    const due = Date.parse(String(row!.result!.retryAt));
+    expect(due).toBeGreaterThan(Date.now() + 290_000);
+    expect(await readDiscordCommandRegistrationDeadline(db, f.scope)).toBe(due);
+    expect(f.calls).toEqual(["GET", "POST"]);
+    const retriedAt = new Date(Date.now() + 601_125).toISOString();
+    await db.update(chatActions).set({ result: { ...row!.result, outcome: "unavailable", retryAt: retriedAt } })
+      .where(eq(chatActions.id, row!.id));
+    expect(await readDiscordCommandRegistrationDeadline(db, f.scope)).toBe(Date.parse(retriedAt));
+    expect(f.calls).toEqual(["GET", "POST"]);
+  });
+  it("parks indefinite and malformed retry records without inventing an earlier deadline", async () => {
+    const f = await fixture(); await f.reconcile(); const row = (await f.read())!;
+    for (const result of [
+      { ...row.result, retryAt: "+275760-09-13T00:00:00.000Z", retryIndefinite: true },
+      { ...row.result, retryAt: "invalid" },
+      { ...row.result, schema: "unknown" },
+    ]) {
+      await db.update(chatActions).set({ result }).where(eq(chatActions.id, row.id));
+      expect(await readDiscordCommandRegistrationDeadline(db, f.scope)).toBeNull();
+    }
+    expect(f.calls).toEqual(["GET", "POST"]);
+  });
+  it("does not schedule ownership tombstones or another endpoint's registration", async () => {
+    const f = await fixture(); await f.reconcile();
+    await db.update(chatEndpoints).set({ status: "archived" }).where(eq(chatEndpoints.id, f.scope.endpointId));
+    const other = await fixture(f.scope.applicationId);
+    expect(await readDiscordCommandRegistrationDeadline(db, other.scope)).toBeNull();
+    await db.delete(chatActions).where(eq(chatActions.id, (await f.read())!.id));
+    expect(await readDiscordCommandRegistrationDeadline(db, f.scope)).toBeNull();
+    expect(await readDiscordCommandRegistrationDeadline(db, other.scope)).toBeNull();
+    expect(other.calls).toEqual([]);
+  });
+  it("retains the stored retry deadline for an uncertain provider write", async () => {
+    const f = await fixture();
+    f.beforeResponse(async method => { if (method === "POST") throw new Error("lost response"); });
+    expect(await f.reconcile()).toMatchObject({ kind: "unknown" });
+    const row = (await f.read())!;
+    expect(row.payload.registration).toMatchObject({ phase: "attempted" });
+    expect(await readDiscordCommandRegistrationDeadline(db, f.scope)).toBe(Date.parse(String(row.result!.retryAt)));
+    expect(f.calls).toEqual(["GET", "POST"]);
+  });
+
+  it("leaves no deadline or SQL after an empty registration inventory", async () => {
+    const reconcile = vi.fn();
+    const { errors } = await scheduled(randomUUID(), reconcile);
+    expect(coordinator!.nextWakeAt()).toBeNull();
+    await sqlQuiet(180_000);
+    expect(reconcile).not.toHaveBeenCalled(); expect(errors).toEqual([]);
+  });
+  it("reconstructs a registered verification deadline and stays quiet until it is due", async () => {
+    const f = await fixture(); await f.reconcile();
+    const due = Date.parse(String((await f.read())!.result!.retryAt));
+    const { errors } = await scheduled(f.scope.companyId, async () => { await f.reconcile(); });
+    expect(coordinator!.nextWakeAt()).toBe(due);
+    await sqlQuiet(120_000);
+    expect(f.calls).toEqual(["GET", "POST"]);
+    await vi.advanceTimersByTimeAsync(due - Date.now());
+    await vi.waitFor(() => expect(f.calls).toEqual(["GET", "POST", "GET"]));
+    await vi.waitFor(async () => expect(Date.parse(String((await f.read())!.result!.retryAt))).toBeGreaterThan(due));
+    expect(errors).toEqual([]);
+  });
+  it("keeps indefinite holds quiet and respects disabled endpoint eligibility", async () => {
+    const f = await fixture(); await f.reconcile(); const row = (await f.read())!;
+    await db.update(chatActions).set({ result: { ...row.result, retryIndefinite: true } }).where(eq(chatActions.id, row.id));
+    const reconcile = vi.fn();
+    const { service, errors } = await scheduled(f.scope.companyId, reconcile);
+    await sqlQuiet(600_000); expect(coordinator!.nextWakeAt()).toBeNull();
+    await db.update(chatActions).set({ result: { ...row.result, retryAt: new Date(0).toISOString() } }).where(eq(chatActions.id, row.id));
+    await db.update(chatEndpoints).set({ status: "paused" }).where(eq(chatEndpoints.id, f.scope.endpointId));
+    expect(await service.check(f.scope.endpointId)).toBeNull();
+    expect(reconcile).not.toHaveBeenCalled(); expect(errors).toEqual([]);
+  });
+  it("honors outer rollback and wakes from committed endpoint changes after drain", async () => {
+    const f = await fixture();
+    await db.update(chatEndpoints).set({ status: "paused" }).where(eq(chatEndpoints.id, f.scope.endpointId));
+    let draining = false;
+    const { errors } = await scheduled(f.scope.companyId, async () => { await f.reconcile(); }, () => !draining);
+    const activate = async (tx: typeof db) => {
+      await notifyDiscordCommandRegistration(tx, { kind: "endpoint", id: f.scope.endpointId });
+      await tx.update(chatEndpoints).set({ status: "active" }).where(eq(chatEndpoints.id, f.scope.endpointId));
+    };
+    await expect(db.transaction(async tx => {
+      await tx.transaction(async nested => activate(nested as unknown as typeof db));
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(f.calls).toEqual([]);
+      throw new Error("abort");
+    })).rejects.toThrow("abort");
+    await vi.advanceTimersByTimeAsync(60_000);
+    await vi.waitFor(() => expect(coordinator!.nextWakeAt()).toBeNull());
+    await sqlQuiet(60_000);
+    draining = true;
+    await db.transaction(async tx => activate(tx as unknown as typeof db));
+    await sqlQuiet(90_000); expect(f.calls).toEqual([]);
+    draining = false;
+    await vi.advanceTimersByTimeAsync(30_000);
+    await vi.waitFor(() => expect(f.calls).toEqual(["GET", "POST"]));
+    expect(errors).toEqual([]);
+  });
+  it("rechecks persisted eligibility before a due provider call", async () => {
+    const f = await fixture(); await f.reconcile();
+    const { service, errors } = await scheduled(f.scope.companyId, async () => { await f.reconcile(); });
+    await f.due();
+    await db.update(toolConnections).set({ enabled: false }).where(eq(toolConnections.id,
+      (await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, f.scope.endpointId)))[0].connectionId));
+    expect(await service.check(f.scope.endpointId)).toBeNull();
+    expect(f.calls).toEqual(["GET", "POST"]); expect(errors).toEqual([]);
+  });
+
+  it("backs off an attempt that cannot advance its durable state", async () => {
+    const f = await fixture();
+    const reconcile = vi.fn(async () => {});
+    const { errors } = await scheduled(f.scope.companyId, reconcile);
+    expect(reconcile).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(30_000);
+    await vi.waitFor(() => expect(reconcile).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(errors).toHaveLength(2));
+    await sqlQuiet(30_000);
+    expect(reconcile).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(30_000);
+    await vi.waitFor(() => expect(reconcile).toHaveBeenCalledTimes(3));
+    expect(await f.read()).toBeUndefined();
+  });
+  it("joins an admitted provider attempt during shutdown", async () => {
+    const f = await fixture();
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    f.beforeResponse(async method => { if (method === "GET") await held; });
+    const starting = scheduled(f.scope.companyId, async () => { await f.reconcile(); });
+    await vi.waitFor(() => expect(f.calls).toEqual(["GET"]));
+    let stopped = false;
+    const stopping = coordinator!.stop().then(() => { stopped = true; });
+    await Promise.resolve(); expect(stopped).toBe(false);
+    release(); await stopping; const { errors } = await starting;
+    expect(stopped).toBe(true);
+    expect(await f.read()).toMatchObject({ status: "processed" });
+    expect(coordinator!.nextWakeAt()).toBeNull(); expect(errors).toEqual([]);
+  });
+
 });

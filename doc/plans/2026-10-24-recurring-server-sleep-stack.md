@@ -1036,3 +1036,19 @@ its own PR before removing the runtime discovery backstop. Slice 19 audits that
 owner in [Discord command registration](2026-10-25-discord-command-registration-sleep-audit.md).
 Runtime discovery, active lease renewal, voice, Teams, and every original pending
 inventory item remain in scope. No merges are authorized.
+
+
+## Slice 19 foundation and health review status
+
+Discord registration now has a normalized saved-deadline reader, scoped store
+notifications, paged eligibility discovery, and a shared-coordinator worker.
+Thirty-six real-DB protocol/lifecycle cases and server typechecking pass. See
+[the audit and remaining integration](2026-10-25-discord-command-registration-sleep-audit.md).
+It is not wired into startup, the old runtime call is not removed, and no PR is
+published for this slice yet. Complete producer wiring and consumer verification
+before removing the backstop.
+
+Tool-health #17554 at `da4089960619d3da2112a4eed3cc7a3d97dbebf8` has passing
+Actions checks and fresh Greptile 5/5 after the failed-probe warning repair.
+Paperclip Review remains queued, so final acceptance is still open. Its PR body
+now records 771 selected local tests and the outstanding gate. No PR was merged.

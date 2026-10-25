@@ -1,8 +1,9 @@
 # Discord command-registration scheduling audit
 
-Parent: tool-health PR #17554, head `2ca12f806399cfcef1a474453301534f4b96c1ef`.
-The parent has 770 selected passing local tests, passing workspace typecheck and
-build, and live remote CI/review. It is not accepted or merged. This branch owns
+Parent: tool-health PR #17554, head `da4089960619d3da2112a4eed3cc7a3d97dbebf8`.
+The parent has 771 selected passing local tests, passing workspace typecheck and
+build, passing Actions checks, and fresh Greptile 5/5. Paperclip Review is queued;
+it is not accepted or merged. This branch owns
 one newly separated reason from the existing chat-runtime inventory.
 
 ## Evidence and boundary
@@ -18,8 +19,9 @@ The command protocol and authorization already live in
 `chat-channels/discord/commands.ts`. Durable state is in existing `chat_actions`
 with kind `discord_command_registration`, owned by
 `chat-discord-command-registration-store.ts`. The store already has retryAt and
-retryIndefinite outcomes. Registered state and an indefinite hold must not cause
-periodic discovery simply because an endpoint is configured. Inspect the full
+retryIndefinite outcomes. A registered receipt has an existing five-minute remote verification deadline;
+retain it while eliminating intervening discovery scans. An indefinite hold
+must not cause periodic discovery simply because an endpoint is configured. Inspect the full
 state protocol before deciding which attempted/unknown states may replay.
 
 This slice should give command registration its own committed-change/deadline
@@ -42,7 +44,8 @@ or the generic scheduler. Keep direct setup/foreground calls compatible.
   generation/fingerprint fence and schedule the latest state after settlement.
 - Startup reconstruction must discover missing registration state in bounded
   pages, without letting early failures starve later eligible endpoints.
-- Empty, inactive, registered, and indefinite-hold states must become quiet.
+- Empty, inactive, and indefinite-hold states must become quiet. Registered
+  state must remain quiet between its existing five-minute verification deadlines.
   Due retries remain durable, respect Retry-After, survive restart, and retain
   deferred work through drain. Join admitted provider work at shutdown.
 - Verify normal and ambiguous provider outcomes through the existing protocol
@@ -62,5 +65,66 @@ Persistent transports remain host-sleep limitations even after discovery is quie
 `app.ts` also invokes `chatChannels.voice.reconcile()` and Teams maintenance in
 this lane. Voice, Teams, milestones, wake notices, terminal confirmations,
 interaction continuations, and GitHub history recovery remain distinct duties.
-No existing backstop is removed by this audit. No implementation or passing
-regression is claimed for slice 19 yet.
+The scheduling foundation is implemented below, but is not wired into application
+startup. The existing runtime backstop remains until the producer audit and
+integration tests are complete. No slice-19 PR is published yet.
+
+
+## Implemented scheduling foundation, October 25
+
+The store now exposes a normalized next deadline. A genuinely unowned namespace
+is immediately due; valid receipts use their existing retryAt, including the
+five-minute successful verification interval. Indefinite holds, malformed records,
+foreign ownership and orphaned ownership tombstones remain parked. This is only
+a scheduling hint: the existing protocol still rechecks current authority and
+never adopts or recreates an unowned command. The shared retry parser and history
+predicate keep the reader and mutation owner consistent.
+
+Store-owned initial claims, receipt transitions, and retry-result updates await
+transaction intent before writing. They emit endpoint-scoped hints through the
+existing coordinator topic. No table or provider request was added to discovery.
+
+`chat-channels/discord/command-schedule.ts` owns eligible Discord endpoint
+selection and maps stored state to normalized deadlines. Startup/company discovery
+uses UUID keyset pages of 100. Due checks reread current eligibility and saved
+deadlines before calling the existing command reconciler, then reload the saved
+result. Discovery checks shutdown cancellation between pages and rows.
+
+`command-work.ts` uses the shared coordinator. It coalesces endpoint, connection,
+or company hints; retains changes arriving during a pass; keeps passive drain
+checks in memory; and dispatches at most 25 due endpoints per pass. Unsettled
+attempts back off from 30 seconds to five minutes without being mistaken for
+successful completion. Saved future deadlines remain authoritative. A provider
+attempt already admitted at shutdown is joined through its durable settlement.
+
+Verification: 36 real-PostgreSQL cases pass in
+`chat-discord-command-registration-store.test.ts`, and server typechecking passes.
+The cases include existing ownership/ambiguity/fencing checks plus saved deadlines,
+indefinite holds, empty SQL quiet, quiet between verification deadlines, startup
+reconstruction, disabled eligibility, nested rollback, first committed activation
+during drain, no-progress backoff, and shutdown during provider I/O.
+
+Two fixture failures were repaired without changing production assertions. The
+foreign-owner deadline case initially violated the live-bot uniqueness constraint;
+it now archives the first endpoint before creating the competing endpoint. The
+empty inventory test inherited uncertain transactions from earlier fault cases;
+its setup now reconciles those known prior test transactions before registering
+the scoped worker. That preserves the requirement that real uncertain writes
+must be reconciled before an instance can become quiet. Final evidence is in
+`/tmp/sleep19-cancellation-tests.log` and `/tmp/sleep19-final-types.log` on this host.
+
+## Required next integration
+
+- Wire configuration, readiness, provider failures, generic connection mutation,
+  connection removal, and company deletion producers to the scoped topic. Audit
+  all endpoint and connection writers; exempt metadata-only updates explicitly.
+- Register the worker through the chat service, with existing standby, drain,
+  startup and shutdown admission. Preserve direct foreground setup calls.
+- Remove command reconciliation from runtime reconciliation only after that
+  coverage exists; refresh a local runtime after successful command work through
+  the existing runtime owner, without reintroducing command discovery polling.
+- Exercise real configuration producers and affected chat/startup consumers, then
+  run required workspace checks and publish the next stacked PR. Remote checks,
+  reviews and final reconciliation with master remain mandatory.
+- Continue every remaining original inventory item and unresolved earlier PR gate.
+  This foundation does not finish this slice or the full goal.
