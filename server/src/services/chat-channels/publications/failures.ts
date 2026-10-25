@@ -120,7 +120,7 @@ export function createChatPublicationFailures(db: Db, options: PublicationFailur
             : disposition.kind === "resource_unavailable"
               ? "cancelled"
               : "failed";
-      await notifyChatPublicationWork(tx);
+      await notifyChatPublicationWork(tx, state === "failed" || state === "cancelled" ? publication : undefined);
       const [ownedPublication] = await tx
         .update(chatPublications)
         .set({

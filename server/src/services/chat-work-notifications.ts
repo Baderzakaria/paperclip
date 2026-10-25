@@ -1,3 +1,4 @@
+import { notifyChatRunMilestones } from "./chat-run-milestone-notifications.js";
 import { notifyChatConnectionConfiguration } from "./chat-channels/configuration-work-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 
@@ -5,10 +6,19 @@ export async function notifyChatDeliveryWork(tx: object): Promise<void> {
   await notifyDeliveryWork(tx, DELIVERY_QUEUES.chatInbound);
 }
 
-export async function notifyChatPublicationWork(tx: object): Promise<void> {
+export async function notifyChatPublicationWork(
+  tx: object,
+  milestoneScope?: { companyId: string; issueId: string | null },
+): Promise<void> {
   await notifyDeliveryWork(tx, DELIVERY_QUEUES.chatPublications);
   // Receipt recovery waits for the publication owner to release its claim.
   await notifyDeliveryWork(tx, DELIVERY_QUEUES.chatReceipts);
+  // Published prompts and terminal delivery outcomes can change run lineage or
+  // release its provider response slot. Callers supply the affected issue only
+  // for those changes; transport claim/lease bookkeeping has no projection debt.
+  if (milestoneScope?.issueId) {
+    await notifyChatRunMilestones(tx, { companyId: milestoneScope.companyId, issueId: milestoneScope.issueId });
+  }
 }
 
 export const CHAT_ACTION_QUEUES = {

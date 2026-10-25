@@ -662,3 +662,62 @@ Remote gates refreshed at this checkpoint: #17490 at `31bcd1988823` still has
 failed E2E shard 3 and aggregate checks; #17590 at `e501d6c99d72` still has queued
 Paperclip Review; #17592 at `f53ae3d6d27c` still has neutral Paperclip Review.
 These are not claimed ready and no merge was attempted.
+
+## Publication outcome and operator-resolution checkpoint
+
+`notifyChatPublicationWork` now accepts an optional company/issue scope. It
+retains its existing delivery and receipt notifications. Callers supply that
+scope when a publication outcome can change run lineage or release the run's
+provider response slot. The shared scheduler still receives only a domain scope;
+it does not inspect provider payloads or select presentation policy.
+
+The publication worker supplies the scope for successful receipts, cancellations
+and terminal preparation failures. Its attempt claim, lease renewal and paused
+attempt restoration do not signal milestone work. The failure finalizer supplies
+it for failed/cancelled outcomes, while retry and delivery_unknown retain the
+response slot. Operator mark-delivered/cancel resolution supplies the scope;
+retry-anyway does not authorize presentation until its actual delivery settles.
+All additions use existing transactions and execute before the relevant write.
+Provider I/O remains outside the receipt transaction. No table was added.
+
+Real PostgreSQL regression evidence:
+
+- `/tmp/sleep28-publication-preparation-before.log`: initial fixture failed its
+  setup expectation because answering a question correctly cancels an unsent
+  prompt. This was not a production failure. The corrected fixture models a
+  claimed send still in flight when the user answers through the UI.
+- `/tmp/sleep28-publication-failure-before.log`: definite delivery failure left
+  the eligible source failure notice asleep. Retry and unknown-outcome controls
+  passed and retained suppression. The new scoped signal fixes the failure.
+- `/tmp/sleep28-prompt-receipt-tests.log`: a user answers during the controlled
+  provider send, the real question delivery saves a target receipt, and the
+  worker consumes that wake while the prompt is still streaming. Only the later
+  real publication receipt makes the target notice eligible.
+- `/tmp/sleep28-prompt-receipt-without-signal.log`: removing only the new receipt
+  signal reproduces the missing target notice. The source was restored in
+  finally. Transport and credential authorization ports are controlled; actual
+  attempt leases, question receipts and publication commit use PostgreSQL. This
+  test does not establish provider authentication or live network behavior.
+- `/tmp/sleep28-publication-resolution-before.log`: both cancel and
+  mark-delivered operator resolutions failed to wake their newly eligible notice.
+  The real resolution owner now signals before its state change. Cancel exposes
+  the source failure; marking delivered enables the question continuation.
+- `/tmp/sleep28-publication-final-tests.log`: all 48 milestone and 35 error-policy
+  cases passed. The three arbitration cases did not run because their embedded
+  PostgreSQL setup failed after its own startup retries. That suite now supports
+  guarded `PAPERCLIP_ARBITRATION_TEST_DATABASE_URL`, closes its client, and uses
+  unique company prefixes. `/tmp/sleep28-arbitration-tests.log` shows all three
+  pass against dedicated `paperclip_sleep28_arbitration_20261025_test`.
+- `/tmp/sleep28-publication-acceptance.log`: four existing chat integration cases
+  pass: malformed/transient preparation, parsed Discord question continuation,
+  expired provider-accepted receipt ownership, and ambiguous close confirmation.
+- `/tmp/sleep28-publication-final-typecheck.log`: production server typecheck
+  passes. Test files are excluded from that configuration. Diff checks pass.
+
+This covers the primary publication worker/failure/resolution owners. Interaction
+mutation and cancellation, provider-specific receipt writers, inbound/binding
+changes and configuration producers remain to audit. In particular, a helper
+called after an interaction mutation cannot replace intent before that earlier
+mutation. Production registration and removal of the combined periodic owner
+remain pending. Publish this slice as a draft for CI feedback, not as a completed
+sleep migration or merge-ready PR.

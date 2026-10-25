@@ -21,6 +21,10 @@ import { CHAT_CONTROL_RECOVERY_ADMISSION_KEY, CHAT_CONTROL_RECOVERY_UNRESOLVED_C
 import { heartbeatService } from "../services/heartbeat.js";
 import { commitNativeStatusDecision, dispatchPendingNativeStatusEffects } from "../services/native-runtime/status-decision-committer.js";
 import { claimQueuedNativeReviewRun } from "../services/native-runtime/native-review-dispatch.js";
+import { createChatPublicationResolution } from "../services/chat-channels/publications/resolution.js";
+import { createChatPublicationWorker } from "../services/chat-channels/publications/worker.js";
+import { CAPABILITIES } from "../services/chat-channels/provider-catalog.js";
+import { createChatPublicationFailures } from "../services/chat-channels/publications/failures.js";
 import { PaperclipRunnerToolAuthority } from "../services/native-runtime/paperclip-runner-tool-authority.js";
 import { finalizeNativeRun } from "../services/native-runtime/native-run-finalizer.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
@@ -627,6 +631,127 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await flush();
     expect((await publications()).map(row => row.idempotencyKey)).toContain(`run:${targetId}:queued:${f.endpointId}`);
     await quiet();
+  });
+  it("wakes a question continuation after its in-flight prompt receipt commits", async () => {
+    await db.update(chatEndpoints).set({ provider: "discord" }).where(eq(chatEndpoints.id, f.endpointId));
+    const source = await run(f, { status: "failed", contextSnapshot: { ...runValues().contextSnapshot, source: "chat:discord" } });
+    const interactions = issueThreadInteractionService(db);
+    const interaction = await interactions.create({ id: f.issueId, companyId: f.companyId }, {
+      kind: "ask_user_questions", continuationPolicy: "wake_assignee", sourceRunId: source.id,
+      title: "Choose", payload: { version: 1, title: "Choose", questions: [{
+        id: "choice", prompt: "Continue?", selectionMode: "single", required: true,
+        options: [{ id: "yes", label: "Yes" }],
+      }] },
+    }, { agentId: f.agentId, runId: source.id });
+    const prompt = (await publications()).find(row => row.idempotencyKey === `interaction:${interaction.id}:${f.endpointId}`)!;
+    const [endpoint] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, f.endpointId));
+    const [conversation] = await db.select().from(chatConversations).where(eq(chatConversations.id, f.conversationId));
+    const targetId = randomUUID();
+    let beforeReceiptKeys: string[] | undefined;
+    await start(); await flush(); await quiet();
+    const deliver = questionResponseDeliveryService(db, { heartbeat: {
+      wakeup: async () => {
+        const [target] = await db.insert(heartbeatRuns).values(runValues(f, {
+          id: targetId, status: "queued", contextSnapshot: { issueId: f.issueId },
+        })).returning();
+        return target;
+      },
+    } });
+    const post = vi.fn(async () => {
+      await interactions.answerQuestions({ id: f.issueId, companyId: f.companyId, status: "in_progress" }, interaction.id,
+        { answers: [{ questionId: "choice", optionIds: ["yes"] }] }, { userId: f.userId });
+      await deliver.deliver(interaction.id);
+      await flush();
+      beforeReceiptKeys = (await publications()).map(row => row.idempotencyKey);
+      return { id: "published-question" };
+    });
+    // Controlled transport/authorization ports; actual attempt lease, receipt
+    // transaction, question delivery receipt and milestone worker use PostgreSQL.
+    const worker = createChatPublicationWorker(db, {
+      CAPABILITIES, settleGitHubAutomaticPublication: async () => false,
+      ensureDurablePublicationTransport: async publication => publication,
+      tryProcessTeamsFilePublication: async () => false,
+      endpointRecord: async () => ({ endpoint, assignedAgentName: "Maya", connectionName: "Chat", applicationId: "test", credentialSecretRefs: [] }),
+      runtimeContextForRecord: () => ({ generation: 0, localEpoch: 0, credentialFingerprint: "test", version: "test" }),
+      hasCommittedTaskControlCompletion: async () => false, nonDirectDestinationAllowed: () => true,
+      runOwnershipMilestoneSupersessionReason: async () => null,
+      progressSupersededByFastResponse: async () => false, runProgressSupersededByPublishedInteraction: async () => false,
+      currentTaskControlPayload: async publication => publication.payload,
+      withCredentialMutationLease: async (_endpoint, operation) => operation({ assertOwned: async () => {} }),
+      closeProgressToReplace: async () => null, interactionResolutionPublicationToReplace: async () => null,
+      interactionPromptPublicationToReplace: async () => null, runPublicationToReplace: async () => null,
+      inboundWakePublicationToReplace: async () => null, taskStatusPublicationToReplace: async () => null,
+      claimPublicationTransportAuthorization: async () => ({ endpoint, conversation, authorizationActionId: null, preparedText: null }),
+      postSafePublication: post, commitTaskControlCompletion: async () => {}, receiptReactionCompletionRunId: async () => null,
+      finalizePublicationFailure: async (_publication, error) => { errors.push(error); return false; },
+      redactError: String,
+    } as Parameters<typeof createChatPublicationWorker>[1]);
+    await worker.processSelectedPublication(prompt);
+    expect(post).toHaveBeenCalledTimes(1);
+    expect((await db.select().from(chatPublications).where(eq(chatPublications.id, prompt.id)))[0]).toMatchObject({ state: "published", providerMessageId: "published-question" });
+    expect(beforeReceiptKeys).toBeDefined();
+    expect(beforeReceiptKeys).not.toContain(`run:${targetId}:queued:${f.endpointId}`);
+    await flush();
+    expect((await publications()).map(row => row.idempotencyKey)).toContain(`run:${targetId}:queued:${f.endpointId}`);
+    await quiet();
+  });
+  it.each([
+    ["retry", null], ["failed", null], ["delivery_unknown", "cancel"], ["delivery_unknown", "mark_delivered"],
+  ] as const)("rechecks resolved prompt ownership after delivery %s (%s)", async (state, resolution) => {
+    const source = await run(f, { status: "failed", errorCode: "test_run_failed" });
+    const interactions = issueThreadInteractionService(db);
+    const interaction = await interactions.create({ id: f.issueId, companyId: f.companyId }, {
+      kind: "ask_user_questions", continuationPolicy: "wake_assignee", sourceRunId: source.id,
+      title: "Choose", payload: { version: 1, title: "Choose", questions: [{
+        id: "choice", prompt: "Continue?", selectionMode: "single", required: true,
+        options: [{ id: "yes", label: "Yes" }],
+      }] },
+    }, { agentId: f.agentId, runId: source.id });
+    // Model a send already claimed when the user answers through the UI.
+    const [prompt] = await db.update(chatPublications).set({ state: "streaming", attempts: 1 })
+      .where(eq(chatPublications.idempotencyKey, `interaction:${interaction.id}:${f.endpointId}`)).returning();
+    await interactions.answerQuestions({ id: f.issueId, companyId: f.companyId, status: "in_progress" }, interaction.id,
+      { answers: [{ questionId: "choice", optionIds: ["yes"] }] }, { userId: f.userId });
+    expect(prompt).toBeDefined();
+    await start(); await flush();
+    expect((await publications()).some(row => row.idempotencyKey.startsWith(`run:${source.id}:`))).toBe(false);
+    await quiet();
+    const failures = createChatPublicationFailures(db, {
+      FailedChatRetryPublicationReadError: class extends Error {},
+      MAX_ERROR_TEXT: 1000, getTaskBaseUrl: () => null,
+      invalidateRuntime: async () => false, runtimeCallbackEndpoint: async () => null,
+    });
+    const failure = Object.assign(new Error("provider rejected the send"), { status: state === "retry" ? 429 : 400 });
+    // The finalizer receives the selection from before the attempt increment.
+    await expect(failures.finalizePublicationFailure({ ...prompt, attempts: 0 }, failure, state === "delivery_unknown")).resolves.toBe(true);
+    expect((await db.select().from(chatPublications).where(eq(chatPublications.id, prompt.id)))[0].state).toBe(state);
+    await flush();
+    expect((await publications()).some(row => row.idempotencyKey === `run:${source.id}:failed:${f.endpointId}`)).toBe(state === "failed");
+    await quiet();
+    if (resolution) {
+      const targetId = randomUUID();
+      await questionResponseDeliveryService(db, { heartbeat: { wakeup: async () => {
+        const [target] = await db.insert(heartbeatRuns).values(runValues(f, {
+          id: targetId, status: "queued", contextSnapshot: { issueId: f.issueId },
+        })).returning();
+        return target;
+      } } }).deliver(interaction.id);
+      await flush();
+      expect((await publications()).some(row => row.idempotencyKey.startsWith(`run:${targetId}:`))).toBe(false);
+      await quiet();
+      const [endpoint] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, f.endpointId));
+      const resolver = createChatPublicationResolution(db, {
+        endpointRecord: async () => ({ endpoint, assignedAgentName: "Maya", connectionName: "Chat", applicationId: "test", credentialSecretRefs: [] }),
+        withCredentialMutationLease: async (_endpoint, operation) => operation({ assertOwned: async () => {} }),
+        commitTaskControlCompletion: async () => {}, processPendingPublications: async () => {},
+      } as Parameters<typeof createChatPublicationResolution>[1]);
+      await resolver.resolvePublication(f.endpointId, prompt.id, resolution, f.userId);
+      await flush();
+      const keys = (await publications()).map(row => row.idempotencyKey);
+      expect(keys.includes(`run:${source.id}:failed:${f.endpointId}`)).toBe(resolution === "cancel");
+      expect(keys.includes(`run:${targetId}:queued:${f.endpointId}`)).toBe(resolution === "mark_delivered");
+      await quiet();
+    }
   });
   it.each(["retry", "stale claim", "live claim", "rolled-back reset"] as const)("rechecks question prompt binding after %s", async (mode) => {
     const source = await run();

@@ -218,7 +218,7 @@ export function createChatPublicationResolution(db: Db, options: ResolutionOptio
             action === "retry_anyway"
           ) { await recordPhotonPublicationRetry(tx, endpointId, publication, userId); }
           const now = new Date();
-          await notifyChatPublicationWork(tx);
+          await notifyChatPublicationWork(tx, action === "retry_anyway" ? undefined : publication);
           await notifyVoicePublication(tx, initialRecord.endpoint);
           await tx
             .update(chatPublications)
