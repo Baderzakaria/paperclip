@@ -30,6 +30,7 @@ import { captureRunIdentity } from "../services/run-identity.js";
 import { boardAuthService } from "../services/board-auth.js";
 import { retryIdempotentDatabaseOperation } from "../database-retry.js";
 import { beginIdleTrackedWork } from "../services/task-admission.js";
+import { notifyChatRunMilestones } from "../services/chat-run-milestone-notifications.js";
 
 export {
   isTransientDbConnectionError,
@@ -685,34 +686,51 @@ async function resolveCloudTenantActorOnce(
     await repairCloudTenantCompanyProvisionDefaults(db, { companyId, stackId, now });
   }
 
-  effectiveMembership = shouldSync ? await db
-    .insert(companyMemberships)
-    .values({
-      companyId,
-      principalType: "user",
-      principalId: userId,
-      status: "active",
-      membershipRole,
-      updatedAt: now,
-    })
-    .onConflictDoUpdate({
-      target: [
-        companyMemberships.companyId,
-        companyMemberships.principalType,
-        companyMemberships.principalId,
-      ],
-      set: {
-        status: "active",
-        membershipRole,
-        updatedAt: now,
-      },
-    })
-    .returning()
-    .then((rows) => rows[0] ?? {
-      companyId,
-      membershipRole,
-      status: "active",
-    }) : { companyId, membershipRole, status: "active" as const };
+  if (shouldSync) {
+    effectiveMembership = await db.transaction(async tx => {
+      const [existing] = await tx.select({
+        status: companyMemberships.status,
+        membershipRole: companyMemberships.membershipRole,
+      }).from(companyMemberships).where(and(
+        eq(companyMemberships.companyId, companyId),
+        eq(companyMemberships.principalType, "user"),
+        eq(companyMemberships.principalId, userId),
+      )).for("update");
+      // A trusted-header sync can restore publication authority. Serialize the
+      // comparison with the upsert so unchanged profile syncs remain quiet.
+      if (!existing || existing.status !== "active" || existing.membershipRole === "viewer") {
+        await notifyChatRunMilestones(tx, { companyId });
+      }
+      return tx
+        .insert(companyMemberships)
+        .values({
+          companyId,
+          principalType: "user",
+          principalId: userId,
+          status: "active",
+          membershipRole,
+          updatedAt: now,
+        })
+        .onConflictDoUpdate({
+          target: [
+            companyMemberships.companyId,
+            companyMemberships.principalType,
+            companyMemberships.principalId,
+          ],
+          set: {
+            status: "active",
+            membershipRole,
+            updatedAt: now,
+          },
+        })
+        .returning()
+        .then((rows) => rows[0] ?? {
+          companyId,
+          membershipRole,
+          status: "active",
+        });
+    });
+  }
 
   // Without instance-admin elevation, cloud tenant users are authorized purely
   // through company-scoped permission grants — seed the same role defaults the

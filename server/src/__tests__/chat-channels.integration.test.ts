@@ -1,3 +1,5 @@
+import { cloudActorHeaderSourceFromHeaders, resolveCloudTenantActor } from "../middleware/auth.js";
+import { cloudTenantPrimaryCompanyId } from "../services/cloud-instance.js";
 import { accessService } from "../services/access.js";
 import { signalDatabaseWork, subscribeDatabaseWork } from "@paperclipai/db";
 import { restoreNativeChatReviewPresentationInTransaction } from "../services/native-runtime/native-chat-review-presentation.js";
@@ -1134,8 +1136,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
   const companyPrefixAttempts = 8;
   const freshCompanyPrefix = () => `C${randomUUID().replaceAll("-", "").slice(0, 7).toUpperCase()}`;
 
-  async function seedCompany(nextIssuePrefix = freshCompanyPrefix) {
-    const companyId = randomUUID();
+  async function seedCompany(nextIssuePrefix = freshCompanyPrefix, companyId = randomUUID()) {
     const assignedAgentId = randomUUID();
     const replacementAgentId = randomUUID();
     let inserted = false;
@@ -51338,8 +51339,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const registeredCommandId = "888888888888888819";
     let interactionSequence = 0n;
 
-    async function commandFixture() {
-      const fixture = await seedCompany();
+    async function commandFixture(companyId?: string) {
+      const fixture = await seedCompany(undefined, companyId);
       const applicationId = uniqueDiscordApplicationId();
       let holdWork = false;
       const queued: Array<() => void> = [];
@@ -52433,8 +52434,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
             : lastFreshDiscordMessageId + 1n;
         return lastFreshDiscordMessageId.toString();
       };
-      async function reopenedFixture(includeDuringConfirmationSource = false) {
-        const f = await commandFixture();
+      async function reopenedFixture(includeDuringConfirmationSource = false, companyId?: string) {
+        const f = await commandFixture(companyId);
         const threadId = `discord:${guildId}:${channelId}:${rootMessageId}`;
         const admitMessage = async (message: ReturnType<typeof makeMessage>) => {
           await deliverMessage({
@@ -52621,9 +52622,11 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         } finally { await coordinator.stop(); await f.close(); }
       });
 
-      it.each(["connection", "resource", "unlinked", "identity", "member", "member_permissions", "ensure_membership", "company_access", "visibility"] as const)(
+      it.each(["connection", "resource", "unlinked", "identity", "member", "member_permissions", "ensure_membership", "company_access", "visibility", "cloud_sync"] as const)(
         "wakes a post-close milestone when %s authority is restored", async owner => {
-          const f = await reopenedFixture();
+          const stackId = randomUUID();
+          const f = await reopenedFixture(false, owner === "cloud_sync" ? cloudTenantPrimaryCompanyId(stackId) : undefined);
+          const previousToken = process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN;
           const onError = vi.fn();
           const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError });
           const notice = () => db.select().from(chatPublications).where(and(
@@ -52662,6 +52665,20 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
               await db.update(companyMemberships).set({ status: "suspended" }).where(eq(companyMemberships.id, membership.id));
               if (owner === "member") restore = () => access.updateMember(f.fixture.companyId, membership.id, { status: "active" });
               else if (owner === "member_permissions") restore = () => access.updateMemberAndPermissions(f.fixture.companyId, membership.id, { status: "active", grants: [] }, "owner-user");
+              else if (owner === "cloud_sync") {
+                process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN = "milestone-cloud-sync-test";
+                let request = 0;
+                restore = () => resolveCloudTenantActor(db, cloudActorHeaderSourceFromHeaders({
+                  "x-paperclip-cloud-tenant-token": "milestone-cloud-sync-test",
+                  "x-paperclip-cloud-user-id": "owner-user",
+                  "x-paperclip-cloud-user-email": "owner@example.test",
+                  // Change the profile to force an actual sync on replay. The
+                  // debounce must not hide repeated unchanged membership wakes.
+                  "x-paperclip-cloud-user-name": `Owner ${request++}`,
+                  "x-paperclip-cloud-stack-id": stackId,
+                  "x-paperclip-cloud-stack-role": "owner",
+                }));
+              }
               else if (owner === "ensure_membership") restore = () => access.ensureMembership(f.fixture.companyId, "user", "owner-user", membership.membershipRole, "active");
               else {
                 const existing = await db.select().from(companyMemberships).where(and(
@@ -52686,7 +52703,11 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
               expect(await notice()).toHaveLength(1);
             }
             expect(onError).not.toHaveBeenCalled();
-          } finally { await coordinator.stop(); await f.close(); }
+          } finally {
+            if (previousToken === undefined) delete process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN;
+            else process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN = previousToken;
+            await coordinator.stop(); await f.close();
+          }
         },
       );
 

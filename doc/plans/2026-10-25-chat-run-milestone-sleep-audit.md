@@ -1413,3 +1413,51 @@ runtime fence; old sources must not regain authority from a new credential
 fingerprint. Keep the existing generation/chronology denial tests. Remaining
 producer dispositions, production wiring, full remote gates and original stack
 scope are still required; this checkpoint is not a completed sleep migration.
+
+
+## Cloud sign-in and board-claim authority restoration
+
+Cloud trusted-header membership synchronization now owns a short transaction for
+its existing membership upsert. It locks the existing membership while comparing
+its authority and registers a company-scoped milestone intent before a new,
+reactivated, or formerly viewer membership becomes active. Profile-only syncs
+remain silent even when the debounce is bypassed by a changed profile. The
+trusted-header roles already exclude viewer; existing authentication, company
+provisioning, stale instance-admin removal and default-grant behavior are retained.
+This adds one indexed membership read and a transaction per actual debounced sync,
+not an idle timer. Provider calls are not wrapped in a transaction.
+
+Board claim uses its existing transaction and signals only actual membership
+insertion/reactivation. Existing active membership behavior is unchanged. Its
+real database tests verify that nested savepoint completion emits intent, while
+settlement waits for the caller's outer commit and the outside connection still
+sees the old membership. This is producer/transaction proof; the Cloud integration
+case additionally proves the real post-close milestone becomes publishable.
+
+Evidence retained:
+- /tmp/sleep28-cloud-sync-before.log: restored Cloud authority missed its exact
+  working notice before repair, after the worker had exhausted startup discovery.
+- /tmp/sleep28-board-claim-before.log: new and suspended membership cases failed
+  because no intent was emitted; unchanged active membership passed.
+- /tmp/sleep28-cloud-authority-acceptance.log: all 39 post-close integration cases
+  pass, including Cloud restoration and a forced second profile sync with no
+  milestone signal. Existing NOWAIT admission retries remain visible in the log.
+- /tmp/sleep28-cloud-owner-acceptance.log: all 30 Cloud provisioning, auth route,
+  transient retry and board-claim cases pass. Dedicated external test DB support
+  preserves the embedded fallback and closes the owning clients.
+- /tmp/sleep28-cloud-authority-typecheck.log retained the initial redundant
+  viewer comparison failure. Cloud's validated role union excludes viewer; the
+  redundant condition was removed. Final typecheck and build pass in
+  /tmp/sleep28-cloud-authority-final-typecheck.log and
+  /tmp/sleep28-cloud-authority-build.log. Diff whitespace checks pass.
+
+The pre-push remote head 0f38d1079d fails E2E shard 3 and aggregate in run
+40210763612, job 121221379705. The complete completed-job log is retained at
+/tmp/sleep28-0f38-e2e3-failure.log. It again fails split-handoff cleanup at
+agent-chat-projects.spec.ts:161 (HTTP 500), followed by the experiment-state
+assertion at line 568. The log also records a process-identity event append
+transaction deadlock at heartbeat.ts:3409 / run-lifecycle.ts:583. This is evidence
+for the unresolved cancellation investigation, not proof of its entire lock cycle.
+No blind rerun or masking was performed. Production milestone registration,
+final producer dispositions, native progress as its separate slice, remote gates,
+and every remaining original stack duty remain outstanding.

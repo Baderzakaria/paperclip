@@ -1688,3 +1688,13 @@ six action-worker tests, server typecheck/build. No provider authorization was
 relaxed. Cloud trusted-header membership sync and board claim remain alternate
 writers to cover before production registration/poll removal. Older parent
 findings and the complete original stack remain open.
+
+
+Slice 28 now covers Cloud trusted-header sync and board claim. The missing
+Cloud notice and absent board-claim intents were reproduced before repair.
+All 39 post-close cases plus 30 provisioning/auth/claim cases pass; server types
+and build pass. Unchanged Cloud profile synchronization and active board membership
+stay silent. See the milestone audit for transaction boundaries and retained logs.
+The previous pushed head 0f38d1079d has the recurring E2E shard-3 cancellation
+failure; process-identity event append deadlock evidence is retained for diagnosis.
+Production registration/poll removal and the entire remaining stack are still open.
