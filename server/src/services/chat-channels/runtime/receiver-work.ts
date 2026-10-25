@@ -79,7 +79,9 @@ export function registerChatReceiverWork(
       }
       if (errors.length) throw new AggregateError(errors, "Chat receiver discovery could not settle");
     },
-    hasPending: async () => dirty.size > 0,
+    // Preserve hints/deadlines for resume without holding settled intent during drain.
+    // The coordinator independently fences unresolved database transactions.
+    hasPending: async () => canRun() && dirty.size > 0,
     nextRunAt: next,
   });
   return { ready: worker.ready, changed(id: string) {
