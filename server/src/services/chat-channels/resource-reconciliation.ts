@@ -1,3 +1,4 @@
+import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js";
 import { notifyChatEndpointConfiguration } from "./configuration-work-notifications.js";
 import { notifyChatConnectionHealth } from "./connection-health-notifications.js";
 import { imessageResourceParticipants } from "./imessage-photon/resources.js";
@@ -79,6 +80,32 @@ export function createChatResourceReconciliation(db: Db, options: ResourceReconc
     return resource ?? null;
   }
 
+  async function setResourceConversationAvailability(
+    tx: DbTransaction,
+    endpoint: Pick<EndpointRow, "id" | "companyId">,
+    resourceId: string,
+    available: boolean,
+    now: Date,
+  ) {
+    const affected = and(
+      eq(chatConversations.companyId, endpoint.companyId),
+      eq(chatConversations.endpointId, endpoint.id),
+      eq(chatConversations.resourceId, resourceId),
+      available ? eq(chatConversations.state, "unavailable") : inArray(chatConversations.state, ["active", "waiting"]),
+    );
+    if (available) {
+      // Only a reopened binding creates projection work. Repeated inventory
+      // refreshes and completed history must not wake the milestone scanner.
+      const reopened = await tx.select({ issueId: chatConversations.issueId })
+        .from(chatConversations).where(affected).for("update");
+      for (const issueId of new Set(reopened.map(row => row.issueId))) {
+        await notifyChatRunMilestones(tx, { companyId: endpoint.companyId, issueId });
+      }
+    }
+    await tx.update(chatConversations)
+      .set({ state: available ? "active" : "unavailable", updatedAt: now }).where(affected);
+  }
+
   async function reconcileProviderResourceRows(
     endpoint: EndpointRow,
     inventory: ChatProviderInventoryResult,
@@ -98,17 +125,7 @@ export function createChatResourceReconciliation(db: Db, options: ResourceReconc
         if (resource) {
           // Resource recovery reopens only bindings that Paperclip marked
           // unavailable. Completed historical tasks stay completed.
-          await tx
-            .update(chatConversations)
-            .set({ state: "active", updatedAt: new Date() })
-            .where(
-              and(
-                eq(chatConversations.companyId, endpoint.companyId),
-                eq(chatConversations.endpointId, endpoint.id),
-                eq(chatConversations.resourceId, resource.id),
-                eq(chatConversations.state, "unavailable"),
-              ),
-            );
+          await setResourceConversationAvailability(tx, endpoint, resource.id, true, new Date());
         }
       }
 
@@ -131,17 +148,7 @@ export function createChatResourceReconciliation(db: Db, options: ResourceReconc
           .update(chatEndpointResources)
           .set({ availability: absentAvailability, updatedAt: new Date() })
           .where(eq(chatEndpointResources.id, resource.id));
-        await tx
-          .update(chatConversations)
-          .set({ state: "unavailable", updatedAt: new Date() })
-          .where(
-            and(
-              eq(chatConversations.companyId, endpoint.companyId),
-              eq(chatConversations.endpointId, endpoint.id),
-              eq(chatConversations.resourceId, resource.id),
-              inArray(chatConversations.state, ["active", "waiting"]),
-            ),
-          );
+        await setResourceConversationAvailability(tx, endpoint, resource.id, false, new Date());
       }
       await credentialLease.assertOwned(tx);
     });
@@ -470,25 +477,7 @@ export function createChatResourceReconciliation(db: Db, options: ResourceReconc
               await migrateTelegramResourceConversations(tx, currentEndpoint, previousResource, resource, previousProviderResourceId, providerResourceId, migratedLabel, now);
             }
             if (resource) {
-              await tx
-                .update(chatConversations)
-                .set({
-                  state:
-                    effect.availability === "available"
-                      ? "active"
-                      : "unavailable",
-                  updatedAt: now,
-                })
-                .where(
-                  and(
-                    eq(chatConversations.companyId, currentEndpoint.companyId),
-                    eq(chatConversations.endpointId, currentEndpoint.id),
-                    eq(chatConversations.resourceId, resource.id),
-                    effect.availability === "available"
-                      ? eq(chatConversations.state, "unavailable")
-                      : inArray(chatConversations.state, ["active", "waiting"]),
-                  ),
-                );
+              await setResourceConversationAvailability(tx, currentEndpoint, resource.id, effect.availability === "available", now);
             }
             await tx
               .update(chatEndpoints)

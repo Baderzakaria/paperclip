@@ -1,0 +1,107 @@
+import { randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { chatConversations, chatDeliveries, chatEndpointResources, chatEndpoints, chatPublications, createDb, heartbeatRuns, issues, subscribeDatabaseWork } from "@paperclipai/db";
+import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
+import { createChatMilestoneFixtures } from "./helpers/chat-milestone-fixtures.js";
+import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
+import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
+import { chatRunMilestoneWork } from "../services/chat-run-milestone-work.js";
+import { chatCredentialMutationLease } from "../services/chat-credential-mutation-lease.js";
+import { createChatResourceReconciliation } from "../services/chat-channels/resource-reconciliation.js";
+import { idleWorkSnapshot } from "../services/task-admission.js";
+
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_MILESTONE_RESOURCE_TEST_DATABASE_URL");
+const support = external ? { supported: true } : await getEmbeddedPostgresTestSupport();
+(support.supported ? describe : describe.skip)("chat milestones after resource recovery", () => {
+  let db: ReturnType<typeof createDb>;
+  let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
+  let fixtures: ReturnType<typeof createChatMilestoneFixtures>;
+  let f: Awaited<ReturnType<typeof fixtures.create>>;
+  let coordinator: ReturnType<typeof createDeliveryWorkCoordinator> | undefined;
+  const errors: unknown[] = [];
+  beforeAll(async () => {
+    if (!external) temporary = await startEmbeddedPostgresTestDatabase("chat-resource-milestones-");
+    db = createDb(external ?? temporary!.connectionString, { idleTimeoutSeconds: 0, maxLifetimeSeconds: 0 });
+    fixtures = createChatMilestoneFixtures(db);
+  }, 60_000);
+  beforeEach(async () => {
+    errors.length = 0; f = await fixtures.create();
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+  });
+  afterEach(async () => {
+    await coordinator?.stop(); coordinator = undefined; vi.useRealTimers(); vi.restoreAllMocks();
+    await db.delete(chatDeliveries).where(eq(chatDeliveries.companyId, f.companyId));
+    await fixtures.cleanup(); expect(errors).toEqual([]);
+  });
+  afterAll(async () => { await db?.$client.end({ timeout: 1 }); await temporary?.cleanup(); });
+  async function flush() {
+    await vi.waitFor(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(idleWorkSnapshot().active).toBe(0); expect(coordinator!.nextWakeAt()).toBeNull();
+    }, { timeout: 10_000 });
+  }
+  async function quiet() {
+    const reads = vi.spyOn(db, "select"), writes = vi.spyOn(db, "transaction");
+    try { await vi.advanceTimersByTimeAsync(120_000); expect(reads).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled(); }
+    finally { reads.mockRestore(); writes.mockRestore(); }
+  }
+  const publications = () => db.select().from(chatPublications).where(eq(chatPublications.issueId, f.issueId));
+
+  it.each(["inventory", "lifecycle"] as const)("wakes only reopened conversations after %s commits, preserving rollback and completed history", async path => {
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: runId, companyId: f.companyId, agentId: f.agentId,
+      responsibleUserId: f.userId, status: "failed", errorCode: "test_run_failed", updatedAt: new Date(),
+      contextSnapshot: { issueId: f.issueId, source: "chat:slack", endpointId: f.endpointId, wakeCommentId: f.commentId },
+    });
+    await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, f.issueId));
+    const [endpoint] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, f.endpointId));
+    const [resource] = await db.insert(chatEndpointResources).values({ companyId: f.companyId, endpointId: f.endpointId,
+      type: "channel", providerResourceId: "recovered-channel", label: "Recovered", availability: "unavailable", enabled: true,
+    }).returning();
+    await db.update(chatConversations).set({ resourceId: resource.id, state: "unavailable" }).where(eq(chatConversations.id, f.conversationId));
+    const completedId = randomUUID();
+    await db.insert(chatConversations).values({ id: completedId, companyId: f.companyId, endpointId: f.endpointId,
+      resourceId: resource.id, issueId: f.issueId, state: "completed", externalConversationId: completedId, externalThreadId: completedId, externalLabel: "History" });
+    const [delivery] = await db.insert(chatDeliveries).values({ companyId: f.companyId, endpointId: f.endpointId,
+      providerEventId: randomUUID(), deduplicationKey: randomUUID(), eventKind: "installation", normalizedEvent: {}, state: "processing", attempts: 1,
+    }).returning();
+    coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, canReconcile: () => true, onError: error => errors.push(error) });
+    await chatRunMilestoneWork(db).register(coordinator, () => true).ready;
+    await flush(); expect(await publications()).toEqual([]); await quiet();
+    const withLease = chatCredentialMutationLease(db);
+    const recover = (rollback: boolean) => withLease(endpoint, lease => db.transaction(async tx => {
+      const resources = createChatResourceReconciliation(tx as unknown as typeof db, {
+        endpointRecord: async () => ({ endpoint }), withCredentialMutationLease: withLease, runtimeGeneration: () => 0, maxErrorText: 1000,
+      });
+      if (path === "inventory") {
+        await resources.reconcileProviderResourceRows(endpoint, { provider: "slack", resources: [{ type: "channel", providerResourceId: "recovered-channel", label: "Recovered" }] }, lease);
+      } else {
+        await resources.applyProviderAvailability({ currentEndpoint: endpoint, credentialLease: lease, staleResourceEffect: false,
+          claimed: delivery, candidate: { attempts: 0 }, effect: { kind: "resource", provider: "slack", providerEventId: delivery.providerEventId,
+            providerResourceId: "recovered-channel", resourceType: "channel", label: "Recovered", availability: "available" },
+        });
+      }
+      // The owner used a nested transaction. Its savepoint release cannot publish.
+      await vi.advanceTimersByTimeAsync(1000); expect(await publications()).toEqual([]);
+      if (rollback) throw new Error("outer rollback");
+    }));
+    await expect(recover(true)).rejects.toThrow("outer rollback");
+    await flush(); expect(await publications()).toEqual([]); await quiet();
+    await recover(false); await flush();
+    expect(await publications()).toEqual([expect.objectContaining({ idempotencyKey: `run:${runId}:failed:${f.endpointId}` })]);
+    expect((await db.select().from(chatConversations).where(eq(chatConversations.id, completedId)))[0].state).toBe("completed");
+    await quiet();
+    // Unchanged inventory must not turn a provider refresh into milestone polling.
+    const notices: string[] = [];
+    const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.chatRunMilestones, event => notices.push(event));
+    try {
+      await withLease(endpoint, lease => createChatResourceReconciliation(db, {
+        endpointRecord: async () => ({ endpoint }), withCredentialMutationLease: withLease, runtimeGeneration: () => 0, maxErrorText: 1000,
+      }).reconcileProviderResourceRows(endpoint, { provider: "slack", resources: [{ type: "channel", providerResourceId: "recovered-channel", label: "Recovered" }] }, lease));
+      expect(notices).toEqual([]);
+    } finally { unsubscribe(); }
+    await flush(); await quiet();
+  });
+});

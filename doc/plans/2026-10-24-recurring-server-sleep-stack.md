@@ -1586,3 +1586,33 @@ their owning branches, and propagate. Their currently passing CI is not evidence
 against that missing idle-counter assertion. Then continue milestone configuration
 and alternate-receipt coverage, production registration/poll removal, the entire
 original inventory, older E2E/cleanup findings and final master reconciliation.
+
+## Configuration drain propagation and resource milestone producers
+
+Discord #17557 at 954a0faa75 and receiver #17572 at 8815dfad38 now carry the
+confirmed drain-hold repairs, following tool health #17554 at e685a0e7ef.
+The prerequisite #17561 inherited health at 05ac7835fc. Propagation reached
+#17576 a4bc3ea50e, #17578 05797e2b9f, #17580 82d023a3a0, #17583 f4f7e14f7a,
+#17586 920a951505, #17590 d626ff4b13, #17592 33ffff8a12, and #17606 9775b2bc4a.
+All 109 configuration lifecycle/protocol cases pass together after applying the
+tip schema to their disposable databases. See the configuration-worker drain
+repair document for individual causal failures and parent evidence.
+
+Slice 28 adds real inventory/lifecycle resource reactivation wakes. The two
+regressions fail before repair; all 90 milestone lifecycle/governed/resource cases
+and six selected provider acceptance cases pass after it. The owning resource
+module only wakes reopened issue scopes, never unchanged inventory or completed
+history. See the milestone audit for full commands/results and remaining producers.
+
+Fresh gate snapshot /tmp/sleep-stack-gates-configuration-drain-20261025.json has
+no failures for slices 1–12 and 14–16, plus #17505; #17490 still fails E2E shard 3
+and its aggregate. #17518/#17554 have pending review and later updated heads have
+pending checks. New #17576 security finding 4371283330 concerns repeated
+connection writes loading every live voice session in that connection. Inspect
+and address it without dropping future deadlines or configuration revocation.
+The existing #17580 cleanup/company-deletion denial finding remains open. No
+review blocker is resolved merely by pushing inherited changes. No PRs merged.
+
+Origin/master refreshed to e335265568 (task-run UI polling removal #17608).
+Full base reconciliation, remaining recurring-work slices, milestone startup
+wiring, fresh reviews, and all latest-head CI gates remain required.

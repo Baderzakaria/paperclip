@@ -1072,3 +1072,58 @@ passing evidence; the full 108 voice integration cases passed at its parent.
 This establishes the changed dispatch/drain boundary, not final PR readiness or
 host sleep. The same pending predicate in three earlier independent workers is
 still a required parent repair. Remaining milestone producers/wiring are unchanged.
+
+## Resource reactivation producers (2026-10-25)
+
+The current selector admits active/waiting conversations. Resource inventory and
+provider lifecycle recovery can reopen an unavailable conversation after the
+milestone worker exhausted its earlier scan. Both paths lacked an issue wake.
+The real-owner regressions in /tmp/sleep28-resource-before.log fail after commit
+with no failed-run publication, establishing the gap independently of manual
+notification helpers.
+
+Resource reconciliation now owns one local availability transition function. It
+locks the unavailable bindings it will reopen, signals their distinct issue
+scopes before mutation, and retains the existing availability/completed-history
+rules. Both inventory and lifecycle callers use it. Unchanged inventory produces
+no milestone intent; status/health metadata is not indiscriminately promoted to
+company-wide milestone scans. No shared scheduler contract or provider protocol
+changes. The tests use the real credential lease and nested resource transaction,
+prove savepoint release does not publish, prove outer rollback leaves the worker
+quiet, and prove outer commit creates the expected publication. Completed history
+stays completed. They then verify two minutes of quiet and no intent from a
+repeated unchanged inventory.
+
+All 90 milestone lifecycle/governed/resource cases pass in
+/tmp/sleep28-resource-combined-tests.log. That command also named a nonexistent
+__tests__/chat-run-publications.test.ts path; it did not run projection units.
+The separate corrected service-path run is recorded in
+/tmp/sleep28-resource-projection-tests.log. Six existing provider acceptance cases
+pass in /tmp/sleep28-resource-acceptance.log (1,424 deselected, not counted), covering
+Slack membership/reinstall, Slack archive/unarchive, Teams/Telegram lifecycle,
+GitHub resource identity preservation, durable lifecycle retry, and canonical
+Chat SDK resource identifiers. Server typecheck passes in
+/tmp/sleep28-resource-typecheck.log. The dedicated resource database is
+paperclip_sleep28_resource_20261025_test.
+
+The earlier three configuration-owner drain repairs are now propagated. All 109
+health/Discord/receiver cases pass together at 9775b2bc4a in
+/tmp/sleep28-configuration-drain-tests.log. An earlier combined run had 108 passes
+and one schema mismatch because the parent test databases lacked the downstream
+voice cleanup column; the retained log is
+/tmp/sleep28-configuration-drain-schema-before.log. Applying the actual tip
+migrations to those disposable databases fixes that setup error.
+
+This closes resource-owner reactivation, not every configuration producer.
+GitHub-specific repository/installation restoration, other conversation rebinding,
+late authority/lineage recovery, and remaining producer dispositions still need
+review before production registration and retirement of the lifecycle scan.
+Endpoint status/health are not direct milestone selector predicates; changing
+them alone does not justify wiring a broad company wake to every health check.
+The delivery owner retains its current authority checks.
+
+Final resource checkpoint: all 20 projection units pass at the corrected path in
+/tmp/sleep28-resource-projection-tests.log, and server build passes in
+/tmp/sleep28-resource-build.log. Combined selected evidence is 116 distinct
+milestone/projection/provider cases, plus the 109 propagated configuration-owner
+cases. Full remote checks/reviews remain required for the new head.
