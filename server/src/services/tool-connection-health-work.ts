@@ -1,3 +1,4 @@
+import { healthScope, type HealthScope } from "./tool-connection-health-notifications.js";
 import { takeCompanyWorkBatch } from "./company-work-batch.js";
 import type { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
 import { DELIVERY_QUEUES } from "./delivery-work-notifications.js";
@@ -6,7 +7,7 @@ import type { ConnectionHealthDeadline } from "./tool-access/catalog/health-sche
 export function registerToolConnectionHealthWork(
   coordinator: ReturnType<typeof createDeliveryWorkCoordinator>,
   service: {
-    load(companyId?: string): Promise<ConnectionHealthDeadline[]>;
+    load(companyId?: string, connectionId?: string, applicationId?: string, signal?: AbortSignal): Promise<ConnectionHealthDeadline[]>;
     check(id: string): Promise<ConnectionHealthDeadline | null>;
   },
   canRun: () => boolean,
@@ -14,6 +15,10 @@ export function registerToolConnectionHealthWork(
   const dirty = new Set<string>(["*"]);
   const deadlines = new Map<string, ConnectionHealthDeadline>();
   const failures = new Map<string, { count: number; retryAt: number }>();
+  const matches = (entry: ConnectionHealthDeadline, scope: HealthScope) =>
+    (scope.companyId === undefined || entry.companyId === scope.companyId)
+    && (scope.connectionId === undefined || entry.id === scope.connectionId)
+    && (scope.applicationId === undefined || entry.applicationId === scope.applicationId);
   const retryMs = 30_000;
   let earliest = 0;
   let lastCompany: string | null = null;
@@ -38,21 +43,26 @@ export function registerToolConnectionHealthWork(
       const scopes = dirty.has("*") ? ["*"] : [...dirty];
       dirty.clear();
       const errors: unknown[] = [];
-      const unavailable = new Set<string>();
+      const unavailable: HealthScope[] = [];
       for (let index = 0; index < scopes.length; index++) {
         const scope = scopes[index];
         if (signal.aborted || !canRun()) { for (const remaining of scopes.slice(index)) dirty.add(remaining); return; }
+        let target: HealthScope | undefined;
         try {
-          const rows = await service.load(scope === "*" ? undefined : scope);
-          for (const entry of deadlines.values()) if (scope === "*" || entry.companyId === scope) deadlines.delete(entry.id);
+          target = healthScope(scope);
+          const rows = await service.load(target.companyId, target.connectionId, target.applicationId, signal);
+          if (target.connectionId) {
+            const current = deadlines.get(target.connectionId);
+            if (current && matches(current, target)) deadlines.delete(current.id);
+          } else for (const entry of deadlines.values()) if (matches(entry, target)) deadlines.delete(entry.id);
           for (const entry of rows) deadlines.set(entry.id, entry);
-          for (const id of failures.keys()) {
-            const current = deadlines.get(id);
-            if (!current || current.dueAt > Date.now()) failures.delete(id);
-          }
-        } catch (error) { dirty.add(scope); unavailable.add(scope); errors.push(error); }
+        } catch (error) { dirty.add(target ? scope : "*"); unavailable.push(target ?? {}); errors.push(error); }
       }
-      const due = [...deadlines.values()].filter(entry => !unavailable.has("*") && !unavailable.has(entry.companyId)
+      for (const id of failures.keys()) {
+        const current = deadlines.get(id);
+        if (!current || current.dueAt > Date.now()) failures.delete(id);
+      }
+      const due = [...deadlines.values()].filter(entry => !unavailable.some(scope => matches(entry, scope))
         && Math.max(entry.dueAt, failures.get(entry.id)?.retryAt ?? 0) <= Date.now())
         .sort((a, b) => a.dueAt - b.dueAt || a.id.localeCompare(b.id));
       const batch = takeCompanyWorkBatch(due, 25, lastCompany);

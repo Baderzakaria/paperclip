@@ -3805,7 +3805,7 @@ export function createToolGatewayService(
     message: string | null,
   ) {
     const now = new Date();
-    await writeToolConnectionHealthChange(db, connection.companyId, tx => tx
+    await writeToolConnectionHealthChange(db, connection, tx => tx
       .update(toolConnections)
       .set({
         healthStatus: status,

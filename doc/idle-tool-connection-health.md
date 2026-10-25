@@ -19,8 +19,11 @@ no deadline until the settings producer enables them. Application status and
 company status are not new filters: this migration preserves the old policy.
 
 An unchecked row is due immediately. Otherwise its deadline is `healthCheckedAt`
-plus 15 minutes. A company hint refreshes that company's cache. Startup and an
-instance feature-settings change can refresh the whole instance. Refreshes are
+plus 15 minutes. Individual writes carry a connection ID and reload only that
+connection. Application mutations refresh only that application's connections;
+company deletion invalidates the company's cache. Startup and instance feature
+settings can refresh the whole instance. Inventory reads use UUID keyset pages
+of at most 100 rows and observe shutdown cancellation between pages. Refreshes are
 coalesced with a 30-second minimum spacing when no due backlog remains.
 Batches retain at most 25 checks and continue after one second while already due
 rows remain, so the batch limit does not cap dispatch at 50 checks per minute. There is no scheduled refresh when
@@ -32,8 +35,8 @@ rotates across passes when more companies are due than fit in one batch.
 Before a provider check, the service reloads current eligibility and deadline.
 A saved health result, including a failed health observation, owns the next
 15-minute deadline. A check that cannot persist an observation retains recovery
-debt with exponential backoff from 30 seconds to 15 minutes. A failed company
-refresh does not prevent another company's checks. Dirty scopes arriving during
+debt with exponential backoff from 30 seconds to 15 minutes. A failed scoped
+refresh does not prevent checks outside that connection, application, or company. Dirty scopes arriving during
 a refresh remain pending. Drain retains them without passive database reads.
 Shutdown joins admitted work; it does not abandon a provider call midway.
 
@@ -134,8 +137,8 @@ selection. The two-company regression failed before the repair; 19 health-worker
 and three shared batching cases pass afterward. Each probe's pre/post eligibility
 query already includes the connection ID, so those indexed current-state checks
 remain. A scheduled observation still emits the normal transaction signal and
-may cause one coalesced company refresh; this deliberately preserves uncertainty
-and concurrent-writer recovery rather than introducing a silent-write exception.
+now refreshes only that connection following the security repair below. This
+preserves uncertainty and concurrent-writer recovery without a silent-write exception.
 
 The real-service producer suite now proves AgentMail activation triggers its first
 health probe, pause cancels the next deadline, GitHub installation events update
@@ -164,3 +167,44 @@ fully future-dated inventory has no continuation. This is scheduling concrete
 backlog, not a periodic idle scan. The initial deadline-only assertion passed
 incorrectly because a pending transaction notification temporarily reported an
 immediate coordinator wake; acceptance measures actual probe timestamps instead.
+
+
+## Security review: bounded refresh scope
+
+Security review identified amplification in the original company hints. Five
+separate real `updateConnection` calls in a company with 205 eligible connections
+returned 1,025 inventory rows. A regression reproduced that result. The repaired
+producer contract returns exactly five rows across those updates. Saved probe
+observations use the same single-connection scope, so draining a due backlog no
+longer reloads its whole company after each batch.
+
+The typed hint accepts an existing connection row (only company and connection
+IDs are encoded), or an explicit application target. Company/global scopes remain
+for company deletion and administrative feature changes. Smoke Lab allocates a
+new connection ID before its insert so the transaction intent is registered before
+the write. No schema, outer transaction ownership, or provider policy changes.
+Application eligibility changes retain their own scoped refresh. Single-connection
+refreshes remove an old cached deadline even when the row was deleted, disabled,
+or moved to an excluded application; unrelated deadlines remain intact.
+
+Inventory queries use 100-row UUID keyset pages. A 205-row regression initially
+observed one unbounded query and now requires three pages with all 205 distinct
+IDs retained. Cancellation is checked between pages. Results replace a scope only
+after its complete load succeeds; failed loads retain recovery and other scopes
+can proceed. Malformed hint shapes request full reconstruction instead of dropping
+later scopes.
+
+The first amplification fixture lacked its required remote endpoint and failed
+validation before reaching its assertion. After adding a controlled endpoint
+lookup, the baseline reproduced 1,025 versus five. The first typecheck found a
+partial access-service projection without companyId; the target now supplies the
+already-owned companyId explicitly. These failures are retained as evidence, not
+counted as passes. Final verification and remote review are recorded below.
+
+
+Final scoped-refresh verification: 26 health/batching cases, 63 email/access
+cases, 56 GitHub/Smoke Lab/startup cases, 469 tool-access cases, and 92 gateway
+cases pass (706 targeted tests on this repair). Server typecheck and build pass.
+The full local test matrix was not rerun; prior remote Actions passed at
+f8ad26f0ff, which still had the security finding. Fresh remote checks/security
+review on the repaired head are required and are not inferred from those results.

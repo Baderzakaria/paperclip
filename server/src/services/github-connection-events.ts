@@ -327,7 +327,7 @@ export function githubConnectionEventService(
     };
     await database.update(connectionGrants).set({ providerTenant, updatedAt: now() })
       .where(and(eq(connectionGrants.id, binding.grantId), eq(connectionGrants.companyId, binding.companyId)));
-    await notifyToolConnectionHealth(database, binding.companyId);
+    await notifyToolConnectionHealth(database, { companyId: binding.companyId, id: binding.connectionId });
     await database.update(toolConnections).set({
       healthStatus: unavailable ? "failed" : "ok",
       healthMessage: unavailable

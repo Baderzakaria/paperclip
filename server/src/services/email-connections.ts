@@ -258,7 +258,7 @@ export function emailConnectionService(
           actorSource: actor.localImplicit ? "local_implicit" : "session",
         },
       );
-      await writeToolConnectionHealthChange(db, companyId, tx => tx
+      await writeToolConnectionHealthChange(db, connection, tx => tx
         .update(toolConnections)
         .set({
           uid: `agentmail-account-${input.idempotencyKey}`,

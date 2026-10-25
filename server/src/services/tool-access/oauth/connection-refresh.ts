@@ -60,7 +60,7 @@ const oauthRefreshFlights = new Map<string, Promise<unknown>>();
         reauthorizationRequiredAt: now().toISOString(),
       },
     };
-    const [updated] = await writeToolConnectionHealthChange(db, connection.companyId, tx => tx
+    const [updated] = await writeToolConnectionHealthChange(db, connection, tx => tx
       .update(toolConnections)
       .set({
         status: "draft",
