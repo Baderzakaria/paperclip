@@ -1893,7 +1893,6 @@ async function startServerWithDatabaseTeardown(
         }));
 
         if (isIdleTaskDrainActive() || heartbeatSchedulerStopped) return;
-        if (isIdleTaskDrainActive() || heartbeatSchedulerStopped) return;
         if (!(await heartbeat.resolveSchedulingSuppression()).suppressed) {
           // Periodically reap orphaned runs (5-min staleness threshold) and make sure
           // persisted queued work is still being driven forward.

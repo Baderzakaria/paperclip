@@ -1,3 +1,4 @@
+import { logger } from "../middleware/logger.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { deleteCompany } from "../services/company-deletion.js";
 import { notifyChatConnectionHealth } from "../services/chat-channels/connection-health-notifications.js";
@@ -255,6 +256,28 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await vi.advanceTimersByTimeAsync(1000); expect(stopped).toBe(false);
     release(); await stopping; coordinator = undefined;
     await vi.advanceTimersByTimeAsync(1_800_000); expect(probe).toHaveBeenCalledOnce();
+  });
+
+  it("warns for a persisted failed probe without retrying before its saved deadline", async () => {
+    const warnings = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+    const requests = vi.fn(async () => new Response("private-provider-response", { status: 503 }));
+    const tools = toolAccessService(db, {
+      remoteHttpEndpointLookup: async () => [{ address: "8.8.8.8", family: 4 }], remoteHttpRequest: requests,
+    });
+    const row = await connection({ config: { url: "https://health.example.test/mcp" } });
+    await start(tools.scheduledHealth);
+    const [stored] = await db.select().from(toolConnections).where(eq(toolConnections.id, row.id));
+    expect(stored.healthCheckedAt).not.toBeNull();
+    expect(warnings).toHaveBeenCalledWith(
+      { companyId, connectionId: row.id }, "Scheduled tool connection health check failed",
+    );
+    expect(JSON.stringify(warnings.mock.calls)).not.toContain("private-provider-response");
+    const due = stored.healthCheckedAt!.getTime() + 900_000;
+    await idleAt(due);
+    const before = requests.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(180_000);
+    expect(requests).toHaveBeenCalledTimes(before);
+    expect(errors).toEqual([]);
   });
 
 });
