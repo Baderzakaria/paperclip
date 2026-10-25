@@ -134,3 +134,11 @@ Discord #17557 is d3187f76a4 with fresh checks required after its failure-path a
 CI fixture repairs. The older #17490 E2E cancellation failure, final reconciliation
 with master, and all fresh review/check gates remain outstanding. No stack PR was
 merged and no new merge authority is implied.
+
+
+Follow-up acceptance snapshot: health #17554 at 9ef6e4f4c8 now has no pending or
+failed checks, passing security, and fresh Greptile 5/5. Its three reviewed findings
+(fair batching, real producer coverage, inventory amplification) are implemented,
+verified, and their threads resolved. This is acceptance of that current head,
+not a claim that the full stack is complete or reconciled with moving master.
+Company cleanup and Discord still have live current-head checks.
