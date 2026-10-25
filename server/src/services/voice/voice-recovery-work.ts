@@ -78,7 +78,9 @@ export function registerVoiceRecoveryWork(
       }
       if (errors.length) throw new AggregateError(errors, "Voice session recovery could not settle");
     },
-    hasPending: async () => dirty.size > 0,
+    // Retain scopes/deadlines for resume without retaining a settled write's
+    // idle hold during drain. The coordinator still fences unresolved XIDs.
+    hasPending: async () => canRun() && dirty.size > 0,
     nextRunAt: next,
   });
   return worker;
