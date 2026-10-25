@@ -21,9 +21,13 @@ company status are not new filters: this migration preserves the old policy.
 An unchecked row is due immediately. Otherwise its deadline is `healthCheckedAt`
 plus 15 minutes. A company hint refreshes that company's cache. Startup and an
 instance feature-settings change can refresh the whole instance. Refreshes are
-coalesced with a 30-second minimum spacing. There is no scheduled refresh when
+coalesced with a 30-second minimum spacing when no due backlog remains.
+Batches retain at most 25 checks and continue after one second while already due
+rows remain, so the batch limit does not cap dispatch at 50 checks per minute. There is no scheduled refresh when
 there are no eligible rows or unresolved changes. Future checks cause no SQL
-before their deadline. Each pass checks at most 25 due connections.
+before their deadline. Each pass checks at most 25 due connections, taking turns
+across companies and preserving due order within each company. The company cursor
+rotates across passes when more companies are due than fit in one batch.
 
 Before a provider check, the service reloads current eligibility and deadline.
 A saved health result, including a failed health observation, owns the next
@@ -123,3 +127,40 @@ log company/connection identifiers and a fixed message, without provider prose.
 The saved 15-minute deadline still controls the next check. All 64 health/startup
 cases and server typechecking pass after repair; total selected coverage is now
 771 unique tests. Fresh remote gates are required for this repair.
+
+
+Review follow-up: fair round-robin company batching replaces the global oldest-25
+selection. The two-company regression failed before the repair; 19 health-worker
+and three shared batching cases pass afterward. Each probe's pre/post eligibility
+query already includes the connection ID, so those indexed current-state checks
+remain. A scheduled observation still emits the normal transaction signal and
+may cause one coalesced company refresh; this deliberately preserves uncertainty
+and concurrent-writer recovery rather than introducing a silent-write exception.
+
+The real-service producer suite now proves AgentMail activation triggers its first
+health probe, pause cancels the next deadline, GitHub installation events update
+the cached deadline, and member removal cancels a personal connection's deadline.
+The GitHub newer-access branch retains its old health deadline, as intended.
+These tests use the actual coordinator, transaction notifications, schedule query,
+and service mutations; AgentMail also runs the actual health service against its
+controlled provider. Subsequent idle windows assert no SQL.
+
+The first run exposed two incorrect fixture expectations: AgentMail setup leaves
+healthCheckedAt null until its first probe, and a stale GitHub installation event
+does not overwrite a newer access refresh. The tests now preserve those policies.
+A targeted rerun reused AgentMail's retained fixture user and failed setup with a
+duplicate key; a fresh disposable database fixes that isolation issue without
+changing application behavior or weakening assertions. All 66 access/email/GitHub
+cases pass on the final run. Server typecheck/build pass. Cumulative selected
+coverage is 776 unique tests; full-suite and fresh remote review/checks remain
+acceptance gates. No whole-instance sleep or provider suspension is claimed.
+
+
+The Discord child review also exposed fixed-batch throughput as a risk for health.
+A probe-timestamp regression measured a 30.7-second gap before the 26th already
+owed check. The worker now schedules a one-second continuation only when the due
+selection exceeds its bounded batch. Failed work retains backoff; an empty or
+fully future-dated inventory has no continuation. This is scheduling concrete
+backlog, not a periodic idle scan. The initial deadline-only assertion passed
+incorrectly because a pending transaction notification temporarily reported an
+immediate coordinator wake; acceptance measures actual probe timestamps instead.

@@ -1069,3 +1069,53 @@ follow-ups for cross-company backlog fairness and direct service-producer tests.
 These remain owning-PR work despite green Actions and Greptile 5/5. The same
 fairness defect was reproduced and repaired in the Discord worker. Shared helper
 commit `e77979d4fc` is ready to carry into #17554. No PR is newly accepted or merged.
+
+
+## Discord publication and health fairness repair
+
+Discord registration is [#17557](https://github.com/paperclipai/paperclip/pull/17557),
+head `3755d7caced67589de474e0ca3e1b8b5b4e659c4`, based on #17554 and attached.
+It has 639 selected passing tests, workspace typecheck/build, and final server
+verification. CI run **40168371442** and review run **40168371311** are confirmed
+live on that head. Fresh CI and review remain required; no merge is authorized.
+The source and detailed producer audit are on the Discord child branch.
+
+The health parent Paperclip Review completed neutral with 4/5 at `da40899606`.
+It requests fair company batching and direct real-service producer coverage.
+The existing probes are already scoped by connection ID, so the review's concern
+about full inventory scans around each probe needs clarification rather than
+removing current-state eligibility checks. Self-generated observation hints still
+cause a bounded coalesced company refresh; avoid muting correctness signals merely
+to reduce that bounded work without proving equivalent recovery.
+
+Fairness was reproduced with 30 unchecked connections in one company and one due
+connection in another. The quiet company was omitted from the first batch. The
+shared selector from Discord commit `e77979d4fc` was applied to the health branch
+as `097f5c8aff`; the health worker now rotates companies. All 22 health/selection
+tests pass (`/tmp/sleep18-fairness-after.log`), after the recorded failing baseline
+(`/tmp/sleep18-fairness-before.log`). The fix is local until the additional
+AgentMail activation/pause, GitHub installation event, and access-removal producer
+tests are complete. Then push the owning PR, request fresh review, and merge it
+into the Discord branch. Full original inventory and earlier unresolved CI remain.
+
+
+Health producer review coverage is now implemented and verified. The actual
+AgentMail setup/health/pause, GitHub installation-event, and member-removal paths
+move or cancel the live coordinator deadline. All 66 owner-suite cases pass on
+isolated PostgreSQL databases, alongside the prior 22 fairness/health cases and
+fresh server typecheck/build. Initial fixture expectations and the retained-user
+DB setup failure are preserved in the health document. Publish these changes with
+the fair company selector, request fresh review, and propagate to Discord #17557.
+The Discord initial head has Greptile 5/5; its CI and Paperclip review were still
+running when inspected. The remaining original inventory and #17490 failure
+remain open; no stack PR is merged or declared fully accepted.
+
+
+Discord's first Paperclip review (4/5) identified a dispatch-capacity issue shared
+by health: 25 checks per 30 seconds delays a large already-due backlog. Health's
+actual-probe timestamp regression failed with a 30.7-second gap, then passed when
+only a remaining due batch receives a one-second continuation. All 22 health and
+batching cases pass; server types pass. Propagate the parent and apply the same
+bounded continuation to Discord, with its own regression. The Discord review also
+requests preserving queued scopes after malformed hints and broader producer
+coverage. Its initial head has Greptile 5/5 but these findings remain open.

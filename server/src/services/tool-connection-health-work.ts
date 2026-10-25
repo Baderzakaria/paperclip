@@ -1,3 +1,4 @@
+import { takeCompanyWorkBatch } from "./company-work-batch.js";
 import type { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
 import { DELIVERY_QUEUES } from "./delivery-work-notifications.js";
 import type { ConnectionHealthDeadline } from "./tool-access/catalog/health-schedule.js";
@@ -15,6 +16,7 @@ export function registerToolConnectionHealthWork(
   const failures = new Map<string, { count: number; retryAt: number }>();
   const retryMs = 30_000;
   let earliest = 0;
+  let lastCompany: string | null = null;
   function request(hints?: ReadonlySet<string>) {
     for (const hint of hints ?? ["*"]) dirty.add(hint);
   }
@@ -52,8 +54,10 @@ export function registerToolConnectionHealthWork(
       }
       const due = [...deadlines.values()].filter(entry => !unavailable.has("*") && !unavailable.has(entry.companyId)
         && Math.max(entry.dueAt, failures.get(entry.id)?.retryAt ?? 0) <= Date.now())
-        .sort((a, b) => a.dueAt - b.dueAt || a.id.localeCompare(b.id)).slice(0, 25);
-      for (const entry of due) {
+        .sort((a, b) => a.dueAt - b.dueAt || a.id.localeCompare(b.id));
+      const batch = takeCompanyWorkBatch(due, 25, lastCompany);
+      lastCompany = batch.lastCompany;
+      for (const entry of batch.entries) {
         if (signal.aborted || !canRun()) break;
         try {
           const current = await service.check(entry.id);
@@ -65,6 +69,7 @@ export function registerToolConnectionHealthWork(
           errors.push(error);
         }
       }
+      if (due.length > batch.entries.length) earliest = Date.now() + 1_000;
       if (errors.length) throw new AggregateError(errors, "Tool connection health checks could not settle");
     },
     hasPending: async () => dirty.size > 0,

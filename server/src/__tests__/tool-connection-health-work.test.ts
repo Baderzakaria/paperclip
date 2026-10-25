@@ -136,7 +136,10 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
   });
   it("drains more than one due page without repeatedly checking completed rows", async () => {
     for (let i = 0; i < 30; i++) await connection();
+    const probedAt: number[] = [], performProbe = probe.getMockImplementation()!;
+    probe.mockImplementation(async (id: string) => { probedAt.push(Date.now()); return performProbe(id); });
     await start(); await checked(30);
+    expect(probedAt[25] - probedAt[24]).toBeLessThan(5_000);
     expect(new Set(probe.mock.calls.map(([id]) => id)).size).toBe(30);
   });
   it("checks the first connection created by the real API service after setup commits", async () => {
@@ -162,6 +165,25 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await idleAt(stored.healthCheckedAt!.getTime() + 900_000);
     expect(requests).toHaveBeenCalledOnce();
     await tools.archiveConnection(row.id, companyId); await quiet();
+  });
+
+  it("checks a quiet company in the first batch despite another company's unchecked backlog", async () => {
+    for (let index = 0; index < 30; index++) await connection({}, false);
+    const otherId = randomUUID();
+    await db.insert(companies).values({ id: otherId, name: "Quiet health", issuePrefix: `Q${otherId.slice(0, 6)}` });
+    const [app] = await db.insert(toolApplications).values({ companyId: otherId, name: "Quiet health", type: "mcp_http" }).returning();
+    try {
+      const [other] = await db.insert(toolConnections).values({
+        companyId: otherId, applicationId: app.id, name: "Quiet", uid: randomUUID(), transport: "mcp_remote",
+        status: "active", enabled: true, healthCheckedAt: new Date(Date.now() - 901_000),
+      }).returning();
+      await start();
+      expect(probe).toHaveBeenCalledTimes(25);
+      expect(probe.mock.calls.map(([id]) => id)).toContain(other.id);
+    } finally {
+      await coordinator?.stop(); coordinator = undefined;
+      await db.delete(companies).where(eq(companies.id, otherId));
+    }
   });
 
   it("continues another company's checks when one scope cannot refresh", async () => {

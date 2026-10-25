@@ -1,3 +1,4 @@
+import { startToolHealthWorker } from "./helpers/tool-health-worker.js";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { randomUUID } from "node:crypto";
 import { and, eq, inArray, sql } from "drizzle-orm";
@@ -345,6 +346,7 @@ describeEmbeddedPostgres("access service", () => {
       credentialPolicy: "per_user",
       status: "active",
       enabled: true,
+      healthCheckedAt: new Date(),
     }).returning().then((rows) => rows[0]!);
     const definition = await db.insert(userSecretDefinitions).values({
       companyId: company.id,
@@ -375,9 +377,15 @@ describeEmbeddedPostgres("access service", () => {
       agentId: agent.id,
       createdByUserId: member.principalId,
     });
-    await accessService(db).archiveMember(company.id, member.id, {
-      reassignment: { assigneeUserId: owner.principalId },
-    });
+    const health = await startToolHealthWorker(db, company.id);
+    try {
+      await health.expectDeadline(connection.healthCheckedAt!.getTime() + 900_000);
+      await accessService(db).archiveMember(company.id, member.id, {
+        reassignment: { assigneeUserId: owner.principalId },
+      });
+      await health.expectDeadline(null);
+      await health.expectQuiet();
+    } finally { await health.stop(); }
 
     expect(await db.select().from(connectionGrantDelegations)).toHaveLength(0);
     expect(await db.select().from(connectionGrantMembers)).toHaveLength(0);
