@@ -34,6 +34,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await db.insert(plugins).values({ id: pluginId, pluginKey: pluginId, packageName: pluginId, version: "1.0.0", manifestJson: {} as never });
     await Promise.all(Array.from({ length: 6 }, () => db.execute(sql`select pg_sleep(0.01)`)));
     vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"], shouldAdvanceTime: true });
+    vi.setSystemTime(new Date("2026-10-25T12:10:00.000Z"));
   });
   afterEach(async () => {
     await scheduler?.stop(); await coordinator?.stop(); scheduler = undefined; coordinator = undefined;

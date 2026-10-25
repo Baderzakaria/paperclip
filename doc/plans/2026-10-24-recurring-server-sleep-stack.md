@@ -1835,3 +1835,13 @@ settlement. The new source guard excludes this duty from periodic maintenance.
 Full local acceptance, remote review/checks and publication are pending here.
 This supersedes the audit-only slice-32 status above. All older stack gates and
 every remaining original obligation remain required; no PR is merged.
+
+Slice 32 is now draft [#17651](https://github.com/paperclipai/paperclip/pull/17651).
+Initial workspace types/build pass; full chat/startup acceptance passes 1,511 of
+1,512, with a prior retry-notice test fake-clock CONNECT_TIMEOUT retained and
+corrected. Initial CI passes 51 gates but fails a plugin test at a cron boundary
+and its aggregate. A controlled timestamp diagnostic establishes an additional
+owed cron occurrence; fixing that fixture clock passes all 28 plugin tests.
+Thirteen selected chat lifecycle cases pass after the retry-notice wait fix.
+Initial Greptile is 5/5 without findings. Fresh full acceptance and corrected-head
+remote gates remain required; see the slice-32 audit for all retained failures.

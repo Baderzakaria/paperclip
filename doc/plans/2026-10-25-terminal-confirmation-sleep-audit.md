@@ -175,3 +175,43 @@ process loss.
   concurrency test was added. A final typecheck is still required.
 - Quiet assertions advance 120 seconds and count root database select/transaction
   calls after startup and settlement. They do not establish provider suspension.
+
+## Broad verification and test-clock corrections
+
+At implementation head `aeaaed7b3e17e1377433165a38fef558acacb631`, workspace
+`pnpm -r typecheck` and `pnpm build` passed. The fresh full chat/startup run passed
+1,511 of 1,512 tests in 450.49 seconds (`/tmp/sleep32-full-chat.log`, database
+`paperclip_sleep32_full_20261025_test`). Every new confirmation test passed. The
+old failed-retry notice test's disabled case captured a real
+`CONNECT_TIMEOUT localhost:55438` while its result wait advanced fake time by
+30 seconds during DB work. The prior slice had corrected a different wait loop;
+this remaining jump is now 10ms, with explicit advancement to the saved resume
+deadline. Strict error and quiet assertions remain.
+
+Initial remote CI passed 51 checks but failed server shard 4/12 and the dependent
+aggregate. The failed test was `plugin-scheduled-work.test.ts`, independent jobs
+while completion persistence is unavailable: it expected two runs and observed
+four. Direct job log: `/tmp/sleep32-ci-server4-direct.log`, run 40228214324,
+job 121274198575. A controlled test clock at 19:59:55 reproduced an extra run
+(`/tmp/sleep32-plugin-hour-boundary-before.log`). Added diagnostic timestamps
+showed the same job's original owed timestamp at 19:59:54 and another legitimate
+cron occurrence at 20:00:00, rather than replay of one occurrence
+(`/tmp/sleep32-plugin-hour-boundary-diagnostic.log`). The CI log did not retain
+those per-run scheduled timestamps; the controlled reproduction establishes the
+failure mechanism, not every timing detail of that CI execution.
+
+The final plugin correction fixes its test clock at 12:10:00 before each case.
+An intermediate experiment also reduced its wait steps to 10ms; that prevented
+its existing 30-second startup/retry deadlines from being reached and cascaded
+into fixture cleanup failures (27 plugin cases failed in
+`/tmp/sleep32-check-fixes.log`). Those step changes were reverted. The same
+combined run passed all 13 selected chat lifecycle cases, including the five
+corrected retry-notice cases. The final one-line plugin clock fix passes all 28
+plugin scheduling tests on fresh `paperclip_sleep32_plugin_fixed_20261025_test`
+(`/tmp/sleep32-plugin-fixed.log`). No production scheduling code was changed for
+these two test failures. Earlier databases and logs are retained.
+
+The initial implementation received Greptile 5/5 with no inline findings. The
+corrected head still requires a fresh full chat/startup run, final typecheck,
+and new remote checks/review. No unchanged-job retry was used. The PR is
+[#17651](https://github.com/paperclipai/paperclip/pull/17651), still draft.

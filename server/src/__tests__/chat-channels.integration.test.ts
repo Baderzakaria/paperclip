@@ -62975,6 +62975,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         await vi.waitFor(() => expect(idleWorkSnapshot().active).toBe(0));
         expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(0);
         await quiet(); canRun = true;
+        if (coordinator.nextWakeAt() !== null) await vi.advanceTimersByTimeAsync(Math.max(0, coordinator.nextWakeAt()! - Date.now()));
         if (mode === "stopped") {
           await context.service.processPublicationMaintenance();
           expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(0);
@@ -62984,7 +62985,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         }
       }
       await vi.waitFor(async () => {
-        await vi.advanceTimersByTimeAsync(30_000);
+        await vi.advanceTimersByTimeAsync(10);
         expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toEqual([expect.objectContaining({
           payload: mode === "disabled"
             ? { text: "This retry was not started. Open the task in Paperclip for details.", progressState: "failed" }
