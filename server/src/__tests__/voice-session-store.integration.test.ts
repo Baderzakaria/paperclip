@@ -865,6 +865,20 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       expect(f.transport.sendCallMessage).not.toHaveBeenCalled(); await worker.quiet(); expect(worker.onError).not.toHaveBeenCalled();
     } finally { await worker.coordinator.stop(); vi.useRealTimers(); }
   });
+  it("retains phone reply work after a failed state read and retries without intervening scans", async () => {
+    const f = await pushFixture();
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    const transaction = vi.spyOn(db, "transaction").mockRejectedValueOnce(new Error("reply database unavailable"));
+    const worker = await replyWorker(f);
+    transaction.mockRestore();
+    try {
+      expect(worker.onError).toHaveBeenCalledOnce(); expect(f.transport.sendCallMessage).not.toHaveBeenCalled();
+      const retryAt = worker.coordinator.nextWakeAt()!;
+      expect(retryAt).toBeGreaterThan(Date.now() + 20_000); await worker.quiet(10_000);
+      await vi.advanceTimersByTimeAsync(retryAt - Date.now()); await worker.settled();
+      expect(f.transport.sendCallMessage).toHaveBeenCalledOnce(); expect(worker.onError).toHaveBeenCalledOnce(); await worker.quiet();
+    } finally { transaction.mockRestore(); await worker.coordinator.stop(); vi.useRealTimers(); }
+  });
   it("notifies phone questions once and waits for authorized retrieval before later answers", async () => {
     const f = await pushFixture(), interactionId = randomUUID();
     await db.insert(issueThreadInteractions).values({id: interactionId, companyId: f.companyId, issueId: f.issueId, kind: "ask_user_questions", status: "pending", addresseeUserId: f.callerId, effectiveResolverPolicy: "addressee_only", payload: {version: 1, questions: [{id: "color", prompt: "Which color?", selectionMode: "single", required: true, options: [{id: "cobalt", label: "Cobalt"}]}]}});

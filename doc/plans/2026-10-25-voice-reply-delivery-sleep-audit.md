@@ -194,3 +194,12 @@ PR CI/reviews remain required. The local all-suite command has the previously
 recorded embedded-PostgreSQL initialization limitation; targeted database suites
 run on real isolated PostgreSQL instead. Do not count skipped or uninitialized
 database tests as passes.
+
+The parent recovery suite passed all 11 tests on its isolated database. The new
+reply-state read failure case also passed: the worker keeps its retry, performs
+no SQL during backoff, and sends once after recovery. Together with the full run,
+this verifies 108 voice cases, 16 startup cases, 11 parent recovery cases, and 651
+shared-consumer cases (786 selected tests). Workspace typecheck and build passed.
+The final added failure case changed tests only after the typecheck; the workspace
+build compiled the current tree. No production changes followed the full run.
+Remote CI/review remains pending until this branch is published.

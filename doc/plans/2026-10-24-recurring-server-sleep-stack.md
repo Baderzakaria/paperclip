@@ -1255,3 +1255,13 @@ was stopped after repeated embedded PostgreSQL setup failures, not counted as a
 pass. Slice 22 owns voice reply delivery and begins with the multipart/outcome
 policy and publication-settlement producer audit. See
 [reply delivery audit](2026-10-25-voice-reply-delivery-sleep-audit.md).
+
+Slice 22 now implements voice reply delivery from committed changes and saved
+retry/dispatch deadlines. The periodic reply scan and pre-publication direct push
+are removed. Real normal/operator publication tests prove the final-commit wake;
+turning that notification off reproduces zero delivered replies. The branch has
+786 selected passing tests across isolated voice, recovery, startup, and shared
+consumers, plus workspace typecheck/build. See the reply audit for retained
+fixture failures and local full-suite infrastructure limitations. Publication and
+latest-head review/check acceptance remain outstanding. Inbound admission cleanup,
+inbound history retention, and call reports remain separate next slices.
