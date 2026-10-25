@@ -19,6 +19,7 @@ type ProjectionState = {
   agent?: Pick<typeof agents.$inferSelect, "status" | "pauseReason">;
   projectAccessAllowed?: boolean;
   projectAccessProjectId?: string | null;
+  workspaceSelectionAvailable?: boolean;
   project?: Pick<typeof projects.$inferSelect, "pausedAt" | "pauseReason">;
   company?: Pick<typeof companies.$inferSelect, "status" | "pauseReason">;
   paused: boolean;
@@ -55,6 +56,8 @@ export function projectTaskInterruption(issue: ProjectionIssue, input: Projectio
   const deniedProject = deniedProjectId(issue, run);
   let projectAccess: TaskInterruptionPresentation["projectAccess"];
   if (deniedProject !== undefined) {
+    // Permissions cannot repair a stale or unavailable workspace selection.
+    if (input.workspaceSelectionAvailable === false) return { ...base, state: "failed" };
     const ready = input.projectAccessAllowed === true;
     const projectId = input.projectAccessProjectId === undefined ? deniedProject : input.projectAccessProjectId;
     projectAccess = { agentId: run.agentId!, projectId: projectId === issue.projectId ? projectId : null, ready };
@@ -152,8 +155,9 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
     const denied = required?.projectIds.filter(projectId => currentAccess.get(`${issue.assigneeAgentId}:${projectId}`) !== true);
     result.set(issue.id, projectTaskInterruption(issue, {
       run: runMap.get(issue.id), action: actionMap.get(issue.id), wait: waitMap.get(issue.id),
-      projectAccessAllowed: required?.available === true && denied?.length === 0,
+      projectAccessAllowed: denied?.length === 0,
       projectAccessProjectId: denied?.includes(issue.projectId ?? "") ? issue.projectId : null,
+      workspaceSelectionAvailable: required?.available ?? false,
       agent: agentMap.get(issue.assigneeAgentId ?? ""), project: projectMap.get(issue.projectId ?? ""),
       company: companyRows[0], paused: pauses.has(issue.id), approval: approvalsSet.has(issue.id),
     }));

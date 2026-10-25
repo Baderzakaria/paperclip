@@ -88,7 +88,9 @@ describe("additive project access", () => {
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId))).toHaveLength(1);
     if (repair === "pending") {
       await db.update(issues).set({ workspaceBindingRevision: 2 }).where(eq(issues.id, f.issue.id));
-      expect(await taskInterruptionPresentation(db, moved!)).toMatchObject({ canRetry: false, projectAccess: { ready: false } });
+      const stale = await taskInterruptionPresentation(db, moved!);
+      expect(stale).toMatchObject({ state: "failed", canRetry: false, userAction: null });
+      expect(stale).not.toHaveProperty("projectAccess");
     }
   });
 
@@ -107,7 +109,9 @@ describe("additive project access", () => {
     await expect(service.applyPendingTaskWorkspaceSelection({ companyId: f.companyId, issueId: f.issue.id,
       runId: f.runId, actor: { type: "agent", source: "agent_key", agentId: f.agentId, companyId: f.companyId } }))
       .rejects.toThrow("Workspace is unavailable or inaccessible");
-    expect(await taskInterruptionPresentation(db, task!)).toMatchObject({ canRetry: false, projectAccess: { ready: false } });
+    const archived = await taskInterruptionPresentation(db, task!);
+    expect(archived).toMatchObject({ state: "failed", canRetry: false, userAction: null });
+    expect(archived).not.toHaveProperty("projectAccess");
   });
 
   it.each(["denied_project", "foreign_company"] as const)("retains the %s gate on a bound workspace even when its source is allowed", async boundary => {
@@ -119,8 +123,14 @@ describe("additive project access", () => {
       name: "Retained files", cwd: "/tmp/project-access-bound", mode: "isolated_workspace", strategyType: "git_worktree" }).returning();
     const [task] = await db.update(issues).set({ projectId: f.selected[0]!.id, projectWorkspaceId: source!.id,
       executionWorkspaceId: workspace!.id }).where(eq(issues.id, f.issue.id)).returning();
-    expect(await taskInterruptionPresentation(db, task!)).toMatchObject({ canRetry: false,
-      userAction: "project_access", projectAccess: { ready: false, projectId: null } });
+    const blocked = await taskInterruptionPresentation(db, task!);
+    if (boundary === "denied_project") {
+      expect(blocked).toMatchObject({ canRetry: false,
+        userAction: "project_access", projectAccess: { ready: false, projectId: null } });
+    } else {
+      expect(blocked).toMatchObject({ state: "failed", canRetry: false, userAction: null });
+      expect(blocked).not.toHaveProperty("projectAccess");
+    }
   });
 
   it("preserves containment, audits concurrent additions, and changes the persisted denial into an explicit retry", async () => {

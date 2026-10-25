@@ -902,7 +902,9 @@ task's current organizational project and selected workspace source, including
 a valid pending selection. Moving the task to an allowed project does not clear
 a retained source's access requirement. Existing setup failures with the exact
 project-boundary denial also receive the explanation on reload, without assuming
-that the task's current project caused the historical failure.
+that the task's current project caused the historical failure. A stale or
+unavailable workspace selection stays in the non-retryable failure state; it
+does not ask the user to grant project access that cannot repair the selection.
 
 Cross-issue writes are contained per heartbeat run. An agent-authored comment
 may wake the target assignee, including an explicit `resume: true` comment on a
