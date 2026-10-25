@@ -136,3 +136,10 @@ route suite separately exposed cold imports inside timed tests. Moving those
 imports to suite loading preserves assertions and prevents timed-out requests
 from leaking into later mock state. The watchdog fixture collision from CI uses
 monotonic identifiers instead; its 19 real-PostgreSQL cases pass.
+
+The next CI run passed the security gate and the two originally failing shards.
+Its remaining server shard caught a historical cleanup test checking 33 provider
+inspections after only 32 had completed. The test advanced fake time before the
+previous asynchronous page had necessarily published its next deadline. It now
+waits for all 33 inspections, then retains the zero-further-work assertions. All
+14 environment cleanup cases pass on real PostgreSQL; production code is unchanged.
