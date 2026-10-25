@@ -1,8 +1,9 @@
 # Native chat progress: sleep migration audit
 
 Parent: #17606 at `ed76256b979541b962fa784016a550c32920d670`.
-Branch: `codex/sleep-29-native-chat-progress`.
-Status: implementation and focused PostgreSQL acceptance complete; remote acceptance pending; browser acceptance passed before the final base-publication hook. This is not a deployed sleep claim.
+Branch: `codex/sleep-29-native-chat-progress`. PR: #17639.
+Status: implementation, focused PostgreSQL acceptance, and browser acceptance
+complete; exact-head remote checks and review pending. This is not a deployed sleep claim.
 
 ## Duty and owner
 
@@ -123,7 +124,10 @@ and an eligible later event. A query-count guard bounds failure of the old code.
   cases pass after the lifecycle producer signals native progress.
 - Browser acceptance: all 16 `agent-chat-projects.spec.ts` cases pass, log
   `/tmp/sleep29-app-e2e.log`, fresh isolated database, port 32659. This run
-  precedes the final base-publication hook; a final run remains pending.
+  precedes the final base-publication hook. `/tmp/sleep29-final-e2e.log` then
+  passes all 16 cases at committed implementation `bcf2f38ff5` with a second
+  fresh isolated database. `/tmp/sleep29-final-typecheck.log` also passes with
+  the final hook. No retries were needed in either browser run.
 
 PostgreSQL is external and isolated because embedded PostgreSQL is unavailable
 on this host. Worker fixtures clean their own companies. The reused chat fixture
@@ -137,8 +141,7 @@ are controlled fixtures, not live Slack/Telegram/Discord accounts.
 Process-local notifications retain the single active writer model. Independent
 SQL writers and other processes need a wake integration. No Cloud sleep gate or
 external alarm coverage changes here. An internal deadline cannot wake stopped
-compute. Browser acceptance, exact-head CI, and review remain required before
-this slice is ready. The whole stack remains unmerged.
+compute. Exact-head CI and review remain required before this slice is ready. The whole stack remains unmerged.
 
 Fetched master is `19ec787e5b` (not replayed into this stack yet). Newly landed
 #17616 expands native-harness backup expiration to continuity/quarantine evidence
