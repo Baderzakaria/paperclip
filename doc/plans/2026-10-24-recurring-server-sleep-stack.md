@@ -1390,3 +1390,15 @@ typecheck and build pass; publication and remote acceptance remain open.
 #17590 has Greptile 5/5; CI is running. #17586 has new review findings for writer
 support and report-query indexing. Fix at that parent and propagate before
 acceptance. All original remaining work and previous unresolved findings remain.
+
+
+Teams attempts are published as [#17592](https://github.com/paperclipai/paperclip/pull/17592).
+Voice report review repair 94c60683b8 adds the bounded report-window index and
+precise keyset pagination, with the single-active-writer contract explicit. The
+20,001-old-row cost regression failed before repair, then all 14 report tests,
+138 full voice/wiring cases and workspace types/build passed. Both review threads
+are resolved. Consent #17590 incorporates it at e501d6c99d; both combined Teams
+children pass 30 report/startup tests after propagation. Fresh remote gates still
+apply. The next new reason is chat run-milestone projection, separate from wake
+notices, terminal confirmations, interaction continuations and GitHub recovery.
+The entire original inventory and older unresolved findings remain open.

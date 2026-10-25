@@ -91,3 +91,12 @@ explicit single-active-process writer support and indexed report reconstruction.
 They require owning-parent review/repair and propagation before stack acceptance.
 Older #17490 E2E and #17580 deletion-policy findings and final master reconciliation
 remain open. No stack PR is merged or the full objective complete.
+
+
+Publication: [#17592](https://github.com/paperclipai/paperclip/pull/17592), initial
+head 6f2f3951ca. Parent voice-report findings are repaired at 94c60683b8 and both
+review threads resolved. The partial index and precise pagination are propagated
+through consent parent e501d6c99d. Thirty report-worker/startup cases pass on each
+combined Teams child; logs /tmp/sleep26-parent-review-tests.log and
+/tmp/sleep27-parent-review-tests.log. Snapshot retention remains five. Fresh
+remote gates on the propagated heads remain required; older stack findings remain.
