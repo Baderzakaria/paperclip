@@ -397,3 +397,41 @@ conversation/configuration, question claim/retry and monitor/semantic receipt
 writers from the dependency table remain. Production still uses the periodic
 combined projector; the new worker is not registered yet. No original inventory
 or PR-stack acceptance requirement is removed by this checkpoint.
+
+
+## Retry promotion and recovery admission checkpoint
+
+The run-dispatch PostgreSQL adapter now signals before due-retry promotion,
+suppressed-retry cancellation, and stale-run cancellation. Its existing locked
+state/gate checks still own authorization and no-op exits. Promotion passes the
+already-resolved issue identity to its private writer; no application port or
+provider contract changes. Missing issue identity uses company reconstruction.
+Repeated attempts after settlement do not schedule another milestone sweep.
+
+The wake-queue transaction now signals before deferred promotion inserts its
+run and before immediate recovery inserts its wake/run pair. The existing issue
+lock, deferred claim, run linkage, and execution lock remain atomic. Tests use
+these real adapter ports; external host dependencies return fixture values and
+no provider execution is started. Notice creation occurs only after commit.
+
+Evidence:
+
+- `/tmp/sleep28-run-dispatch-before.log`: both real retry paths committed their
+  expected status but failed the missing-notice assertion. The first stale-run
+  fixture failed earlier because chat comments intentionally bypass terminal
+  task status; no production policy was changed to accommodate that fixture.
+- `/tmp/sleep28-staleness-corrected-before.log`: a max-turn continuation correctly
+  cancelled but its terminal notice was absent before the signal was added.
+- `/tmp/sleep28-wake-recovery-before.log`: both deferred and immediate admission
+  created their queued runs but failed the missing-notice assertions.
+- `/tmp/sleep28-recovery-producers-tests.log`: all 166 selected cases pass,
+  comprising 29 milestone worker cases and existing run-dispatch/wake-queue
+  application and run-dispatch policy suites. Earlier 97-case verification
+  overlaps this set and is not an additional unique count.
+- `/tmp/sleep28-recovery-producers-typecheck.log`: server production types pass;
+  test files are excluded from that command. `git diff --check` passes.
+
+Queued-comment changes, raw queue cancellation and wake-receipt writers, native
+review admission acceptance, and remaining dependency producers are still open.
+The periodic combined projector remains in production; this checkpoint does
+not claim slice publication, full-suite/PR acceptance, or instance sleep.

@@ -10,7 +10,8 @@ import { chatRunMilestoneWork } from "../services/chat-run-milestone-work.js";
 import { notifyChatRunMilestones } from "../services/chat-run-milestone-notifications.js";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
 import { questionResponseDeliveryService } from "../services/question-response-delivery.js";
-import { createAdmissionTransactionScope, createWakeAdmissionWriter } from "../modules/wake-queue/adapters/postgres.js";
+import { createRunDispatch } from "../modules/run-dispatch/index.js";
+import { createAdmissionTransactionScope, createPostgresWakeQueueAdapter, createWakeAdmissionWriter } from "../modules/wake-queue/adapters/postgres.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { createHeartbeatQueue } from "../services/heartbeat/queue.js";
 import { createHeartbeatQueueTestDependencies } from "./helpers/heartbeat-queue.js";
@@ -139,6 +140,70 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect((await publications()).map(publication => publication.idempotencyKey).sort()).toEqual([
       `run:${row.id}:failed:${f.endpointId}`, `run:${row.id}:queued:${f.endpointId}`,
     ].sort());
+    await quiet();
+  });
+  it.each(["promote", "suppress"] as const)("wakes when real retry dispatch chooses to %s", async action => {
+    const row = await run(f, { status: "scheduled_retry", runtimeMode: "legacy", scheduledRetryAt: new Date(Date.now() - 1000), scheduledRetryReason: "transient_error" });
+    if (action === "suppress") await db.update(issues).set({ status: "cancelled" }).where(eq(issues.id, f.issueId));
+    await start(); await flush(); expect(await publications()).toEqual([]); await quiet();
+    const dispatch = createRunDispatch(db);
+    const result = await dispatch.promoteScheduledRetry({ companyId: f.companyId, runId: row.id });
+    expect(result.outcome).toBe(action === "promote" ? "promoted" : "gate_suppressed");
+    await flush();
+    expect((await publications()).map(publication => publication.idempotencyKey)).toContain(
+      `run:${row.id}:${action === "promote" ? "queued" : "failed"}:${f.endpointId}`,
+    );
+    await quiet();
+    expect((await dispatch.promoteScheduledRetry({ companyId: f.companyId, runId: row.id })).outcome).toBe("not_promoted");
+    await quiet();
+  });
+  it("wakes when the real staleness gate cancels queued work", async () => {
+    const row = await run(f, { status: "queued", runtimeMode: "legacy", scheduledRetryReason: "max_turns_continuation" });
+    await start(); await flush(); await quiet();
+    await db.update(issues).set({ status: "cancelled" }).where(eq(issues.id, f.issueId));
+    const dispatch = createRunDispatch(db);
+    await dispatch.cancelStaleQueuedRun({ companyId: f.companyId, runId: row.id, expectedStatus: "queued" });
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, row.id)))[0].status).toBe("cancelled");
+    await flush();
+    expect((await publications()).map(publication => publication.idempotencyKey)).toContain(`run:${row.id}:failed:${f.endpointId}`);
+    await quiet();
+    await dispatch.cancelStaleQueuedRun({ companyId: f.companyId, runId: row.id, expectedStatus: "queued" });
+    await quiet();
+  });
+  it.each(["deferred", "immediate"] as const)("wakes when real %s recovery admits chat work", async kind => {
+    const finishing = await run(f, { status: "succeeded", runtimeMode: "legacy", finishedAt: new Date(),
+      contextSnapshot: { issueId: f.issueId, source: "issue_assigned" },
+    });
+    const wakeId = randomUUID();
+    if (kind === "deferred") await db.insert(agentWakeupRequests).values({ id: wakeId, companyId: f.companyId, agentId: f.agentId,
+      source: "on_demand", status: "deferred_issue_execution", payload: { issueId: f.issueId },
+    });
+    const adapter = createPostgresWakeQueueAdapter(db, {
+      resolveResponsibleUserId: async () => f.userId,
+      getRoutineEnv: async () => ({ routineId: null, env: null, responsibleUserId: null }),
+      resolveSessionBeforeForWakeup: async () => null,
+    });
+    await start(); await flush(); expect(await publications()).toEqual([]); await quiet();
+    let admittedId: string | undefined;
+    await adapter.withIssueExecutionLock({ companyId: f.companyId, runId: finishing.id, now: new Date() }, async (locked, ports) => {
+      const input = { companyId: f.companyId, issue: locked.primaryIssue, finishingRun: locked.run,
+        contextSnapshot: runValues().contextSnapshot, responsibleUserId: f.userId, sessionBefore: null, now: new Date(),
+      };
+      const agent = { id: f.agentId, companyId: f.companyId, name: "Maya", invokable: true };
+      if (kind === "deferred") {
+        expect(await ports.transaction.claimDeferredWakeForPromotion({ companyId: f.companyId, wakeId, now: new Date() })).toBe(true);
+        admittedId = (await ports.transaction.finalizePromotedWake({ ...input, wakeId, deferredAgent: agent,
+          reason: "issue_execution_promoted", source: "on_demand", triggerDetail: null, payload: {},
+        })).id;
+      } else {
+        admittedId = (await ports.transaction.queueImmediateRecoveryRun({ ...input, recoveryAgent: agent, reason: "issue_execution_recovery" })).id;
+      }
+      expect(await publications()).toEqual([]);
+      return { outcome: { kind: "released" }, postCommitEffects: [] };
+    });
+    expect(admittedId).toBeDefined();
+    await flush();
+    expect((await publications()).map(publication => publication.idempotencyKey)).toContain(`run:${admittedId}:queued:${f.endpointId}`);
     await quiet();
   });
   async function queue() {

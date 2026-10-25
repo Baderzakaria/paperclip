@@ -472,6 +472,7 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
     },
 
     async finalizePromotedWake(input) {
+      await notifyChatRunMilestones(tx, { companyId: input.companyId, issueId: input.issue.id });
       const newRun = await tx
         .insert(heartbeatRuns)
         .values({
@@ -688,6 +689,7 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
       sessionBefore,
       now,
     }) {
+      await notifyChatRunMilestones(tx, { companyId, issueId: issue.id });
       const wakeupRequest = await tx
         .insert(agentWakeupRequests)
         .values({

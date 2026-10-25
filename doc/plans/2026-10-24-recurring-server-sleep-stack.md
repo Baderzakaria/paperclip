@@ -1432,3 +1432,13 @@ The audit records the initial fixture FK failure, exact logs, remaining raw
 cancellation/promotion/receipt writers, and native reviewer acceptance gap.
 Periodic projection remains until producer coverage is complete; no new PR or
 full-goal completion is claimed.
+
+
+Slice 28 retry/recovery checkpoint: due retry promotion, suppressed retry and
+stale-run cancellation, deferred wake promotion and immediate recovery admission
+now signal from their existing transactions. Five real missing-notice regressions
+were reproduced before repair; all 166 selected worker/module/policy cases and
+server production types pass. The slice audit preserves the initial invalid
+staleness fixture and corrected causal evidence. Periodic projection remains
+until all supported producers are covered. Remaining original inventory, open
+PR gates/findings and final master reconciliation are unchanged.
