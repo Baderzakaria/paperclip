@@ -1203,7 +1203,7 @@ all other maintenance reasons remain separate. See
 A failed-scope deadline regression and a real concurrent listener-stop race were
 reproduced and repaired. All 218 selected receiver/startup, Discord, Photon,
 command/delivery and standby cases pass, with workspace typechecking passing.
-Workspace build, publication and fresh remote gates remain open. This is not
+Workspace build also passes; publication and fresh remote gates remain open. This is not
 completion of the slice or the full stack. Master is refreshed at 0d73505098;
 final stack/master reconciliation remains required.
 

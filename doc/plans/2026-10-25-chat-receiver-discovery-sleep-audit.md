@@ -198,7 +198,7 @@ Discord selection includes configuration, credential rotation, pause/resume,
 company deletion, token-loss stop ordering, and existing takeover/admission fences.
 The dedicated real-DB worker takeover test also passes, as do 75 command/delivery/
 standby consumer cases and full workspace typechecking. This is 218 unique selected
-passing cases. Workspace build and remote review/check gates remain pending.
+passing cases. Workspace build passes. Remote review/check gates remain pending.
 The full local test matrix is not claimed: embedded PostgreSQL is unavailable
 on this host, so these database suites use validated disposable external URLs.
 Remote CI must run the full matrix before acceptance.
