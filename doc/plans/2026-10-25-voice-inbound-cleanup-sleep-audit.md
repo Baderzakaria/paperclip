@@ -198,3 +198,23 @@ Parent #17578 at 90caaf3fa9 has all checks terminal with no failures and Greptil
 Paperclip reviewer stopped before completing its turn; do not report a new 5/5
 assessment from that reviewer. The full original migration ledger, #17490 failure,
 and final stack/master reconciliation remain outstanding.
+
+## Migration runner repair after first CI
+
+The initial head 4b4bf2d8af failed database setup. Greptile identified that the
+concurrent 0388 index was missing from the migration runner's top-level set.
+CI production bundle boot and Runner static integration logs independently show
+`CREATE INDEX CONCURRENTLY cannot run inside a transaction block`. The earlier
+SQL application/replay evidence bypassed this application runner and did not
+establish that fresh setup or upgrades could work.
+
+Added a real-PostgreSQL migration regression that creates a disposable database,
+boots all migrations through `applyPendingMigrations`, then simulates an invalid
+concurrent index and replays through two concurrent application migrators. It
+failed with the exact transaction error before the fix. Registering 0388 in the
+existing top-level set makes fresh boot, invalid-index repair, single journal
+record, and repeat replay pass. No migration SQL/history was rewritten.
+Database typecheck and migration numbering/safety checks also pass. Local logs:
+`/tmp/sleep23-migrator-before.log`, `/tmp/sleep23-migrator-after.log`, and
+`/tmp/sleep23-migrator-types.log`. Fresh remote checks remain required; the
+original CI failure is not classified as a flake.
