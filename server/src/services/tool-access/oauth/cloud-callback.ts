@@ -356,7 +356,7 @@ export function createCloudOAuthCallback(db: Db, dependencies: Dependencies) {
           scopes: [...profile.scopes],
         },
       };
-      await notifyToolConnectionHealth(tx, connection.companyId);
+      await notifyToolConnectionHealth(tx, connection);
       [connection] = await tx
         .update(toolConnections)
         .set({

@@ -184,7 +184,7 @@ export function createVercelOAuthCallback(db: Db, dependencies: Dependencies) {
       status: connection.status,
       enabled: connection.enabled,
     };
-    [connection] = await writeToolConnectionHealthChange(db, connection.companyId, tx => tx
+    [connection] = await writeToolConnectionHealthChange(db, connection, tx => tx
       .update(toolConnections)
       .set({
         status: "active",

@@ -324,7 +324,7 @@ export function accessService(db: Db) {
             && grant.credentialSecretRefs.length > 0
             && grant.credentialSecretRefs.every((ref) => !connectionSecretIdsToRemove.has(ref.secretId)),
           );
-          if (!hasUnaffectedActiveGrant) await notifyToolConnectionHealth(tx, companyId);
+          if (!hasUnaffectedActiveGrant) await notifyToolConnectionHealth(tx, { companyId, id: connection.id });
           await tx.update(toolConnections).set({
             credentialRefs,
             credentialSecretRefs,

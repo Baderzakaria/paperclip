@@ -35,7 +35,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     applicationId = app.id;
     probe.mockReset(); probe.mockImplementation(async (id: string) => {
       const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, id));
-      await writeToolConnectionHealthChange(db, connection.companyId, async tx => {
+      await writeToolConnectionHealthChange(db, connection, async tx => {
         await tx.update(toolConnections).set({ healthCheckedAt: new Date(), healthStatus: "ok" }).where(eq(toolConnections.id, id));
       });
       return {};
@@ -51,10 +51,11 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
   });
   afterAll(async () => { await db?.$client.end({ timeout: 1 }); await temporary?.cleanup(); });
   function connection(patch: Partial<typeof toolConnections.$inferInsert> = {}, signal = true) {
+    const id = patch.id ?? randomUUID();
     const insert = async (writer: typeof db) => (await writer.insert(toolConnections).values({
-      companyId, applicationId, name: "Check", uid: randomUUID(), transport: "mcp_remote", status: "active", enabled: true, ...patch,
+      id, companyId, applicationId, name: "Check", uid: randomUUID(), transport: "mcp_remote", status: "active", enabled: true, ...patch,
     }).returning())[0];
-    return signal ? writeToolConnectionHealthChange(db, companyId, insert) : insert(db);
+    return signal ? writeToolConnectionHealthChange(db, { companyId, id }, insert) : insert(db);
   }
   async function start(service = connectionHealthSchedule(db, probe)) {
     coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => !draining, canReconcile: () => true, onError: error => errors.push(error) });
@@ -87,6 +88,71 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect(reads).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled();
     reads.mockRestore(); writes.mockRestore();
     await vi.advanceTimersByTimeAsync(due - Date.now()); await checked();
+  });
+  it("refreshes only the changed connection after real API writes in a large company", async () => {
+    const checkedAt = new Date();
+    const rows = await db.insert(toolConnections).values(Array.from({ length: 205 }, (_, index) => ({
+      companyId, applicationId, name: `Inventory ${index}`, uid: randomUUID(), transport: "mcp_remote" as const,
+      config: { url: "https://health.example.test/mcp" },
+      status: "active" as const, enabled: true, healthCheckedAt: checkedAt,
+    }))).returning();
+    const tools = toolAccessService(db, { remoteHttpEndpointLookup: async () => [{ address: "8.8.8.8", family: 4 }] });
+    const service = tools.scheduledHealth, load = service.load;
+    let returnedRows = 0;
+    service.load = async (...args) => { const result = await load(...args); returnedRows += result.length; return result; };
+    await start(service); await idleAt(checkedAt.getTime() + 900_000);
+    returnedRows = 0;
+    for (const row of rows.slice(0, 5)) {
+      await tools.updateConnection(row.id, { name: `${row.name} changed` });
+      await idleAt(checkedAt.getTime() + 900_000);
+    }
+    expect(returnedRows).toBe(5);
+    expect(probe).not.toHaveBeenCalled();
+  });
+  it("pages startup inventory while retaining every eligible deadline", async () => {
+    const checkedAt = new Date();
+    await db.insert(toolConnections).values(Array.from({ length: 205 }, (_, index) => ({
+      companyId, applicationId, name: `Page ${index}`, uid: randomUUID(), transport: "mcp_remote" as const,
+      status: "active" as const, enabled: true, healthCheckedAt: checkedAt,
+    })));
+    const reads = vi.spyOn(db, "select");
+    const rows = await connectionHealthSchedule(db, probe).load(companyId);
+    expect(rows).toHaveLength(205);
+    expect(new Set(rows.map(row => row.id)).size).toBe(205);
+    expect(reads).toHaveBeenCalledTimes(3);
+    reads.mockRestore();
+  });
+  it("invalidates an application's cached deadlines without removing another application's work", async () => {
+    const checkedAt = new Date();
+    const [otherApp] = await db.insert(toolApplications).values({ companyId, name: "Other app", type: "mcp_http" }).returning();
+    await connection({ healthCheckedAt: checkedAt });
+    const other = await connection({ applicationId: otherApp.id, healthCheckedAt: new Date(checkedAt.getTime() + 60_000) });
+    const service = connectionHealthSchedule(db, probe), load = vi.spyOn(service, "load");
+    await start(service); await idleAt(checkedAt.getTime() + 900_000); load.mockClear();
+    await writeToolConnectionHealthChange(db, { companyId, applicationId }, async tx => {
+      await tx.update(toolApplications).set({ type: "paperclip_plugin" }).where(eq(toolApplications.id, applicationId));
+    });
+    await idleAt(other.healthCheckedAt!.getTime() + 900_000);
+    expect(load).toHaveBeenCalledWith(companyId, undefined, applicationId, expect.any(AbortSignal));
+    expect(load).toHaveBeenCalledTimes(1);
+    await writeToolConnectionHealthChange(db, { companyId, applicationId }, async tx => {
+      await tx.update(toolApplications).set({ type: "mcp_http" }).where(eq(toolApplications.id, applicationId));
+    });
+    await idleAt(checkedAt.getTime() + 900_000);
+    expect(probe).not.toHaveBeenCalled();
+  });
+  it("keeps unrelated deadlines when a connection changes application or is deleted", async () => {
+    const checkedAt = new Date();
+    const first = await connection({ healthCheckedAt: checkedAt });
+    const other = await connection({ healthCheckedAt: new Date(checkedAt.getTime() + 60_000) });
+    const [plugin] = await db.insert(toolApplications).values({ companyId, name: "Excluded app", type: "paperclip_plugin" }).returning();
+    await start(); await idleAt(checkedAt.getTime() + 900_000);
+    await writeToolConnectionHealthChange(db, first, async tx => {
+      await tx.update(toolConnections).set({ applicationId: plugin.id }).where(eq(toolConnections.id, first.id));
+    });
+    await idleAt(other.healthCheckedAt!.getTime() + 900_000);
+    await writeToolConnectionHealthChange(db, other, async tx => { await tx.delete(toolConnections).where(eq(toolConnections.id, other.id)); });
+    await quiet();
   });
   it("keeps disabled, archived, and excluded transports quiet", async () => {
     await connection({ enabled: false }); await connection({ status: "archived" });
@@ -189,7 +255,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
   it("continues another company's checks when one scope cannot refresh", async () => {
     const service = connectionHealthSchedule(db, probe), load = service.load;
     await start(service); await quiet();
-    service.load = async scope => { if (scope === companyId) throw new Error("scope unavailable"); return load(scope); };
+    service.load = async (...args) => { if (args[0] === companyId) throw new Error("scope unavailable"); return load(...args); };
     const otherId = randomUUID();
     await db.insert(companies).values({ id: otherId, name: "Other", issuePrefix: `O${otherId.slice(0, 6)}` });
     const [app] = await db.insert(toolApplications).values({ companyId: otherId, name: "Other health", type: "mcp_http" }).returning();
@@ -225,10 +291,10 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
   it("keeps SDK-only chat mutations quiet and wakes the existing voice obligation", async () => {
     const voice = await connection({ transport: "voice", connectionPurpose: "channel", status: "draft", enabled: false });
     await start(); await quiet();
-    await db.transaction(async tx => { await notifyChatConnectionHealth(tx, { companyId, provider: "slack" }); });
+    await db.transaction(async tx => { await notifyChatConnectionHealth(tx, { companyId, connectionId: voice.id, provider: "slack" }); });
     await quiet();
     await db.transaction(async tx => {
-      await notifyChatConnectionHealth(tx, { companyId, provider: "speko" });
+      await notifyChatConnectionHealth(tx, { companyId, connectionId: voice.id, provider: "speko" });
       await tx.update(toolConnections).set({ status: "active", enabled: true }).where(eq(toolConnections.id, voice.id));
     });
     await checked(); expect(probe.mock.calls[0][0]).toBe(voice.id);
@@ -237,9 +303,9 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     const service = connectionHealthSchedule(db, probe), load = service.load;
     await start(service); await quiet();
     let inserted = false;
-    service.load = async scope => {
-      const rows = await load(scope);
-      if (scope === companyId && !inserted) { inserted = true; await connection(); }
+    service.load = async (...args) => {
+      const rows = await load(...args);
+      if (args[0] === companyId && !inserted) { inserted = true; await connection(); }
       return rows;
     };
     await connection(); await checked(2);

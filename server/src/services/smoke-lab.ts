@@ -691,7 +691,7 @@ export function smokeLabService(db: Db, options: {
     ));
     const now = new Date();
     if (existing) {
-      const [updated] = await writeToolConnectionHealthChange(db, input.companyId, tx => tx.update(toolApplications).set({
+      const [updated] = await writeToolConnectionHealthChange(db, { companyId: input.companyId, applicationId: existing.id }, tx => tx.update(toolApplications).set({
         name: input.name,
         description: input.description,
         type: input.type,
@@ -743,7 +743,8 @@ export function smokeLabService(db: Db, options: {
       lastHealthAt: now,
       updatedAt: now,
     };
-    return writeToolConnectionHealthChange(db, input.companyId, async tx => {
+    const connectionId = existing?.id ?? randomUUID();
+    return writeToolConnectionHealthChange(db, { companyId: input.companyId, id: connectionId }, async tx => {
       const ensureDefaultOrganizationGrant = async (connectionId: string) => {
         const [existingGrant] = await tx.select({ id: connectionGrants.id }).from(connectionGrants).where(and(
           eq(connectionGrants.companyId, input.companyId),
@@ -769,6 +770,7 @@ export function smokeLabService(db: Db, options: {
         return { row: updated ?? existing, created: false };
       }
       const [created] = await tx.insert(toolConnections).values({
+        id: connectionId,
         companyId: input.companyId,
         name: input.name,
         uid: `smoke-lab/${input.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")}`,
@@ -968,7 +970,7 @@ export function smokeLabService(db: Db, options: {
     if (!connection || !httpSidecar) return;
     const sidecarUrl = httpSidecar.url;
     const now = new Date();
-    await writeToolConnectionHealthChange(db, companyId, tx => tx.update(toolConnections).set({
+    await writeToolConnectionHealthChange(db, connection, tx => tx.update(toolConnections).set({
       config: {
         ...asRecord(connection.config),
         url: `${sidecarUrl}/mcp`,

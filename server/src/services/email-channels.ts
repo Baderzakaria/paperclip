@@ -914,7 +914,7 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
             updatedAt: now,
           })
           .where(eq(chatEndpoints.id, endpoint.id));
-        await notifyToolConnectionHealth(tx, endpoint.companyId);
+        await notifyToolConnectionHealth(tx, { companyId: endpoint.companyId, id: endpoint.connectionId });
         await tx
           .update(toolConnections)
           .set({ status: "active", enabled: true, healthStatus: "ok" })
@@ -1986,7 +1986,7 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
         .update(chatEndpoints)
         .set({ lastError: null, healthMessage: "Connected" })
         .where(eq(chatEndpoints.id, endpoint.id));
-      await writeToolConnectionHealthChange(db, endpoint.companyId, tx => tx
+      await writeToolConnectionHealthChange(db, { companyId: endpoint.companyId, id: endpoint.connectionId }, tx => tx
         .update(toolConnections)
         .set({
           healthStatus: "ok",
@@ -2094,7 +2094,7 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
     });
   }
   async function markError(endpoint: Endpoint, error: string) {
-    await writeToolConnectionHealthChange(db, endpoint.companyId, tx => tx
+    await writeToolConnectionHealthChange(db, { companyId: endpoint.companyId, id: endpoint.connectionId }, tx => tx
       .update(toolConnections)
       .set({
         healthStatus: "degraded",
@@ -2364,7 +2364,7 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
         .update(chatEndpoints)
         .set({ status: "paused" })
         .where(eq(chatEndpoints.id, endpoint.id));
-      await notifyToolConnectionHealth(tx, endpoint.companyId);
+      await notifyToolConnectionHealth(tx, { companyId: endpoint.companyId, id: endpoint.connectionId });
       await tx
         .update(toolConnections)
         .set({ enabled: false, status: "disabled" })
@@ -2458,7 +2458,7 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
             updatedAt: new Date(),
           })
           .where(eq(chatEndpoints.id, id));
-        await notifyToolConnectionHealth(tx, endpoint.companyId);
+        await notifyToolConnectionHealth(tx, { companyId: endpoint.companyId, id: endpoint.connectionId });
         await tx
           .update(toolConnections)
           .set({

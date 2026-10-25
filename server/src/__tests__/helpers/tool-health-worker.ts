@@ -16,7 +16,7 @@ export async function startToolHealthWorker(db: Db, companyId: string, now = new
   });
   try {
     await registerToolConnectionHealthWork(coordinator, {
-      load: scope => schedule.load(scope ?? companyId), check: schedule.check,
+      load: (scope, connectionId, applicationId, signal) => schedule.load(scope ?? companyId, connectionId, applicationId, signal), check: schedule.check,
     }, () => true).ready;
   } catch (error) {
     await coordinator.stop();

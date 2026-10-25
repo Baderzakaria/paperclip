@@ -1072,3 +1072,14 @@ batching cases pass; server types pass. Propagate the parent and apply the same
 bounded continuation to Discord, with its own regression. The Discord review also
 requests preserving queued scopes after malformed hints and broader producer
 coverage. Its initial head has Greptile 5/5 but these findings remain open.
+
+
+Health security repair: five real connection API updates in a 205-connection
+company reproduced 1,025 inventory rows. Individual writers now signal their
+connection IDs; application writers signal their application IDs. Genuine broad
+loads use 100-row UUID pages. The regression now reads exactly five rows, with
+application invalidation and unrelated-deadline preservation verified. All 706
+targeted health/producer/consumer cases and server typecheck/build pass. Publish
+the repair to #17554, propagate through company-deletion #17561 into Discord
+#17557, and require fresh remote gates. No PR in this stack is merged. The next
+new owner remains chat runtime discovery; the full remaining ledger is unchanged.
