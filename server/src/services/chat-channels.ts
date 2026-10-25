@@ -3354,7 +3354,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     scheduleGitHubMaintenance();
     // Normal inbound notices are commit-driven. Failed-run retries retain their
     // separate maintenance owner until its own producer audit is complete.
-    await enqueueFailedChatRetryPublications();
+    await enqueueFailedChatRetryPublications(50);
     await reconcileTerminalConfirmationActions(limit);
     await processPendingInteractionWakeups(limit);
   }

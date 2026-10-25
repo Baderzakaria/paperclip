@@ -289,3 +289,11 @@ Preserved failures and fixture corrections:
 
 Workspace typecheck/build, full acceptance after startup wiring, PR publication,
 and latest-head CI/review are still required before this slice is ready.
+
+
+The first workspace-wide typecheck and build at `d4f7426bb4` found a missing
+required limit in the newly separated failed-retry maintenance call (TS2554).
+The corrected call passes 50, preserving the old combined wrapper's default.
+The full chat run at that revision was deliberately interrupted (exit 130) after
+this compiler evidence; it is not acceptance. Its log remains at
+`/tmp/sleep30-wired-full-chat.log`. Fresh verification is required after repair.
