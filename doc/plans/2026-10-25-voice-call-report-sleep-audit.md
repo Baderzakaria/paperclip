@@ -3,7 +3,7 @@
 Baseline: voice history retention PR #17583 at
 9c38ddfe5349ef1872306a91c7e4c5c1bc083259.
 Branch: codex/sleep-25-voice-call-reports.
-Status: owner audit; implementation, verification and publication remain required.
+Status: implementation and local acceptance complete; publication and remote gates pending.
 
 ## The obligation
 
@@ -97,3 +97,45 @@ setup failure and regression/repair evidence remain in its audit.
 
 The complete original recurring-server ledger, older #17490 E2E failure,
 remaining PR reviews and final master/stack reconciliation remain required.
+
+## Implementation and acceptance, 2026-10-25
+
+The parent retention repair at `360e1253a0` is incorporated. The report owner now
+loads scoped, paged obligations, claims each due attempt before network I/O, and
+uses attempt/deadline ownership for settlement. Report writes notify the same
+shared coordinator. Existing voice-change producers and the explicit reply
+`call_ended` path activate it. App startup registers it once and the final voice
+lane is removed from the chat interval. No schema or Cloud eligibility change.
+
+The saved report worker suite passed 13 tests. Initial full integration acceptance
+had 136 passes and one failure: an unlocked existing transcript still could not
+update because the copied projection omitted the document's base revision ID.
+The repair supplies the observed `latestRevisionId`, preserving document locks
+and conflict checks. A focused rerun against the already-used full-suite database
+verified the document update but failed its global provider-call count because
+133 retained fixture calls were eligible; this is not accepted as a clean run.
+Final full acceptance uses a new database migrated through the application
+migrator. Results are recorded below when terminal.
+
+Earlier worker fixture failures (assignedAgentId vs agentId) and the production
+missing `or` import were repaired before the 13-case worker pass. Source wiring
+assertions still expecting reconcileMaintenance were updated to require its
+removal. Full-suite tests remain Vitest coverage; server tsconfig excludes tests,
+so production typecheck is not described as test typechecking.
+
+Parent #17583 at `360e1253a0` has a failed server shard: the Discord rollback/drain
+quiet test observes one scoped select after its nextWakeAt becomes null. The job
+log is retained at `/tmp/sleep24-review-ci-failure.log`. This needs investigation
+at its owning earlier slice and propagation; it is not silently retried or
+claimed green. Parent #17580 also has two review findings about cleanup latency
+and deletion with unconfirmed provider cleanup. These remain open. The older
+#17490 E2E failure and final master reconciliation remain part of completion.
+
+Final local acceptance after the revision fix: 137 full voice/app wiring cases
+passed on `paperclip_sleep25_projection_fixed_20261025_test`; 37 report/cleanup/
+retention worker cases passed serially on the isolated worker database. Workspace
+`pnpm -r typecheck` and `pnpm build` passed. Logs: `/tmp/sleep25-voice-fixed-acceptance.log`,
+`/tmp/sleep25-voice-workers-acceptance.log`, `/tmp/sleep25-workspace-types.log`,
+and `/tmp/sleep25-workspace-build.log`. These 174 selected cases do not claim the
+entire `pnpm test:run` suite passed locally. This host's embedded PostgreSQL test
+initialization limitation remains; CI must run the complete relevant gates.

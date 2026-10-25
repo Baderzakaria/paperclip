@@ -1331,3 +1331,22 @@ Slice 24 is published as [#17583](https://github.com/paperclipai/paperclip/pull/
 at `9c38ddfe53`, based on #17580 `4f0364d269`. It is attached to this chat.
 CI/review are running; no merge. The next branch is
 `codex/sleep-25-voice-call-reports`, with its owner audit recorded separately.
+
+## Slice 25: voice call reports
+
+Report refresh now owns a scoped deadline worker. Terminal transitions, signed
+callbacks, and reply call-ended responses activate existing report/session rows.
+Attempts save the next retry before provider I/O, and callback/new-attempt fences
+prevent stale settlement. The existing 24-hour refresh obligation is preserved,
+including available reports. Empty/configured-idle/live/old history is quiet.
+This removes the last voice duty from recurring chat maintenance.
+
+Acceptance: 174 selected real-database/wiring cases, workspace typecheck and build
+pass. A new integration case exposed missing baseRevisionId on an existing guest
+transcript; the fix uses the document revision contract and preserves lock
+behavior. Full failure history and external-wake limits are in
+`2026-10-25-voice-call-report-sleep-audit.md`. Publication and remote checks follow.
+Parent #17583 has a Discord rollback/drain test failure to repair at its owner;
+parent #17580 has two new cleanup review findings. Neither is marked complete.
+The remaining chat duties, original ledger, #17490 E2E failure, and final
+master/stack reconciliation remain required. No stack merge is authorized.

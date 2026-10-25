@@ -81,6 +81,77 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     return { companyId, endpointId, agentId, connectionId, issueId, conversationId, callerId, sessionId, store, request, reserved, accept, toolInput, publication };
   }
 
+  it.each(["hangup", "signed callback", "reply ended"])("wakes report refresh from real %s and advances it on a later callback", async trigger => {
+    const f = await inboundFixture();
+    await db.update(chatVoiceSessions).set({ endedAt: new Date(Date.now() - 2 * 86_400_000) }).where(eq(chatVoiceSessions.id, f.sessionId));
+    await f.service.inbound.decide(f.companyId, f.endpointId, f.call.id, f.input.caller,
+      { approve: true, approvalCode: f.call.approvalCode, issueId: f.issueId });
+    const [bound] = await db.select().from(chatVoiceInboundCalls).where(eq(chatVoiceInboundCalls.id, f.call.id));
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    const onError = vi.fn(), coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError });
+    const settle = () => vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(1000); expect(idleWorkSnapshot().active).toBe(0); }, { timeout: 5000 });
+    const quiet = async () => {
+      const reads = vi.spyOn(db, "select"), transactions = vi.spyOn(db, "transaction");
+      try { await vi.advanceTimersByTimeAsync(10_000); expect(reads).not.toHaveBeenCalled(); expect(transactions).not.toHaveBeenCalled(); }
+      finally { reads.mockRestore(); transactions.mockRestore(); }
+    };
+    try {
+      await f.service.registerReportWork(coordinator, () => true).ready;
+      await settle(); expect(coordinator.nextWakeAt()).toBeNull(); await quiet();
+      if (trigger === "hangup") await f.service.end(f.companyId, bound.sessionId!, f.input.caller);
+      else if (trigger === "signed callback") {
+        const ended = f.sign({ type: "call.status", call_id: f.call.providerSessionId, status: "ended" });
+        await f.service.inbound.lifecycle(f.endpoint.publicId, ended.body, ended.headers);
+      } else {
+        const publication = await f.publication(); await f.store.enqueuePublication(f.companyId, publication.id);
+        f.transport.sendCallMessage.mockRejectedValueOnce(new SpekoProviderError("provider_unavailable", false, 409));
+        await f.service.pushReplies(25, f.companyId, f.endpointId);
+        expect(f.transport.sendCallMessage).toHaveBeenCalledOnce();
+      }
+      await settle(); expect(f.transport.callReport).toHaveBeenCalledOnce();
+      const [saved] = await db.select().from(chatVoiceReports).where(eq(chatVoiceReports.sessionId, bound.sessionId!));
+      expect(saved.status).toBe("available"); expect(coordinator.nextWakeAt()).toBe(saved.nextCheckAt.getTime());
+      await quiet(); expect(f.transport.callReport).toHaveBeenCalledOnce();
+      const report = f.sign({ type: "call.report", session_id: f.call.providerSessionId, organization_id: f.event.organization_id });
+      await f.service.inbound.lifecycle(f.endpoint.publicId, report.body, report.headers);
+      await settle(); expect(f.transport.callReport).toHaveBeenCalledTimes(2); expect(onError).not.toHaveBeenCalled();
+    } finally {
+      await coordinator.stop(); vi.useRealTimers();
+      const ended = f.sign({ type: "call.status", call_id: f.call.providerSessionId, status: "ended" });
+      await f.service.inbound.lifecycle(f.endpoint.publicId, ended.body, ended.headers);
+      await db.update(chatVoiceSessions).set({ endedAt: new Date(Date.now() - 2 * 86_400_000) }).where(eq(chatVoiceSessions.companyId, f.companyId));
+    }
+  });
+
+  it("retains a saved report and retries guest transcript projection after a document lock", async () => {
+    const f = await inboundFixture(true);
+    await db.update(chatVoiceSessions).set({ endedAt: new Date(Date.now() - 2 * 86_400_000) }).where(eq(chatVoiceSessions.id, f.sessionId));
+    await f.tool("submit_request", { text: "Draft a public inquiry" });
+    const docs = documentService(db), key = `voice-transcript-${f.call.sessionId}`;
+    await docs.upsertIssueDocument({ issueId: f.call.intakeIssueId!, key, format: "markdown", body: "Older transcript" });
+    await docs.lockIssueDocument({ issueId: f.call.intakeIssueId!, key, lockedByUserId: f.callerId });
+    const ended = f.sign({ type: "call.report", session_id: f.call.providerSessionId, organization_id: f.event.organization_id });
+    await f.service.inbound.lifecycle(f.endpoint.publicId, ended.body, ended.headers);
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    const onError = vi.fn(), coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError });
+    const settle = () => vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(1000); expect(idleWorkSnapshot().active).toBe(0); }, { timeout: 5000 });
+    try {
+      await f.service.registerReportWork(coordinator, () => true).ready; await settle();
+      const [saved] = await db.select().from(chatVoiceReports).where(eq(chatVoiceReports.sessionId, f.call.sessionId!));
+      expect(saved.status).toBe("available"); expect(saved.transcript).toHaveLength(1);
+      expect((await docs.getIssueDocumentByKey(f.call.intakeIssueId!, key))!.body).toBe("Older transcript");
+      await docs.unlockIssueDocument(f.call.intakeIssueId!, key);
+      await vi.advanceTimersByTimeAsync(saved.nextCheckAt.getTime() - Date.now() + 1000); await settle();
+      const projected = await docs.getIssueDocumentByKey(f.call.intakeIssueId!, key);
+      expect(projected!.body).toContain("A test request");
+      expect(projected!.sourceTrust).toMatchObject({ preset: "low_trust_review", disposition: "quarantined" });
+      expect(f.transport.callReport).toHaveBeenCalledTimes(2); expect(onError).not.toHaveBeenCalled();
+    } finally {
+      await coordinator.stop(); vi.useRealTimers();
+      await db.update(chatVoiceSessions).set({ endedAt: new Date(Date.now() - 2 * 86_400_000) }).where(eq(chatVoiceSessions.companyId, f.companyId));
+    }
+  });
+
   it("limits a new pre-call wake to its admission instead of scanning endpoint history", async () => {
     const f = await inboundFixture(); const hints: string[] = [];
     const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.voiceInboundRetention,
@@ -102,7 +173,6 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await db.update(chatVoiceInboundCalls).set({ expiresAt: new Date(0), updatedAt: new Date(0) }).where(eq(chatVoiceInboundCalls.id, f.call.id));
     const onError = vi.fn();
     const maintenance = createChatReconciliationCoordinator({
-      reconcileVoiceSessions: () => f.service.reconcileMaintenance(),
       processPendingDeliveries: async () => undefined, projectRunMilestones: async () => 0,
       flushPublications: async () => undefined, onError,
     });
