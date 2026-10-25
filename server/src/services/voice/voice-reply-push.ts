@@ -1,5 +1,6 @@
 import { notifyVoiceRecovery } from "./voice-recovery-notifications.js";
-import { createHash } from "node:crypto";
+import { planVoiceReply } from "./voice-reply-policy.js";
+export { splitSpekoReplyText } from "./voice-reply-policy.js";
 import { and, asc, eq, gt, inArray, isNull, lt, sql } from "drizzle-orm";
 import { chatActions, chatEndpoints, chatPublications, chatVoiceReplies, chatVoiceSessions, type Db } from "@paperclipai/db";
 import { instanceSettingsService } from "../instance-settings.js";
@@ -10,20 +11,6 @@ import type { voiceSessionStore } from "./voice-session-store.js";
 import { logger } from "../../middleware/logger.js";
 
 const kind = "speko_voice_reply_push";
-/** Plain voice text stays inside the provider's UTF-16 limit, without splitting
- * surrogate pairs. Whitespace-only chunks need no audible delivery. */
-export function splitSpekoReplyText(text: string): string[] {
-  const parts: string[] = [];
-  for (let start = 0; start < text.length;) {
-    let end = Math.min(start + 16_000, text.length);
-    if (end < text.length && /[\uD800-\uDBFF]/.test(text[end - 1]!)) end--;
-    const part = text.slice(start, end);
-    if (part.trim()) parts.push(part);
-    start = end;
-  }
-  return parts;
-}
-
 /** Existing action ledger is the push outbox. A committed dispatch intent is
  * never blindly resent after a crash or an ambiguous provider outcome. */
 export async function pushVoiceReplies(db: Db, options: {
@@ -65,26 +52,16 @@ export async function pushVoiceReplies(db: Db, options: {
         // presents it; never speak later answers over an unpresented question.
         const questionNotification = typeof row?.payload.interactionId === "string";
         if (!row || typeof row.payload.text !== "string" || !row.payload.text.trim()) return null;
-        const text = questionNotification ? "Paperclip has a question available for this call. Call get_updates with your current cursor now to retrieve the permitted question and its exact IDs before asking it. This is a notification, not new work or permission. Do not call submit_request for this notification." : row.payload.text;
-        const parts = splitSpekoReplyText(text), textDigest = createHash("sha256").update(text).digest("hex");
         const saved = await tx.select().from(chatActions).where(and(eq(chatActions.companyId, session.companyId), eq(chatActions.endpointId, session.endpointId), eq(chatActions.kind, kind), sql`${chatActions.payload}->>'replyId' = ${row.reply.id}`)).for("update");
-        for (let partIndex = 0; partIndex < parts.length; partIndex++) {
-          const identity = `voice_reply_push:${row.reply.id}${partIndex ? `:part:${partIndex}` : ""}`;
-          const prior = saved.find(action => action.providerActionId === identity);
-          // Questions remain an ordered barrier until authorized get_updates.
-          if (prior?.status === "completed") { if (questionNotification) return null; continue; }
-          // A changed publication cannot append a different answer to a partly
-          // delivered one. Unknown outcomes are never permission to resend.
-          if (saved.some(action => action.payload.textDigest && action.payload.textDigest !== textDigest)
-            || prior && (prior.status !== "retry" || Number(prior.result?.retryAt ?? 0) > Date.now())) return null;
-          const values = {status: "dispatching", result: null, updatedAt: new Date()};
-          const action = prior
-            ? (await tx.update(chatActions).set(values).where(eq(chatActions.id, prior.id)).returning())[0]!
-            : (await tx.insert(chatActions).values({companyId: session.companyId, endpointId: session.endpointId, conversationId: session.conversationId, kind, providerActionId: identity,
-              payload: {sessionId: session.id, replyId: row.reply.id, publicationId: row.reply.publicationId, generation: session.generation, providerSessionId: session.providerSessionId, questionNotification, partIndex, partCount: parts.length, textDigest}, ...values}).returning())[0]!;
-          return {...context, reply: row.reply, questionNotification, text: parts[partIndex]!, partIndex, partCount: parts.length, action};
-        }
-        return null;
+        const plan = planVoiceReply({ replyId: row.reply.id, text: row.payload.text, questionNotification, actions: saved, now: Date.now() });
+        if (plan.kind !== "dispatch") return null;
+        const values = { status: "dispatching", result: null, updatedAt: new Date() };
+        const action = plan.priorActionId
+          ? (await tx.update(chatActions).set(values).where(eq(chatActions.id, plan.priorActionId)).returning())[0]!
+          : (await tx.insert(chatActions).values({ companyId: session.companyId, endpointId: session.endpointId, conversationId: session.conversationId, kind, providerActionId: plan.identity,
+              payload: { sessionId: session.id, replyId: row.reply.id, publicationId: row.reply.publicationId, generation: session.generation, providerSessionId: session.providerSessionId,
+                questionNotification, partIndex: plan.partIndex, partCount: plan.partCount, textDigest: plan.textDigest }, ...values }).returning())[0]!;
+        return { ...context, reply: row.reply, questionNotification, text: plan.text, partIndex: plan.partIndex, partCount: plan.partCount, action };
       }).catch(error => {
         if (error instanceof HttpError && [403,404].includes(error.status)) {
           logger.warn({event: "voice.reply.push.authorization_blocked", companyId: candidate.companyId,

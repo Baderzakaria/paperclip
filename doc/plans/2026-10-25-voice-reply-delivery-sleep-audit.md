@@ -84,3 +84,18 @@ Receiver #17572 has passing latest-head checks and Greptile 5/5 at 1604a9fcba;
 its second Paperclip reviewer stopped before completion, so do not invent a fresh
 completed review result. No stack PR was merged. The complete original inventory,
 older #17490 failure and final master reconciliation remain outstanding.
+
+
+## Initial implementation checkpoint
+
+The existing multipart selection now lives in voice-reply-policy.ts. The dispatcher
+uses that pure policy for chunk identity, digest consistency, question barriers,
+retry deadlines and no-resend outcomes. Its claim, authorization and provider I/O
+remain in the existing owner. Twelve selected real-database reply integration
+cases and server typechecking pass after extraction. This is a foundation only:
+no recurring reply scan has been removed, and no reply PR is published yet.
+
+Next implement the shared voice reply-state reader and deadline selection, audit
+all session/reply/action and published-state producers, register the worker, and
+prove quiet/reactivation before retiring the recurring and direct normal dispatch
+paths. Preserve the public/manual push API and all adjacent voice maintenance.
