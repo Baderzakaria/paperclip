@@ -141,3 +141,26 @@ Outstanding before publication: complete producer/authorization-change audit,
 current-state races, cross-company fairness and failed-scope coverage, affected
 shared producer consumers, full workspace verification and remote gates. The
 other four voice duties and every remaining original stack item remain required.
+
+
+## Producer and race audit completion
+
+See [the live-session contract](../idle-voice-session-recovery.md) for the complete
+producer mapping, existing transaction ownership and retained active authorization
+inspection contract. All production session writers are covered. Phone preferences,
+membership and task authority remain checked on the existing active-call deadline
+and on use; no new recurring empty inventory scan replaces their absence of signals.
+
+A late provider binding between grace-period discovery and expiration was reproduced:
+the previous update marked a connecting call expired despite its new provider ID.
+The expiration update now requires provider identity to remain absent. The regression
+proves the known call stays live for exact-provider cleanup. All 11 recovery lifecycle
+cases pass, including company fairness and failed-scope fencing.
+
+Expanded real-service coverage passes for endpoint pause, generic voice connection
+disable, task reassignment and signed guest lifecycle settlement. Shared consumer
+verification passes 469 tool-access, 18 access-removal, and 207 settings/provider
+cases. Workspace typechecking passes. A fresh final voice/receiver/startup selection
+and the full local test command are running; build/publication/remote gates remain.
+No full local matrix result is claimed from targeted tests. Initial fixture errors
+and the reproduced provider-binding race remain recorded above and in test logs.

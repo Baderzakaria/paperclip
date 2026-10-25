@@ -1,4 +1,4 @@
-import { and, eq, gt, inArray, sql } from "drizzle-orm";
+import { and, eq, gt, inArray, isNull, sql } from "drizzle-orm";
 import { chatEndpoints, chatVoiceSessions, toolConnections, type Db } from "@paperclipai/db";
 import { HttpError } from "../../errors.js";
 import { instanceSettingsService } from "../instance-settings.js";
@@ -75,7 +75,7 @@ export function voiceSessionRecovery(db: Db, operations: {
         } else if (session.providerSessionId) await operations.close(session);
         else if (session.expiresAt.getTime() + 120_000 < Date.now()) {
           await withVoiceSessionChange(db, id, tx => tx.update(chatVoiceSessions).set({ state: "expired", endedAt: new Date(), updatedAt: new Date() })
-            .where(and(eq(chatVoiceSessions.id, id), inArray(chatVoiceSessions.state, [...LIVE_VOICE_STATES]))));
+            .where(and(eq(chatVoiceSessions.id, id), isNull(chatVoiceSessions.providerSessionId), inArray(chatVoiceSessions.state, [...LIVE_VOICE_STATES]))));
         }
       } catch (error) {
         await withVoiceSessionChange(db, id, tx => tx.update(chatVoiceSessions).set({ errorCode: "cleanup_pending", updatedAt: new Date() })

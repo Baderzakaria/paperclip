@@ -19,6 +19,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
   let coordinator: ReturnType<typeof createDeliveryWorkCoordinator> | undefined;
   let enabled = true;
   const errors: unknown[] = [];
+  const fixtureCompanies: string[] = [];
   const authorize = vi.fn(async (_session: typeof chatVoiceSessions.$inferSelect) => {}), inspect = vi.fn(async (_session: typeof chatVoiceSessions.$inferSelect): Promise<{ endedAt?: unknown }> => ({ endedAt: true }));
   const close = vi.fn(async (session: typeof chatVoiceSessions.$inferSelect) => {
     await withVoiceSessionChange(db, session.id, tx => tx.update(chatVoiceSessions).set({ state: "ended", endedAt: new Date(), updatedAt: new Date() }).where(eq(chatVoiceSessions.id, session.id)));
@@ -28,10 +29,10 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     db = createDb(external ?? temporary!.connectionString, { idleTimeoutSeconds: 0, maxLifetimeSeconds: 0 });
     await instanceSettingsService(db).updateExperimental({ enableChatConnectors: true });
   }, 60_000);
-  beforeEach(async () => {
-    companyId = randomUUID(); endpointId = randomUUID(); agentId = randomUUID(); issueId = randomUUID(); conversationId = randomUUID();
+  async function fixture() {
+    const companyId = randomUUID(), endpointId = randomUUID(), agentId = randomUUID(), issueId = randomUUID(), conversationId = randomUUID();
+    fixtureCompanies.push(companyId);
     const applicationId = randomUUID(), connectionId = randomUUID();
-    enabled = true; errors.length = 0; authorize.mockClear(); inspect.mockReset().mockResolvedValue({ endedAt: true }); close.mockClear();
     await db.insert(companies).values({ id: companyId, name: "Voice recovery", issuePrefix: `V${companyId.slice(0, 7)}` });
     await db.insert(agents).values({ id: agentId, companyId, name: "Voice", adapterType: "paperclip_runner" });
     await db.insert(issues).values({ id: issueId, companyId, title: "Voice", assigneeAgentId: agentId, status: "in_progress" });
@@ -39,16 +40,23 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await db.insert(toolConnections).values({ id: connectionId, companyId, applicationId, name: "Voice", uid: connectionId, transport: "voice", connectionPurpose: "channel", enabled: true, status: "active" });
     await db.insert(chatEndpoints).values({ id: endpointId, companyId, connectionId, assignedAgentId: agentId, publicId: endpointId, provider: "speko", status: "active", setup: { step: "complete", runtimeGeneration: 1 } });
     await db.insert(chatConversations).values({ id: conversationId, companyId, endpointId, issueId, externalConversationId: conversationId, externalThreadId: conversationId, externalLabel: "Voice", isDirectMessage: true });
+    return { companyId, endpointId, assignedAgentId: agentId, issueId, conversationId };
+  }
+  beforeEach(async () => {
+    enabled = true; errors.length = 0; authorize.mockClear(); inspect.mockReset().mockResolvedValue({ endedAt: true }); close.mockClear();
+    ({ companyId, endpointId, assignedAgentId: agentId, issueId, conversationId } = await fixture());
     vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
   });
   afterEach(async () => {
     await coordinator?.stop(); coordinator = undefined; vi.useRealTimers(); vi.restoreAllMocks();
+    for (const companyId of fixtureCompanies.splice(0)) {
     await db.delete(chatVoiceSessions).where(eq(chatVoiceSessions.companyId, companyId));
     await db.delete(chatConversations).where(eq(chatConversations.companyId, companyId));
     await db.delete(chatEndpoints).where(eq(chatEndpoints.companyId, companyId));
     await db.delete(issues).where(eq(issues.companyId, companyId));
     await db.delete(agents).where(eq(agents.companyId, companyId));
     await db.delete(companies).where(eq(companies.id, companyId));
+    }
     expect(errors).toEqual([]);
   });
   afterAll(async () => { await db?.$client.end({ timeout: 1 }); await temporary?.cleanup(); });
@@ -126,6 +134,42 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect(inspect.mock.calls.filter(([row]) => row.id === failed.id)).toHaveLength(1);
     expect(errors).toHaveLength(1);
     broken = false; await settled(); errors.length = 0; await quiet();
+  });
+  it("includes another company in the first batch despite a large older backlog", async () => {
+    for (let index = 0; index < 30; index++) await session({ updatedAt: new Date(Date.now() - 120_000) });
+    const other = await fixture();
+    const row = await session(other);
+    await start();
+    expect(inspect.mock.calls.slice(0, 25).some(([candidate]) => candidate.id === row.id)).toBe(true);
+    await settled(); expect(inspect).toHaveBeenCalledTimes(31); await quiet();
+  });
+  it("does not inspect stale cached work until a failed scope refresh succeeds", async () => {
+    const row = await session({ updatedAt: new Date(Date.now() - 20_000) });
+    const service = voiceSessionRecovery(db, { authorize, inspect, close }), original = service.load;
+    await start(service); service.load = async () => { throw new Error("scope unavailable"); };
+    await db.transaction(tx => notifyVoiceRecovery(tx, { kind: "session", id: row.id }));
+    await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(1000); expect(errors).toHaveLength(1); });
+    await quiet(15_000); expect(inspect).not.toHaveBeenCalled();
+    service.load = original; await settled(); expect(inspect).toHaveBeenCalledOnce(); errors.length = 0; await quiet();
+  });
+  it("does not expire a provider identity bound after the grace-period read", async () => {
+    const row = await session({ state: "creation_unknown", providerSessionId: null,
+      createdAt: new Date(Date.now() - 240_000), expiresAt: new Date(Date.now() - 180_000) });
+    const service = voiceSessionRecovery(db, { authorize, inspect, close });
+    const providerSessionId = randomUUID(), transact = db.transaction.bind(db);
+    const transaction = vi.spyOn(db, "transaction").mockImplementationOnce(async (callback, options) => {
+      await transact(async tx => {
+        await notifyVoiceRecovery(tx, { kind: "session", id: row.id });
+        await tx.update(chatVoiceSessions).set({ providerSessionId, state: "connecting", updatedAt: new Date() }).where(eq(chatVoiceSessions.id, row.id));
+      });
+      return transact(callback, options);
+    });
+    try { await service.check(row.id); } finally { transaction.mockRestore(); }
+    const [bound] = await db.select().from(chatVoiceSessions).where(eq(chatVoiceSessions.id, row.id));
+    expect(bound).toMatchObject({ state: "connecting", providerSessionId });
+    await service.check(row.id);
+    expect(close).toHaveBeenCalledWith(expect.objectContaining({ id: row.id, providerSessionId }));
+    expect((await db.select().from(chatVoiceSessions).where(eq(chatVoiceSessions.id, row.id)))[0].state).toBe("ended");
   });
   it("joins admitted provider inspection at shutdown", async () => {
     await start(); await settled();
