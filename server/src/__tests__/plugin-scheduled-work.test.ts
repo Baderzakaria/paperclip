@@ -1,3 +1,4 @@
+import { finishServiceShutdown } from "../shutdown.js";
 import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -61,7 +62,11 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     }, { timeout: 5000 });
   }
   async function quiet() {
-    await settled(); expect(coordinator!.nextWakeAt()).toBeNull();
+    await vi.waitFor(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(idleWorkSnapshot().active).toBe(0);
+      expect(coordinator!.nextWakeAt()).toBeNull();
+    }, { timeout: 5000 });
     const reads = vi.spyOn(db, "select"), writes = vi.spyOn(db, "transaction"), executes = vi.spyOn(db, "execute");
     await vi.advanceTimersByTimeAsync(180_000);
     expect(reads).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled(); expect(executes).not.toHaveBeenCalled();
@@ -80,6 +85,23 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
   }
 
   it("does not query repeatedly after an empty startup reconciliation", async () => { await start(); await quiet(); });
+  it("bounds full refreshes while many job status writes arrive sequentially", async () => {
+    await pluginJobStore(db).syncJobDeclarations(pluginId, Array.from({ length: 40 }, (_, i) => ({ jobKey: `manual-${i}`, schedule: "" })));
+    const jobs = await db.select().from(pluginJobs).where(eq(pluginJobs.pluginId, pluginId));
+    await start(); await quiet();
+    const reads = vi.spyOn(db, "select");
+    for (const job of jobs.slice(0, 15)) {
+      const run = await pluginJobStore(db).createRun({ jobId: job.id, pluginId, trigger: "manual" });
+      await pluginJobStore(db).markRunning(run.id);
+      await pluginJobStore(db).completeRun(run.id, { status: "succeeded" });
+      await vi.advanceTimersByTimeAsync(1100);
+    }
+    expect(reads.mock.calls.length).toBeLessThanOrEqual(1);
+    reads.mockRestore();
+    await quiet();
+    expect(await runs()).toHaveLength(15);
+    expect(rpc).not.toHaveBeenCalled();
+  });
   it("keeps configured manual-only and invalid schedules quiet", async () => {
     await job("manual", ""); await job("invalid", "not cron"); await start(); await quiet(); expect(rpc).not.toHaveBeenCalled();
   });
@@ -147,7 +169,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await db.execute(sql`create function plugin_settlement_failure() returns trigger language plpgsql as $$ begin if new.status in ('succeeded', 'failed') then raise exception 'settlement unavailable'; end if; return new; end $$`);
     await db.execute(sql`create trigger plugin_settlement_failure before update on plugin_job_runs for each row execute function plugin_settlement_failure()`);
     await due(); await start();
-    await vi.waitFor(() => expect(errors.length).toBeGreaterThan(0)); expect(rpc).toHaveBeenCalledTimes(1);
+    await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(1000); expect(errors.length).toBeGreaterThan(0); }, { timeout: 5000 }); expect(rpc).toHaveBeenCalledTimes(1);
     await db.execute(sql`drop trigger plugin_settlement_failure on plugin_job_runs`); errors.length = 0;
     await completed(); expect(rpc).toHaveBeenCalledTimes(1);
   });
@@ -155,7 +177,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await db.execute(sql`create function plugin_settlement_failure() returns trigger language plpgsql as $$ begin if new.status in ('succeeded', 'failed') then raise exception 'settlement unavailable'; end if; return new; end $$`);
     await db.execute(sql`create trigger plugin_settlement_failure before update on plugin_job_runs for each row execute function plugin_settlement_failure()`);
     await due(); await start();
-    await vi.waitFor(() => expect(errors.length).toBeGreaterThan(0));
+    await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(1000); expect(errors.length).toBeGreaterThan(0); }, { timeout: 5000 });
     draining = true;
     await coordinator!.stop();
     await db.execute(sql`drop trigger plugin_settlement_failure on plugin_job_runs`); errors.length = 0;
@@ -163,11 +185,28 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect((await runs())[0].status).toBe("succeeded");
     expect(rpc).toHaveBeenCalledTimes(1);
   });
+  it("finishes service cleanup and retries a failed settlement before closing the pool", async () => {
+    await db.execute(sql`create function plugin_settlement_failure() returns trigger language plpgsql as $$ begin if new.status in ('succeeded', 'failed') then raise exception 'settlement unavailable'; end if; return new; end $$`);
+    await db.execute(sql`create trigger plugin_settlement_failure before update on plugin_job_runs for each row execute function plugin_settlement_failure()`);
+    await due(); await start();
+    await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(1000); expect(errors.length).toBeGreaterThan(0); }, { timeout: 5000 });
+    draining = true; await coordinator!.stop(); errors.length = 0;
+    const cleanup = vi.fn(async () => {
+      expect((await runs())[0].status).toBe("running");
+      await db.execute(sql`drop trigger plugin_settlement_failure on plugin_job_runs`);
+    });
+    const stop = vi.fn(() => scheduler!.stop());
+    await finishServiceShutdown(stop, cleanup);
+    expect(cleanup).toHaveBeenCalledOnce();
+    expect(stop).toHaveBeenCalledTimes(2);
+    expect((await runs())[0].status).toBe("succeeded");
+    expect(rpc).toHaveBeenCalledTimes(1);
+  });
   it("reports shutdown persistence failure and retains the result for another stop attempt", async () => {
     await db.execute(sql`create function plugin_settlement_failure() returns trigger language plpgsql as $$ begin if new.status in ('succeeded', 'failed') then raise exception 'settlement unavailable'; end if; return new; end $$`);
     await db.execute(sql`create trigger plugin_settlement_failure before update on plugin_job_runs for each row execute function plugin_settlement_failure()`);
     await due(); await start();
-    await vi.waitFor(() => expect(errors.length).toBeGreaterThan(0));
+    await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(1000); expect(errors.length).toBeGreaterThan(0); }, { timeout: 5000 });
     draining = true; await coordinator!.stop(); errors.length = 0;
     try {
       await expect(scheduler!.stop()).rejects.toThrow("Plugin job completion persistence failed during shutdown");
@@ -183,7 +222,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await db.execute(sql`create trigger plugin_settlement_failure before update on plugin_job_runs for each row execute function plugin_settlement_failure(${sql.raw("'" + blocked.id + "'")})`);
     try {
       await start();
-      await vi.waitFor(() => expect(errors.length).toBeGreaterThan(0));
+      await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(1000); expect(errors.length).toBeGreaterThan(0); }, { timeout: 5000 });
       const independent = await due("independent");
       await vi.waitFor(async () => {
         await vi.advanceTimersByTimeAsync(1000);
@@ -244,7 +283,11 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
   it("does no SQL while waiting for a future configured deadline", async () => {
     const row = await job(); const at = new Date(Date.now() + 600_000);
     await pluginJobStore(db).updateRunTimestamps(row.id, new Date(0), at);
-    await start(); await settled(); expect(coordinator!.nextWakeAt()).toBe(at.getTime());
+    await start();
+    await vi.waitFor(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(coordinator!.nextWakeAt()).toBe(at.getTime());
+    }, { timeout: 5000 });
     const reads = vi.spyOn(db, "select"), writes = vi.spyOn(db, "transaction");
     await vi.advanceTimersByTimeAsync(180_000);
     expect(reads).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled();
@@ -254,7 +297,11 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     const row = await job(); const at = new Date(Date.now() + 600_000);
     await pluginJobStore(db).updateRunTimestamps(row.id, new Date(0), at);
     await start(); await settled(); await scheduler!.stop(); await coordinator!.stop();
-    await start(); await settled(); expect(coordinator!.nextWakeAt()).toBe(at.getTime());
+    await start();
+    await vi.waitFor(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(coordinator!.nextWakeAt()).toBe(at.getTime());
+    }, { timeout: 5000 });
     await vi.advanceTimersByTimeAsync(at.getTime() - Date.now()); await completed(); expect(rpc).toHaveBeenCalledTimes(1);
   });
   it("rechecks a paused definition after waiting for its lock", async () => {

@@ -976,3 +976,16 @@ updates take the job lock. All 62 focused lifecycle/consumer cases and server
 typechecking pass. #17510 at 400f4c0fc8 cleared the security gate and previous CI
 failures, but environment-cleanup pagination has a 32-versus-33 assertion race
 in server shard 1. Diagnose and repair it before accepting the stack.
+
+
+Plugin round-two review repair restores a 30-second minimum between requested
+full refreshes without adding idle polling. A burst regression failed at 16
+reads before repair and passes at at most one afterward. Failed plugin stop
+no longer skips application/worker teardown; retained settlement is retried once
+after cleanup while the pool is open, with persistent errors still reported.
+The final 48 shutdown/plugin cases and earlier 75-case consumer selection pass
+(76 unique cases), with server types/build passing. Fresh remote gates remain.
+Approval #17510 has passing latest-head CI and Greptile 5/5 at 0c7109c103, but
+Paperclip review identified persistent-failure backoff and duplicated PR matching
+that still require repair. Tool health remains the next new migration after
+these owning-PR repairs.

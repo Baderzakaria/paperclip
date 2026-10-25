@@ -37,7 +37,7 @@ including a worker becoming available without a database mutation.
   queued, pending, or running records. Manual and scheduled dispatch share this
   boundary. Worker RPC calls run outside transactions.
 - Active calls consume concurrency slots and remain tracked until settlement.
-  Their completion wakes waiting work without an interval. Slow calls do not
+  Their completion requests a coalesced refresh for waiting work. Slow calls do not
   prevent other available slots from being used.
 - Completion and the scheduled job's next timestamp commit together. Failed
   persistence retries the retained settlement, not the plugin side effect.
@@ -48,7 +48,16 @@ including a worker becoming available without a database mutation.
   admitted work, then flushes retained completion results without another RPC.
   If persistence still fails, stop rejects and retains the result for another
   attempt; it does not report successful shutdown. Existing calls retain their
-  RPC timeout. Application teardown must complete before the pool is ended.
+  RPC timeout. A failed stop still allows application and plugin-worker cleanup;
+  teardown then retries the retained settlement once before reporting any remaining
+  error, while the database pool is open.
+
+Producer and lifecycle wakes share a 30-second minimum refresh spacing, matching
+the former scan budget. Sequential run-status writes coalesce instead of each
+causing a full inventory scan. This is a bound on requested refreshes, not a
+recurring timer: settled workers without a future obligation remain disarmed.
+Manual dispatch still uses its direct claim path. New schedules and completion-
+released capacity can wait up to that spacing before scheduled dispatch.
 
 ## Limits
 
@@ -98,3 +107,23 @@ external effect that the database has never acknowledged.
 The final focused run passes 62 cases across plugin scheduling, loader recovery,
 warm standby, and the delivery coordinator. Server typechecking passes. Remote
 checks and a fresh review remain required for the repaired head.
+
+
+A second review reproduced 16 full inventory reads during fifteen sequential run
+lifecycles on forty manual jobs. Restoring the prior 30-second spacing bounds that
+burst to one read, then reconciliation returns to zero SQL. Shutdown regressions
+also reproduced skipped cleanup after a settlement error. The shared teardown
+boundary now always attempts remaining cleanup and retries a failed stop once;
+both application teardown and plugin-loader shutdown use it. A PostgreSQL trigger
+case verifies the retained result is saved after cleanup removes the write fault,
+without a second worker RPC. Persistent failures remain visible.
+
+The first expanded timing run failed fifteen assertions because the test assumed
+one second was sufficient to settle a coalesced wake. Tests now wait for the actual
+null/future deadline before measuring three minutes of SQL silence. The corrected
+run passed all 75 cases; the additional post-cleanup retry case is verified separately
+below. No production timeout or quiet assertion was relaxed.
+
+The post-cleanup retry run passes all 48 shutdown/plugin cases (28 plugin and
+20 shutdown). Together with the unchanged consumer selection this covers 76
+unique cases. Server typecheck and build pass on the final round-two repair.
