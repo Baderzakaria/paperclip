@@ -3554,6 +3554,166 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       expect(attempts).toBe(2);
       expect(f.responseWrites).toHaveLength(writes);
     });
+    it("restores terminal GitHub responses and leaves finalized history quiet", async () => {
+      const f = await toolReplyFixture();
+      await db.update(heartbeatRuns).set({ status: "failed", updatedAt: new Date() }).where(eq(heartbeatRuns.id, f.run.id));
+      const errors: unknown[] = [];
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+      const worker = githubResponseCommentService(db, f.providerFetch).registerTerminalResponseWork(coordinator, () => true);
+      try {
+        await worker.ready;
+        await expect.poll(() => [...f.responseComments.values()][0]?.body, { timeout: 5000 }).toContain("stopped before completing");
+        await expect.poll(() => coordinator.nextWakeAt(), { timeout: 5000 }).toBeNull();
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+        const reads = vi.spyOn(db, "select"), writes = vi.spyOn(db, "transaction");
+        const providerWrites = f.responseWrites.length;
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(reads).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled();
+        expect(f.responseWrites).toHaveLength(providerWrites);
+        reads.mockRestore(); writes.mockRestore();
+        expect(errors).toEqual([]);
+      } finally { await coordinator.stop(); vi.useRealTimers(); }
+    });
+
+    it("wakes terminal GitHub responses after the outer issue transaction commits", async () => {
+      const f = await toolReplyFixture();
+      const errors: unknown[] = [];
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+      const worker = githubResponseCommentService(db, f.providerFetch).registerTerminalResponseWork(coordinator, () => true);
+      try {
+        await worker.ready;
+        const baseline = f.responseWrites.length;
+        const change = async (tx: Parameters<Parameters<Db["transaction"]>[0]>[0]) => {
+          await tx.update(heartbeatRuns).set({ status: "failed", updatedAt: new Date() }).where(eq(heartbeatRuns.id, f.run.id));
+          await issueService(tx as unknown as Db).update(f.conversation.issueId!, { status: "blocked" });
+        };
+        await expect(db.transaction(async tx => { await change(tx); throw new Error("rollback terminal issue"); }))
+          .rejects.toThrow("rollback terminal issue");
+        expect(f.responseWrites).toHaveLength(baseline);
+        let release!: () => void, entered!: () => void;
+        const hold = new Promise<void>(resolve => { release = resolve; });
+        const ready = new Promise<void>(resolve => { entered = resolve; });
+        const pending = db.transaction(async tx => { await change(tx); entered(); await hold; });
+        try { await ready; expect(f.responseWrites).toHaveLength(baseline); }
+        finally { release(); await pending; }
+        await expect.poll(() => [...f.responseComments.values()][0]?.body, { timeout: 5000 }).toContain("stopped before completing");
+        await expect.poll(() => coordinator.nextWakeAt(), { timeout: 5000 }).toBeNull();
+        expect(errors).toEqual([]);
+      } finally { await coordinator.stop(); }
+    });
+
+    it("keeps an acknowledged paused GitHub request quiet until its new run finishes", async () => {
+      const f = await toolReplyFixture("github:paperclipai/paperclip:418");
+      await db.update(heartbeatRuns).set({ status: "failed" }).where(eq(heartbeatRuns.id, f.run.id));
+      await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, f.conversation.issueId!));
+      const thread = makeThread({ channelId: "paperclipai/paperclip", id: f.conversation.externalThreadId }).thread;
+      await deliverMessage({ callbacks: f.callbacks, endpointId: f.endpoint.id, provider: "github", thread,
+        trigger: "mention", message: makeMessage({ id: "41802", text: "New request", userId: "42", userName: "octocat", mentioned: true }) });
+      const responses = githubResponseCommentService(db, f.providerFetch);
+      await responses.processPending();
+      expect([...f.responseComments.values()][0].body).toContain("paused");
+      const errors: unknown[] = [];
+      let coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+      try {
+        await responses.registerTerminalResponseWork(coordinator, () => true).ready;
+        await expect.poll(() => coordinator.nextWakeAt(), { timeout: 5000 }).toBeNull();
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+        const reads = vi.spyOn(db, "select"), writes = vi.spyOn(db, "transaction");
+        const providerWrites = f.responseWrites.length;
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(reads).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled();
+        expect(f.responseWrites).toHaveLength(providerWrites);
+        reads.mockRestore(); writes.mockRestore(); vi.useRealTimers();
+        await coordinator.stop();
+        await db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, f.conversation.issueId!));
+        await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.assignedAgentId,
+          status: "failed", runtimeMode: "native", contextSnapshot: await chatWakeContext({
+            endpointId: f.endpoint.id, issueId: f.conversation.issueId, provider: "github", providerMessageId: "41802",
+          }) });
+        coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+        await responses.registerTerminalResponseWork(coordinator, () => true).ready;
+        await expect.poll(() => [...f.responseComments.values()][0]?.body, { timeout: 5000 }).toContain("stopped before completing");
+        await expect.poll(() => coordinator.nextWakeAt(), { timeout: 5000 }).toBeNull(); expect(errors).toEqual([]);
+      } finally { await coordinator.stop(); vi.useRealTimers(); }
+    });
+
+    it.each(["restart", "drain", "standby"] as const)("retains terminal GitHub response work across %s", async mode => {
+      const f = await toolReplyFixture();
+      let canRun = true;
+      const errors: unknown[] = [];
+      let coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => canRun,
+        canReconcile: () => mode !== "standby" || canRun, onError: error => errors.push(error) });
+      const responses = githubResponseCommentService(db, f.providerFetch);
+      let worker = responses.registerTerminalResponseWork(coordinator, () => canRun);
+      try {
+        await worker.ready;
+        const baseline = f.responseWrites.length;
+        if (mode === "restart") await coordinator.stop(); else canRun = false;
+        await db.update(heartbeatRuns).set({ status: "failed", updatedAt: new Date() }).where(eq(heartbeatRuns.id, f.run.id));
+        await issueService(db).update(f.conversation.issueId!, { status: "blocked" });
+        expect(f.responseWrites).toHaveLength(baseline);
+        if (mode === "restart") {
+          coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+          worker = responses.registerTerminalResponseWork(coordinator, () => true);
+          await worker.ready;
+        } else { canRun = true; worker.wake(); }
+        await expect.poll(() => [...f.responseComments.values()][0]?.body, { timeout: 5000 }).toContain("stopped before completing");
+        await expect.poll(() => coordinator.nextWakeAt(), { timeout: 5000 }).toBeNull();
+        expect(errors).toEqual([]);
+      } finally { await coordinator.stop(); }
+    });
+
+    it("reactivates terminal GitHub response recovery from committed native identity", async () => {
+      const f = await toolReplyFixture();
+      const messageId = String(f.run.contextSnapshot?.wakeCommentId);
+      await db.update(heartbeatRuns).set({ status: "failed", nativeIssueId: f.conversation.issueId,
+        contextSnapshot: {}, updatedAt: new Date() }).where(eq(heartbeatRuns.id, f.run.id));
+      const errors: unknown[] = [];
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+      try {
+        await githubResponseCommentService(db, f.providerFetch).registerTerminalResponseWork(coordinator, () => true).ready;
+        await expect.poll(() => coordinator.nextWakeAt(), { timeout: 5000 }).toBeNull();
+        const baseline = f.responseWrites.length;
+        await expect(db.transaction(async tx => {
+          await initializeRunIdentity(tx as unknown as Db, { companyId: f.companyId, runId: f.run.id, issueId: f.conversation.issueId!,
+            responsibleUserId: "owner-user", messageIds: [messageId], cause: "instruction" });
+          throw new Error("rollback identity");
+        })).rejects.toThrow("rollback identity");
+        expect(f.responseWrites).toHaveLength(baseline);
+        await initializeRunIdentity(db, { companyId: f.companyId, runId: f.run.id, issueId: f.conversation.issueId!,
+          responsibleUserId: "owner-user", messageIds: [messageId], cause: "instruction" });
+        await expect.poll(() => [...f.responseComments.values()][0]?.body, { timeout: 5000 }).toContain("stopped before completing");
+        await expect.poll(() => coordinator.nextWakeAt(), { timeout: 5000 }).toBeNull();
+        expect(errors).toEqual([]);
+      } finally { await coordinator.stop(); }
+    });
+
+    it("waits for the existing GitHub publication lease before a terminal response", async () => {
+      const f = await toolReplyFixture();
+      const [resource] = await db.select().from(chatEndpointResources).where(eq(chatEndpointResources.endpointId, f.endpoint.id));
+      const errors: unknown[] = [];
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+      let release!: () => void, entered!: () => void;
+      const hold = new Promise<void>(resolve => { release = resolve; });
+      const ready = new Promise<void>(resolve => { entered = resolve; });
+      let lease: Promise<unknown> | undefined;
+      try {
+        await githubResponseCommentService(db, f.providerFetch).registerTerminalResponseWork(coordinator, () => true).ready;
+        lease = withGitHubPublicationLease(db, { companyId: f.companyId, endpointId: f.endpoint.id,
+          repositoryId: String(resource.metadata.providerRepositoryId), number: 418 }, f.providerFetch, async () => { entered(); await hold; });
+        await ready;
+        const baseline = f.responseWrites.length;
+        await db.update(heartbeatRuns).set({ status: "failed", updatedAt: new Date() }).where(eq(heartbeatRuns.id, f.run.id));
+        await issueService(db).update(f.conversation.issueId!, { status: "blocked" });
+        await expect.poll(() => coordinator.nextWakeAt(), { timeout: 5000 }).not.toBeNull();
+        expect(f.responseWrites).toHaveLength(baseline);
+        release(); await lease;
+        await expect.poll(() => [...f.responseComments.values()][0]?.body, { timeout: 5000 }).toContain("stopped before completing");
+        await expect.poll(() => coordinator.nextWakeAt(), { timeout: 5000 }).toBeNull();
+        expect(errors).toEqual([]);
+      } finally { release(); await lease; await coordinator.stop(); }
+    });
+
     it.each(["release", "restart", "drain", "standby"] as const)("wakes GitHub acknowledgements from a real publication lease %s", async mode => {
       const f = await reviewBotFixture();
       const [resource] = await db.select().from(chatEndpointResources).where(eq(chatEndpointResources.endpointId, f.endpoint.id));

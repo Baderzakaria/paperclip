@@ -1,3 +1,4 @@
+import { notifyChatResponseAvailability } from "./chat-response-availability.js";
 import { githubRunReplyState } from "./chat-run-publications.js";
 import { stageReceiptReactionRemovals } from "./chat-receipt-reactions.js";
 import { chatRunSourceMessageId } from "./chat-channels/run-origin.js";
@@ -461,6 +462,7 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
   ): Promise<string> {
     if (writer === db) return db.transaction(tx => stage(source, operation, payload, key, invocationId, toolName, parameters, tx));
     const actionKey = `github_publication:${source.issue.id}:${operation}:${hash(key)}`;
+    await notifyChatResponseAvailability(writer, { companyId: source.endpoint.companyId, issueId: source.issue.id });
     await notifyDeliveryWork(writer, DELIVERY_QUEUES.chatGitHubPublications);
     const values = {
       companyId: source.endpoint.companyId,
@@ -1046,6 +1048,7 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
     )?.[1];
     if (!number || !binding?.repository.providerRepositoryId) {
       await db.transaction(async tx => {
+        await notifyChatResponseAvailability(tx, { companyId: action.companyId, conversationId: action.conversationId ?? undefined });
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.chatGitHubPublications);
         await tx.update(chatActions).set({ status: "cancelled", result: { code: "publication_binding_unavailable", retryable: false }, updatedAt: new Date() })
           .where(and(eq(chatActions.id, actionId), eq(chatActions.companyId, action.companyId)));
