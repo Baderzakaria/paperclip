@@ -125,3 +125,30 @@ log company/connection identifiers and a fixed message, without provider prose.
 The saved 15-minute deadline still controls the next check. All 64 health/startup
 cases and server typechecking pass after repair; total selected coverage is now
 771 unique tests. Fresh remote gates are required for this repair.
+
+
+Review follow-up: fair round-robin company batching replaces the global oldest-25
+selection. The two-company regression failed before the repair; 19 health-worker
+and three shared batching cases pass afterward. Each probe's pre/post eligibility
+query already includes the connection ID, so those indexed current-state checks
+remain. A scheduled observation still emits the normal transaction signal and
+may cause one coalesced company refresh; this deliberately preserves uncertainty
+and concurrent-writer recovery rather than introducing a silent-write exception.
+
+The real-service producer suite now proves AgentMail activation triggers its first
+health probe, pause cancels the next deadline, GitHub installation events update
+the cached deadline, and member removal cancels a personal connection's deadline.
+The GitHub newer-access branch retains its old health deadline, as intended.
+These tests use the actual coordinator, transaction notifications, schedule query,
+and service mutations; AgentMail also runs the actual health service against its
+controlled provider. Subsequent idle windows assert no SQL.
+
+The first run exposed two incorrect fixture expectations: AgentMail setup leaves
+healthCheckedAt null until its first probe, and a stale GitHub installation event
+does not overwrite a newer access refresh. The tests now preserve those policies.
+A targeted rerun reused AgentMail's retained fixture user and failed setup with a
+duplicate key; a fresh disposable database fixes that isolation issue without
+changing application behavior or weakening assertions. All 66 access/email/GitHub
+cases pass on the final run. Server typecheck/build pass. Cumulative selected
+coverage is 776 unique tests; full-suite and fresh remote review/checks remain
+acceptance gates. No whole-instance sleep or provider suspension is claimed.

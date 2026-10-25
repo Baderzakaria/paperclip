@@ -1050,3 +1050,15 @@ tests pass (`/tmp/sleep18-fairness-after.log`), after the recorded failing basel
 AgentMail activation/pause, GitHub installation event, and access-removal producer
 tests are complete. Then push the owning PR, request fresh review, and merge it
 into the Discord branch. Full original inventory and earlier unresolved CI remain.
+
+
+Health producer review coverage is now implemented and verified. The actual
+AgentMail setup/health/pause, GitHub installation-event, and member-removal paths
+move or cancel the live coordinator deadline. All 66 owner-suite cases pass on
+isolated PostgreSQL databases, alongside the prior 22 fairness/health cases and
+fresh server typecheck/build. Initial fixture expectations and the retained-user
+DB setup failure are preserved in the health document. Publish these changes with
+the fair company selector, request fresh review, and propagate to Discord #17557.
+The Discord initial head has Greptile 5/5; its CI and Paperclip review were still
+running when inspected. The remaining original inventory and #17490 failure
+remain open; no stack PR is merged or declared fully accepted.
