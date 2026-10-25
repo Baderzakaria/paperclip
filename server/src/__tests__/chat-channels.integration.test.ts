@@ -16,6 +16,7 @@ import { chatSlackManagerGrants, chatSlackRegistrations, toolOauthStates } from 
 import type { PaperclipCloudConnector, SealedConnectorCredentials } from "../services/paperclip-cloud-connector.js";
 import { buildSlackAppManifest, SLACK_MANAGER_SCOPES } from "@paperclipai/shared";
 import { registerChatActionWork, dueChatAction } from "../services/chat-action-work.js";
+import { chatRunMilestoneWork } from "../services/chat-run-milestone-work.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
 import { registerChatDeliveryWork } from "../services/chat-delivery-work.js";
 import { notifyChatPublicationWork, notifyChatActionWork, CHAT_ACTION_QUEUES } from "../services/chat-work-notifications.js";
@@ -34440,6 +34441,43 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         state: "published",
       },
     ]);
+  });
+
+  it("wakes an existing chat milestone when ordinary ingress reactivates its conversation", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, wakeup } = await configuredSlackEndpoint(fixture);
+    const thread = makeThread({ channelId: "C-REOPEN-MILESTONE", id: "slack:C-REOPEN-MILESTONE:4100.1", name: "reopen-milestone" });
+    const send = (id: string) => deliverMessage({ callbacks, endpointId: endpoint.id, thread: thread.thread,
+      message: makeMessage({ id, text: "@maya continue this conversation", mentioned: true }), trigger: "mention" });
+    await send("4100.1");
+    const [conversation] = await readChatConversationsByEndpointId(endpoint.id);
+    const [link] = await db.select().from(chatMessageLinks).where(and(
+      eq(chatMessageLinks.conversationId, conversation.id), eq(chatMessageLinks.providerMessageId, "4100.1")));
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: runId, companyId: fixture.companyId, agentId: fixture.assignedAgentId,
+      status: "failed", errorCode: "low_trust_isolation_unavailable", updatedAt: new Date(),
+      contextSnapshot: { issueId: conversation.issueId, source: "chat:slack", endpointId: endpoint.id, wakeCommentId: link.commentId },
+    });
+    await db.update(chatConversations).set({ state: "unavailable" }).where(eq(chatConversations.id, conversation.id));
+    const onError = vi.fn();
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError });
+    const notice = () => db.select().from(chatPublications).where(and(eq(chatPublications.issueId, conversation.issueId),
+      eq(chatPublications.idempotencyKey, `run:${runId}:failed:${endpoint.id}`)));
+    try {
+      await chatRunMilestoneWork(db).register(coordinator, () => true).ready;
+      await vi.waitFor(() => expect(coordinator.nextWakeAt()).toBeNull());
+      expect(await notice()).toEqual([]);
+      const wakesBefore = wakeup.mock.calls.length;
+      await send("4100.2");
+      expect(wakeup.mock.calls.length).toBe(wakesBefore + 1);
+      // The harness accepts the new wake without creating a run. Existing
+      // projection debt must wake from ingress, not a later run transition.
+      await expect.poll(notice, { timeout: 5000 }).toEqual([
+        expect.objectContaining({ idempotencyKey: `run:${runId}:failed:${endpoint.id}` }),
+      ]);
+      await vi.waitFor(() => expect(coordinator.nextWakeAt()).toBeNull());
+      expect(onError).not.toHaveBeenCalled();
+    } finally { await coordinator.stop(); }
   });
 
   it.each(["milliseconds", "microseconds"])("drains bounded Slack chat-origin milestones without admitting an internal issue run (%s)", async (precision) => {

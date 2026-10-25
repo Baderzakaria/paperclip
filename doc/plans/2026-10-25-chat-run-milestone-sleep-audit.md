@@ -1187,3 +1187,36 @@ E2E failures; no blind retry or cancellation-error masking was applied.
 Normal inbound conversation/link activation and remaining authority/lineage
 producer dispositions still gate production registration and polling removal.
 Fresh master is 7ebf98eafd; final base reconciliation remains outstanding.
+
+
+## Ordinary inbound conversation activation
+
+The actual Slack ingress owner reproduces another missing wake: a prior failed
+run has valid inbound lineage, but its unavailable conversation is restored by a
+new message after the projector exhausted its startup work. The harness accepts
+the new wake without creating a new run, so this does not rely on later queue
+admission to hide the gap. Before repair the expected failed-run publication
+never appears (/tmp/sleep28-inbound-before.log).
+
+persistTaskMutation now registers the existing issue scope before its mutations,
+or the newly created issue scope before inserting its conversation. The same
+transaction creates the inbound link and reactivates the binding. Existing
+endpoint/resource/principal authorization runs before this owner; provider calls
+remain outside it. This is a direct use of the shared transaction intent helper,
+not a new wrapper or background scan. No business policy or public API changes.
+
+The regression passes (/tmp/sleep28-inbound-tests.log), and the combined selection
+passes 12 cases: ordinary ingress reactivation, three existing Slack/Teams/Telegram
+reach-revocation cases, and eight Telegram migration cases
+(/tmp/sleep28-inbound-acceptance.log; 1,419 deselected). Server production
+typecheck/build pass in /tmp/sleep28-inbound-{typecheck,build}.log. The isolated
+DB is paperclip_sleep28_inbound_20261025_test. Existing resource and lifecycle
+proofs remain recorded at their prior checkpoints; the whole integration file
+was not run locally for this edit.
+
+Remaining audit: alternate monitor/wakeup receipt rewrites, board reply identity,
+provider-specific configuration/authority, and any remaining direct lineage
+writers. Endpoint update does not assign a new agent or change publication mode;
+its unrelated health/configuration writes must not cause blanket milestone scans.
+Production registration/poll removal, complete remote gates, prior parent findings,
+and the full original stack remain unfinished.

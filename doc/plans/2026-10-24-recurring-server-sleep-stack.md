@@ -1632,3 +1632,12 @@ Three local cancellation diagnostic runs passed, including full projects coverag
 and a database-only delay, without proving the CI deadlock's competing owner.
 Those failures, parent security/deletion findings, all other original slices,
 fresh remote review and reconciliation with master 7ebf98eafd remain open.
+
+
+Slice 28 ordinary ingress now wakes existing milestone debt before reactivating
+conversation bindings and writing inbound links. A real Slack ingress regression
+failed before repair and passes without depending on a new run being created.
+All 12 selected ingress/revocation/Telegram migration cases and server types/build
+pass. The milestone audit records evidence, isolated DB, and remaining authority/
+lineage producers. This is another producer checkpoint in draft #17606, not
+production polling removal or completion of the full requested stack.

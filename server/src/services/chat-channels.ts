@@ -1,6 +1,7 @@
 import { leasedChatProvider } from "./chat-channels/runtime/receiver-policy.js";
 import { chatReceiverSchedule } from "./chat-channels/runtime/receiver-schedule.js";
 import { registerChatReceiverWork } from "./chat-channels/runtime/receiver-work.js";
+import { notifyChatRunMilestones } from "./chat-run-milestone-notifications.js";
 import { notifyChatEndpointConfiguration } from "./chat-channels/configuration-work-notifications.js";
 import { registerDiscordCommandWork } from "./chat-channels/discord/command-work.js";
 import { discordCommandSchedule } from "./chat-channels/discord/command-schedule.js";
@@ -2125,6 +2126,9 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         taskUserId: string | null,
       ) => {
         let conversation = existingConversation;
+        if (conversation) {
+          await notifyChatRunMilestones(taskTx, { companyId: taskEndpoint.companyId, issueId: conversation.issueId });
+        }
         if (!conversation) {
           const [taskResource] = await taskTx.select({ executionDefaults: chatEndpointResources.executionDefaults })
             .from(chatEndpointResources).where(and(eq(chatEndpointResources.id, resource.id), eq(chatEndpointResources.endpointId, taskEndpoint.id)));
@@ -2166,6 +2170,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             },
             taskTx,
           );
+          await notifyChatRunMilestones(taskTx, { companyId: taskEndpoint.companyId, issueId: issue.id });
           await taskTx
             .insert(chatConversations)
             .values({
