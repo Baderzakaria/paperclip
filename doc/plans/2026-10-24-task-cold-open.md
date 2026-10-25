@@ -9,6 +9,10 @@ The core view skips enrichment. Recent comments retain the latest human input
 and four recent replies, plus the first human instruction when no description
 exists. Recent activity preserves queue/steering metadata. Recent run summaries
 select the latest run; conversation event reads exclude tools and traces.
+Original comment/steering facts are read separately for visible comments, with
+at most two facts per comment and 100 comment IDs per request. A reconnect that
+leaves a watched unfinished run outside the recent window reconciles run summaries.
+Core snapshots share task-detail mutation updates, rollback and invalidation.
 
 The browser retains messages and runs observed while open. New native runs use
 the normal event path. Expansion fetches full history, preserves existing rows,

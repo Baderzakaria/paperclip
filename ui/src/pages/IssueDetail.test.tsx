@@ -91,6 +91,7 @@ const mockIssuesApi = vi.hoisted(() => ({
 const mockActivityApi = vi.hoisted(() => ({
   forIssue: vi.fn(),
   recentForIssue: vi.fn(),
+  inputFactsForIssue: vi.fn(),
   runsForIssue: vi.fn(),
   recentRunsForIssue: vi.fn(),
 }));
@@ -1338,6 +1339,7 @@ describe("IssueDetail", () => {
     mockIssuesApi.recentComments.mockResolvedValue({ comments: [], latestCommentId: null, hasMore: false });
     mockActivityApi.recentRunsForIssue.mockResolvedValue([]);
     mockActivityApi.recentForIssue.mockResolvedValue([]);
+    mockActivityApi.inputFactsForIssue.mockResolvedValue([]);
     consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     vi.spyOn(window, "scrollTo").mockImplementation(() => {});
     vi.spyOn(globalThis, "fetch").mockResolvedValue({
@@ -1705,6 +1707,77 @@ describe("IssueDetail", () => {
       expect(mockIssueChatThreadRender.mock.calls.at(-1)?.[0].compactHistory).toBe(false);
     });
     expect(queryClient.getQueryData(["issues", "history-expanded", "PAP-1"])).toBe(true);
+  });
+
+  it.each(["success", "failure"])("updates and rolls back core-only task edits on %s", async (outcome) => {
+    queryClient.setQueryData(["issues", "history-expanded", "PAP-1"], false);
+    const issue = createIssue();
+    const pendingSave = createDeferred<Issue>();
+    mockIssuesApi.getCore.mockResolvedValue(issue);
+    mockIssuesApi.get.mockReturnValue(new Promise(() => {}));
+    mockIssuesApi.update.mockReturnValue(pendingSave.promise);
+    await act(async () => renderIssueView());
+    let properties!: { onUpdate: (data: Record<string, unknown>) => void };
+    await waitForAssertion(() => {
+      properties = mockOpenPanel.mock.calls.at(-1)?.[0]?.props.children?.props;
+      expect(properties?.onUpdate).toBeTypeOf("function");
+    });
+    await act(async () => properties.onUpdate({ title: "Edited before enrichment", status: "in_progress" }));
+    await waitForAssertion(() => expect(queryClient.getQueryData<Issue>([...queryKeys.issues.detail("PAP-1"), "core"])?.status).toBe("in_progress"));
+    if (outcome === "success") {
+      const saved = { ...issue, title: "Saved before enrichment", status: "in_progress" as const };
+      mockIssuesApi.getCore.mockResolvedValue(saved);
+      await act(async () => pendingSave.resolve(saved));
+    } else {
+      await act(async () => pendingSave.reject(new Error("Save failed")));
+    }
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain(outcome === "success" ? "Saved before enrichment" : issue.title);
+      expect(queryClient.getQueryData<Issue>([...queryKeys.issues.detail("PAP-1"), "core"])?.status).toBe(outcome === "success" ? "in_progress" : issue.status);
+    });
+    expect(queryClient.getQueryData(queryKeys.issues.detail("PAP-1"))).toBeUndefined();
+  });
+
+  it("settles watched runs that fall outside the preview after reconnecting", async () => {
+    queryClient.setQueryData(["issues", "history-expanded", "PAP-1"], false);
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+    const run = (runId: string, status = "succeeded") => ({ runId, status, agentId: "agent-1", createdAt: new Date().toISOString() });
+    mockActivityApi.recentRunsForIssue.mockResolvedValue([run("watched", "running")]);
+    await act(async () => renderIssueView());
+    await waitForAssertion(() => expect(mockIssueChatThreadRender.mock.calls.at(-1)?.[0].linkedRuns).toEqual([expect.objectContaining({ runId: "watched", status: "running" })]));
+    mockActivityApi.recentRunsForIssue.mockResolvedValue([run("newest"), run("middle")]);
+    mockActivityApi.runsForIssue.mockClear().mockResolvedValue([run("newest"), run("middle"), run("watched")]);
+    await act(async () => { await queryClient.invalidateQueries({ queryKey: queryKeys.issues.runs("PAP-1") }); });
+    await waitForAssertion(() => expect(mockIssueChatThreadRender.mock.calls.at(-1)?.[0].linkedRuns).toEqual([
+      expect.objectContaining({ runId: "watched", status: "succeeded" }),
+      expect.objectContaining({ runId: "newest", status: "succeeded" }),
+    ]));
+    await act(async () => { await queryClient.invalidateQueries({ queryKey: queryKeys.issues.runs("PAP-1") }); });
+    expect(mockActivityApi.runsForIssue).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a delivered message out of the queue when its receipt is older than recent activity", async () => {
+    queryClient.setQueryData(["issues", "history-expanded", "PAP-1"], false);
+    const comment = createQueuedCommentQueue().entries[0].comment;
+    mockIssuesApi.get.mockResolvedValue(createIssue({ status: "in_progress", assigneeAgentId: "agent-1", executionRunId: "run-active-1" }));
+    mockIssuesApi.recentComments.mockResolvedValue({ comments: [comment], latestCommentId: comment.id, hasMore: true });
+    mockAgentsApi.list.mockResolvedValue([createAgent({ adapterType: "paperclip_runner" })]);
+    mockHeartbeatsApi.activeRunForIssue.mockResolvedValue({
+      id: "run-active-1", runtimeMode: "native", status: "running", agentId: "agent-1",
+      adapterType: "paperclip_runner", startedAt: "2026-04-21T00:00:00.000Z", createdAt: "2026-04-21T00:00:00.000Z",
+    });
+    mockActivityApi.inputFactsForIssue.mockResolvedValue([{
+      id: "old-receipt", action: "issue.queued_comment_steered", createdAt: "2026-04-21T00:00:06.000Z",
+      details: { commentId: comment.id, targetRunId: "run-active-1", duplicate: false },
+    }]);
+    await act(async () => renderIssueView());
+    await waitForAssertion(() => {
+      const props = mockIssueChatThreadRender.mock.calls.at(-1)?.[0];
+      expect(props.queuedCommentQueue).toBeNull();
+      expect(props.comments).toContainEqual(expect.objectContaining({ id: comment.id, steeredIntoRunId: "run-active-1" }));
+    });
+    expect(mockActivityApi.inputFactsForIssue).toHaveBeenCalledWith("PAP-1", [comment.id]);
+    expect(mockActivityApi.forIssue).not.toHaveBeenCalled();
   });
 
   it("retains every recent run observed during an open task", async () => {

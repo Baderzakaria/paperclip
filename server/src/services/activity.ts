@@ -396,6 +396,22 @@ export function activityService(db: Db) {
         .then((rows) => rows.map((r) => r.activityLog));
     },
 
+    inputFactsForIssue: async (companyId: string, issueId: string, commentIds: string[]) => {
+      if (!commentIds.length) return [];
+      const commentId = sql<string>`${activityLog.details}->>'commentId'`;
+      return db.selectDistinctOn([commentId, activityLog.action])
+        .from(activityLog)
+        .where(and(
+          eq(activityLog.companyId, companyId),
+          eq(activityLog.entityType, "issue"),
+          eq(activityLog.entityId, issueId),
+          inArray(commentId, commentIds),
+          inArray(activityLog.action, ["issue.queued_comment_steered", "issue.comment_added"]),
+          sql`${activityLog.details}->>'duplicate' is distinct from 'true'`,
+        ))
+        .orderBy(commentId, activityLog.action, asc(activityLog.createdAt), asc(activityLog.id));
+    },
+
     forIssue: (issueId: string, limit?: number) => {
       const query = db
         .select()

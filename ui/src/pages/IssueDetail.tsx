@@ -1503,6 +1503,12 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
       ? queryClient.getQueryData<ActivityEvent[]>([...queryKeys.issues.activity(issueQueryRef), "recent"])
       : undefined,
   });
+  const inputCommentIds = comments.filter((comment) => !("clientStatus" in comment) || !comment.clientStatus).map((comment) => comment.id).sort();
+  const inputFacts = useQuery({
+    queryKey: [...queryKeys.issues.activity(issueQueryRef), "comment-inputs", inputCommentIds],
+    queryFn: () => activityApi.inputFactsForIssue(issueQueryRef, inputCommentIds),
+    enabled: !!issueId && !historyExpanded && inputCommentIds.length > 0,
+  });
   const {
     data: liveRuns,
     isFetched: liveRunsFetched,
@@ -1617,8 +1623,15 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     queryKey: linkedRunsKey,
     queryFn: async () => {
       if (historyExpanded) return activityApi.runsForIssue(issueQueryRef);
-      const recent = await activityApi.recentRunsForIssue(issueQueryRef);
+      let recent = await activityApi.recentRunsForIssue(issueQueryRef);
       const previous = queryClient.getQueryData<RunForIssue[]>(linkedRunsKey) ?? [];
+      if (previous.some((run) =>
+        (run.status === "running" || run.status === "queued") && !recent.some((next) => next.runId === run.runId),
+      )) {
+        // After a reconnect, several turns may have completed beyond the small
+        // window. Reconcile watched runs once against authoritative summaries.
+        recent = await activityApi.runsForIssue(issueQueryRef);
+      }
       // The second row refreshes a just-finished predecessor. Start with only
       // the latest run, then keep every run observed while this task is open.
       const visible = new Set([...previous.map((run) => run.runId), ...recent.slice(0, 1).map((run) => run.runId)]);
@@ -1629,7 +1642,10 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
       hasLiveRuns || issueStatus === "in_progress" ? 1000 : false,
     placeholderData: historyExpanded ? queryClient.getQueryData<RunForIssue[]>([...queryKeys.issues.runs(issueQueryRef), "recent"]) : undefined,
   });
-  const resolvedActivity = activity ?? [];
+  const resolvedActivity = useMemo(
+    () => [...new Map([...(activity ?? []), ...(inputFacts.data ?? [])].map((event) => [event.id, event])).values()],
+    [activity, inputFacts.data],
+  );
   const resolvedLinkedRuns = linkedRuns ?? [];
   useEffect(() => {
     recordIssueDetailReadiness({ activity: !activityPending, "linked-runs": !linkedRunsPending, runtime: runtimeSelectionKnown });
@@ -2573,6 +2589,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
             initialHistoryError={
               initialHistoryError ||
               activityError ||
+              (!historyExpanded && inputFacts.isError) ||
               linkedRunsError ||
               liveRunsError ||
               (activeRunQueryEnabled && activeRunError)
@@ -2580,6 +2597,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
             onRetryInitialHistory={() => {
               onRetryInitialHistory?.();
               void refetchActivity();
+              if (!historyExpanded && inputCommentIds.length) void inputFacts.refetch();
               void refetchLinkedRuns();
               void refetchLiveRuns();
               if (activeRunQueryEnabled) void refetchActiveRun();
@@ -3257,7 +3275,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   );
 
   const coreIssueQuery = useQuery({
-    queryKey: ["issues", "core", issueId],
+    queryKey: [...queryKeys.issues.detail(issueId!), "core"],
     queryFn: ({ signal }) => issuesApi.getCore(issueId!, { signal }),
     enabled: !!issueId,
   });

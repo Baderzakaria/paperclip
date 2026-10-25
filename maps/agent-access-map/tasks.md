@@ -264,6 +264,8 @@ Evidence: `source-only` — reviewed at `3bbc2104b65caf9f7763938a01260a5673e12f7
 
 Verification: `not-run` — Read multipage history and exact comment, reload same content; reject inaccessible task, foreign/mismatched comment and inspect trust redaction. Request native limit 200 and confirm at most 100 comments.
 
+The same authorized activity route supports `view=comment-inputs&commentIds=<comma-separated UUIDs>` for original comment/steering facts. Each request accepts at most 100 comment IDs and returns at most two facts per comment, scoped to the accessible issue and company. This preserves delivered-input state when its receipt is older than the recent activity window.
+
 Gaps: Native bounded history is not an arbitrary-task/paginated API substitute. The new UI preview route has no dedicated native tool or CLI command. Existing full comment reads remain available.
 
 ### `append-retry-comment`

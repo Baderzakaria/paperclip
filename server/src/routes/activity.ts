@@ -355,6 +355,14 @@ export function activityRoutes(db: Db) {
     const issue = await getAccessibleResource(req, res, resolveIssueByRef(rawId), "Issue not found");
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
+    if (req.query.view === "comment-inputs") {
+      const parsed = z.array(z.string().uuid()).max(100).safeParse(
+        typeof req.query.commentIds === "string" && req.query.commentIds ? req.query.commentIds.split(",") : [],
+      );
+      if (!parsed.success) throw badRequest("commentIds must contain at most 100 UUIDs");
+      res.json(await svc.inputFactsForIssue(issue.companyId, issue.id, parsed.data));
+      return;
+    }
     const result = await (req.query.view === "recent" ? svc.forIssue(issue.id, 50) : svc.forIssue(issue.id));
     res.json(result);
   });

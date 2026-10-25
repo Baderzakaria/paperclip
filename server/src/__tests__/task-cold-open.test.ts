@@ -72,6 +72,25 @@ const support = await getEmbeddedPostgresTestSupport();
       "Human direction", "Newest direction", "New reply 5", "New reply 4", "New reply 3", "New reply 2",
     ]);
   });
+  it("loads the original input receipts outside the recent activity window and ignores replay receipts", async () => {
+    const commentId = randomUUID();
+    const receiptIssueId = randomUUID();
+    await db.insert(issues).values({ id: receiptIssueId, companyId, title: "Steering receipts" });
+    await db.insert(activityLog).values([
+      { companyId, actorId: "test", entityType: "issue", entityId: receiptIssueId, action: "issue.queued_comment_steered", createdAt: new Date(1), details: { commentId, targetRunId: runId } },
+      { companyId, actorId: "test", entityType: "issue", entityId: receiptIssueId, action: "issue.queued_comment_steered", createdAt: new Date(2), details: { commentId, targetRunId: runId, duplicate: true } },
+      ...Array.from({ length: 51 }, () => ({ companyId, actorId: "test", entityType: "issue", entityId: receiptIssueId, action: "issue.updated" })),
+    ]);
+    const activity = activityService(db);
+    expect((await activity.forIssue(receiptIssueId, 50)).some(row => row.action === "issue.queued_comment_steered")).toBe(false);
+    const facts = await activity.inputFactsForIssue(companyId, receiptIssueId, [commentId]);
+    expect(facts).toHaveLength(1);
+    expect(facts[0].createdAt).toEqual(new Date(1));
+    expect(await activity.inputFactsForIssue(companyId, receiptIssueId, [randomUUID()])).toEqual([]);
+    expect(await activity.inputFactsForIssue(randomUUID(), receiptIssueId, [commentId])).toEqual([]);
+    expect(await activity.inputFactsForIssue(companyId, randomUUID(), [commentId])).toEqual([]);
+  });
+
   it("pages conversation events without tools, including identity-less deltas and requests", async () => {
     const event = (seq: number, eventType: string, payload: Record<string, unknown>, itemId?: string) => ({
       companyId, runId, agentId, seq, eventType, payload: { prpEvent: { schema: "paperclip.prp.event.v1", eventType, itemId, payload } },
