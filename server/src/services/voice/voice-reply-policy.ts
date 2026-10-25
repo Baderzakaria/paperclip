@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 
+export const VOICE_REPLY_ACTION_KIND = "speko_voice_reply_push";
+
 /** Plain voice text stays inside the provider's UTF-16 limit, without splitting
  * surrogate pairs. Whitespace-only chunks need no audible delivery. */
 export function splitSpekoReplyText(text: string): string[] {

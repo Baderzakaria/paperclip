@@ -1,8 +1,9 @@
 import { notifyVoiceRecovery } from "./voice-recovery-notifications.js";
-import { planVoiceReply } from "./voice-reply-policy.js";
+import { VOICE_REPLY_ACTION_KIND } from "./voice-reply-policy.js";
+import { readVoiceReplyState } from "./voice-reply-state.js";
 export { splitSpekoReplyText } from "./voice-reply-policy.js";
-import { and, asc, eq, gt, inArray, isNull, lt, sql } from "drizzle-orm";
-import { chatActions, chatEndpoints, chatPublications, chatVoiceReplies, chatVoiceSessions, type Db } from "@paperclipai/db";
+import { and, asc, eq, gt, inArray, isNull, lt } from "drizzle-orm";
+import { chatActions, chatEndpoints, chatVoiceReplies, chatVoiceSessions, type Db } from "@paperclipai/db";
 import { instanceSettingsService } from "../instance-settings.js";
 import { HttpError } from "../../errors.js";
 import { createSpekoProvider, SpekoProviderError } from "./speko-provider.js";
@@ -10,7 +11,7 @@ import type { voiceSessionStore } from "./voice-session-store.js";
 
 import { logger } from "../../middleware/logger.js";
 
-const kind = "speko_voice_reply_push";
+const kind = VOICE_REPLY_ACTION_KIND;
 /** Existing action ledger is the push outbox. A committed dispatch intent is
  * never blindly resent after a crash or an ambiguous provider outcome. */
 export async function pushVoiceReplies(db: Db, options: {
@@ -40,28 +41,16 @@ export async function pushVoiceReplies(db: Db, options: {
         const {session} = context;
         if (!session.providerSessionId) return null;
         await options.store.collectMissedReplies(tx, session);
-        const [inFlight] = await tx.select({id: chatActions.id}).from(chatActions).where(and(eq(chatActions.companyId, session.companyId), eq(chatActions.endpointId, session.endpointId), eq(chatActions.kind, kind), eq(chatActions.status, "dispatching"), sql`${chatActions.payload}->>'sessionId' = ${session.id}`)).limit(1);
-        if (inFlight) return null;
-        const [row] = await tx.select({reply: chatVoiceReplies, payload: chatPublications.payload}).from(chatVoiceReplies)
-          .innerJoin(chatPublications, and(eq(chatPublications.id, chatVoiceReplies.publicationId), eq(chatPublications.companyId, session.companyId)))
-          .where(and(eq(chatVoiceReplies.companyId, session.companyId), eq(chatVoiceReplies.sessionId, session.id), isNull(chatVoiceReplies.deliveredAt),
-            eq(chatPublications.endpointId, session.endpointId), eq(chatPublications.conversationId, session.conversationId), eq(chatPublications.issueId, session.issueId), eq(chatPublications.state, "published")))
-          .orderBy(asc(chatVoiceReplies.cursor)).limit(1);
-        // Questions need a hint that makes the phone agent retrieve the
-        // authorized question IDs. Keep this reply pending until get_updates
-        // presents it; never speak later answers over an unpresented question.
-        const questionNotification = typeof row?.payload.interactionId === "string";
-        if (!row || typeof row.payload.text !== "string" || !row.payload.text.trim()) return null;
-        const saved = await tx.select().from(chatActions).where(and(eq(chatActions.companyId, session.companyId), eq(chatActions.endpointId, session.endpointId), eq(chatActions.kind, kind), sql`${chatActions.payload}->>'replyId' = ${row.reply.id}`)).for("update");
-        const plan = planVoiceReply({ replyId: row.reply.id, text: row.payload.text, questionNotification, actions: saved, now: Date.now() });
-        if (plan.kind !== "dispatch") return null;
+        const state = await readVoiceReplyState(tx, session);
+        if (state.kind !== "reply" || state.plan.kind !== "dispatch") return null;
+        const { reply, questionNotification, plan } = state;
         const values = { status: "dispatching", result: null, updatedAt: new Date() };
         const action = plan.priorActionId
           ? (await tx.update(chatActions).set(values).where(eq(chatActions.id, plan.priorActionId)).returning())[0]!
           : (await tx.insert(chatActions).values({ companyId: session.companyId, endpointId: session.endpointId, conversationId: session.conversationId, kind, providerActionId: plan.identity,
-              payload: { sessionId: session.id, replyId: row.reply.id, publicationId: row.reply.publicationId, generation: session.generation, providerSessionId: session.providerSessionId,
+              payload: { sessionId: session.id, replyId: reply.id, publicationId: reply.publicationId, generation: session.generation, providerSessionId: session.providerSessionId,
                 questionNotification, partIndex: plan.partIndex, partCount: plan.partCount, textDigest: plan.textDigest }, ...values }).returning())[0]!;
-        return { ...context, reply: row.reply, questionNotification, text: plan.text, partIndex: plan.partIndex, partCount: plan.partCount, action };
+        return { ...context, reply, questionNotification, text: plan.text, partIndex: plan.partIndex, partCount: plan.partCount, action };
       }).catch(error => {
         if (error instanceof HttpError && [403,404].includes(error.status)) {
           logger.warn({event: "voice.reply.push.authorization_blocked", companyId: candidate.companyId,

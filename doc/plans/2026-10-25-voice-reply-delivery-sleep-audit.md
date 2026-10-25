@@ -99,3 +99,33 @@ Next implement the shared voice reply-state reader and deadline selection, audit
 all session/reply/action and published-state producers, register the worker, and
 prove quiet/reactivation before retiring the recurring and direct normal dispatch
 paths. Preserve the public/manual push API and all adjacent voice maintenance.
+
+The ordered reply-state reader is now also shared inside the voice owner. It
+preserves the caller's session lock, published-only first reply, question barrier,
+prior action locks and multipart policy. It exposes a saved dispatch-expiry
+boundary without replaying a dispatch. The same 12 delivery cases and server
+typechecking pass after this second extraction.
+
+Implementation direction for the next step:
+
+- Scoped reconstruction pages identities of active unexpired phone sessions and
+  outstanding dispatching actions. A changed session may receive one immediate
+  inspection; this is a startup/committed-write wake, not a recurring deadline.
+- Check each session independently: authorize and collect missed replies under
+  the existing session transaction, then use readVoiceReplyState. No reply or a
+  permanent barrier disarms it. A retry or in-flight intent keeps its real deadline.
+  Provider dispatch remains outside the transaction, using the existing claim.
+- Keep action-expiry entries independent of session eligibility so terminal calls
+  do not strand old dispatch intents. Use the existing strict 30-second threshold
+  and atomic dispatching-to-unknown update. Never resend an unknown action.
+- A session check that fails must retain its own backoff and not block successful
+  checks for other companies. Do not move all authorization/catch-up into one
+  full-inventory load that fails as a unit.
+- Add a session scope to manual push execution so the worker cannot rediscover all
+  calls per selected item. Retain the existing manual API for explicit callers.
+- Route published-state notification in both publications/worker.ts and
+  publications/resolution.ts through a narrow owner helper. Their endpoint identity
+  is already available. Avoid adding voice policy to the shared coordinator.
+- Notify before reply creation, presentation and action mutation. Wire session and
+  configuration changes without giving reply delivery its own active-call polling
+  deadline. Reconstruct on startup/resume; explicit feature changes invalidate it.
