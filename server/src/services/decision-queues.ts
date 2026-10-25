@@ -1,3 +1,4 @@
+import { pullRequestSeedProductCondition } from "./decision-queue-seed-rules.js";
 import { notifyApprovalQueueWork } from "./approval-work-notifications.js";
 import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -402,8 +403,7 @@ export function decisionQueueService(db: Db) {
       .select({ issueId: issueWorkProducts.issueId })
       .from(issueWorkProducts)
       .where(and(
-        eq(issueWorkProducts.companyId, companyId),
-        eq(issueWorkProducts.type, "pull_request"),
+        pullRequestSeedProductCondition(companyId),
         inArray(issueWorkProducts.issueId, issueIds),
       )).then((rows) => rows.map((row) => row.issueId)));
 

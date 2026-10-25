@@ -331,7 +331,7 @@ vi.mock("../services/join-request-retention.js", async importOriginal => ({
 
 vi.mock("../services/approval-queue-seeding-work.js", async importOriginal => ({
   ...await importOriginal<typeof import("../services/approval-queue-seeding-work.js")>(),
-  approvalQueueSeedingService: vi.fn(() => ({ sweep: vi.fn(async () => undefined), next: vi.fn(async () => null) })),
+  approvalQueueSeedingService: vi.fn(() => ({ sweep: vi.fn(async () => undefined), next: vi.fn(() => null), request: vi.fn() })),
 }));
 
 vi.mock("../services/approval-retention.js", async importOriginal => ({
@@ -545,7 +545,10 @@ describe("startServer feedback export wiring", () => {
     if (enabled) {
       const service = vi.mocked(approvalQueueSeedingService).mock.results.at(-1)!.value;
       await registration![1].run(new AbortController().signal);
-      expect(service.sweep).toHaveBeenCalled(); expect(service.next).toHaveBeenCalled();
+      expect(service.sweep).toHaveBeenCalled();
+      expect(registration![1].nextRunAt()).toBeNull();
+      expect(await registration![1].hasPending()).toBe(false);
+      expect(service.next).toHaveBeenCalled();
     }
   });
 

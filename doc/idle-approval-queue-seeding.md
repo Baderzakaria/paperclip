@@ -37,7 +37,8 @@ changes retain their explicit signals.
 
 The queue service owns seed matching, creation, membership uniqueness, and audit
 writes. The feed and worker use the same writer through a small normalized source
-contract. A worker does not construct a presentation-layer AttentionItem. Queue
+contract. The candidate lookup and writer share the pull-request product SQL
+predicate, so the matching policy has one owner. A worker does not construct a presentation-layer AttentionItem. Queue
 reads keep their existing source authorization checks. A queue-rule update and
 seeding serialize on the existing queue row. Existing memberships are not pruned
 when an approval resolves. This preserves current behavior; pruning is a separate
@@ -77,8 +78,11 @@ hide later candidates. Atomic existing membership uniqueness prevents duplicate
 rows and duplicate insertion audit events.
 
 After a sweep, another lookup decides whether actual projection debt remains.
-Only that debt, a newer committed signal, or a failed attempt retains a one-second
-retry. The generation check follows the final awaited lookup, so a commit arriving
+Unprocessed pages and newer committed signals retain a one-second continuation.
+Failed scopes back off exponentially from one second to one minute. New signals
+do not reset a failing scope's backoff; other companies can proceed independently.
+The next retry is registered with the shared scheduler, with no SQL during the
+wait. A failed scope remains tracked until its owed memberships are reconciled. The generation check follows the final awaited lookup, so a commit arriving
 during an empty read cannot be erased. Once reconciled, there is no deadline and
 no recurring worker SQL. The shared coordinator preserves requested work during
 drain. Passive pending checks inspect memory only; startup reconstructs from rows. Shutdown aborts between rows
@@ -143,3 +147,18 @@ inspections after only 32 had completed. The test advanced fake time before the
 previous asynchronous page had necessarily published its next deadline. It now
 waits for all 33 inspections, then retains the zero-further-work assertions. All
 14 environment cleanup cases pass on real PostgreSQL; production code is unchanged.
+
+
+Further review reproduced 120 failed transactions in two simulated minutes for a
+persistently failing projection. Per-scope backoff now bounds that test to at most
+eight attempts, even with new signals every second. Removing the fault recovers
+the membership. A real coordinator/producer case proves thirty seconds without
+SQL during backoff, another company's successful queue seeding during that wait,
+and eventual recovery without losing the original work. All 25 worker cases pass.
+The first consumer command omitted the external DB setting for queue routes and
+skipped those six cases; the corrected command executes and passes all six.
+The shared PR predicate is exercised by both those writer tests and worker tests.
+Server typecheck and build pass; fresh remote review/checks remain required.
+
+The final startup, approval-retention, and attention consumer run passes all 93
+cases. With the 25 worker and six queue cases, 124 affected tests pass.

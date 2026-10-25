@@ -282,6 +282,68 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     draining = false; await seeded(approval.id); await quiet();
   });
 
+  it("backs off persistent projection failures without forgetting the owed membership", async () => {
+    const service = approvalQueueSeedingService(db);
+    await service.sweep();
+    const approval = await pending();
+    service.request(new Set([companyId]));
+    await db.execute(sql`create function approval_queue_fail() returns trigger language plpgsql as $$ begin raise exception 'projection unavailable'; end $$`);
+    await db.execute(sql`create trigger approval_queue_fail before insert on decision_queue_items for each row execute function approval_queue_fail()`);
+    const transactions = vi.spyOn(db, "transaction");
+    try {
+      for (let second = 0; second < 120; second++) {
+        service.request(new Set([companyId]));
+        await service.sweep().catch(() => undefined);
+        await vi.advanceTimersByTimeAsync(1000);
+      }
+      expect(transactions.mock.calls.length).toBeLessThanOrEqual(8);
+      expect(transactions.mock.calls.length).toBeGreaterThan(1);
+      expect(await memberships()).toEqual([]);
+      expect(await service.next()).not.toBeNull();
+    } finally {
+      transactions.mockRestore();
+      await db.execute(sql`drop trigger approval_queue_fail on decision_queue_items`);
+    }
+    await vi.advanceTimersByTimeAsync(60_000);
+    await service.sweep();
+    expect(await memberships()).toEqual([expect.objectContaining({ sourceId: approval.id })]);
+    expect(await service.next()).toBeNull();
+  });
+
+  it("keeps backoff SQL-quiet while another company's committed work proceeds", async () => {
+    const service = approvalQueueSeedingService(db), sweep = service.sweep;
+    let running = false;
+    service.sweep = async signal => { running = true; try { await sweep(signal); } finally { running = false; } };
+    await start(service); await quiet();
+    await db.execute(sql`create function approval_queue_fail() returns trigger language plpgsql as $$ begin
+      if new.company_id::text = TG_ARGV[0] then raise exception 'projection unavailable'; end if; return new; end $$`);
+    await db.execute(sql`create trigger approval_queue_fail before insert on decision_queue_items for each row execute function approval_queue_fail(${sql.raw("'" + companyId + "'")})`);
+    const approval = await pending();
+    for (let count = 1; count <= 7; count++) {
+      await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(1000); expect(errors.length).toBeGreaterThanOrEqual(count); }, { timeout: 5000 });
+      await vi.waitFor(() => expect(running).toBe(false));
+    }
+    const reads = vi.spyOn(db, "select"), writes = vi.spyOn(db, "transaction");
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(reads).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled();
+    reads.mockRestore(); writes.mockRestore();
+    const otherId = randomUUID();
+    await db.insert(companies).values({ id: otherId, name: "Healthy tenant", issuePrefix: `H${otherId.slice(0, 6)}` });
+    const [otherIssue] = await db.insert(issues).values({ companyId: otherId, title: "Other PR", status: "todo" }).returning();
+    await workProductService(db).createForIssue(otherIssue.id, otherId, { type: "pull_request", provider: "github", title: "Other PR", status: "open" });
+    const otherApproval = await approvalRecords(db).create(otherId, { type: "request_board_approval", payload: {} });
+    await issueApprovalService(db).link(otherIssue.id, otherApproval.id);
+    await vi.waitFor(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(await db.select().from(decisionQueueItems).where(eq(decisionQueueItems.companyId, otherId)))
+        .toEqual([expect.objectContaining({ sourceId: otherApproval.id })]);
+    }, { timeout: 5000 });
+    expect(await memberships()).toEqual([]);
+    await db.execute(sql`drop trigger approval_queue_fail on decision_queue_items`); errors.length = 0;
+    await vi.advanceTimersByTimeAsync(60_000);
+    await seeded(approval.id); await quiet();
+  });
+
   it("drains multiple pages without duplicating memberships or audit events", async () => {
     const target = await issue(); await product(target.id);
     const rows = await db.insert(approvals).values(Array.from({ length: 101 }, () => ({ companyId, type: "request_board_approval", payload: {} }))).returning();
@@ -309,6 +371,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await db.execute(sql`create trigger approval_queue_fail before insert on decision_queue_items for each row execute function approval_queue_fail(${sql.raw("'" + last + "'")})`);
     const service = approvalQueueSeedingService(db);
     await expect(service.sweep()).rejects.toThrow("Approval queue seeding failed");
+    await vi.advanceTimersByTimeAsync(1000);
     await service.sweep(); expect((await memberships()).map(row => row.sourceId)).toEqual([last]);
     await db.execute(sql`drop trigger approval_queue_fail on decision_queue_items`);
     await service.sweep(); expect(await memberships()).toHaveLength(101); expect(await service.next()).toBeNull();

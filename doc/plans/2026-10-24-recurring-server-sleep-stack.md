@@ -989,3 +989,14 @@ Approval #17510 has passing latest-head CI and Greptile 5/5 at 0c7109c103, but
 Paperclip review identified persistent-failure backoff and duplicated PR matching
 that still require repair. Tool health remains the next new migration after
 these owning-PR repairs.
+
+
+Approval queue follow-up: persistent projection failure reproduced 120 failed
+transactions in two simulated minutes. Per-scope exponential backoff now caps
+retries at one minute without discarding debt or letting repeated signals reset
+the budget. A coordinator regression proves SQL silence during backoff and real
+producer progress for another company. The candidate and seed writer share the
+PR-product predicate. All 124 affected worker/queue/startup/retention/attention
+cases pass, along with server types/build. One initial consumer command skipped
+six queue tests because its DB variable was missing; the corrected run executes
+and passes them. Fresh remote checks and review remain required after publication.
