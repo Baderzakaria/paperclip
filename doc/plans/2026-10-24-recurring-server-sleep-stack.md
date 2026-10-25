@@ -1022,3 +1022,17 @@ shared-DB attempt produced cleanup foreign-key failures after email; those are
 recorded, not counted as passes. Total selected coverage is 770 cases. The server
 build passes. The inventory SQL uses the existing company/enabled index with
 40,000 retained rows (13 buffers, 0.022 ms). Full workspace and remote gates remain.
+
+## Health publication and next chat boundary
+
+Tool health is [#17554](https://github.com/paperclipai/paperclip/pull/17554), head
+`2ca12f806399cfcef1a474453301534f4b96c1ef`, stacked on #17518. Local workspace
+checks/build and 770 selected tests pass. CI run 40165710347 is confirmed live;
+Greptile and security review are running. This is not final acceptance.
+
+The next runtime-discovery audit found command-registration recovery hidden
+inside `reconcileDiscordRuntime`. That is a separate durable reason and must get
+its own PR before removing the runtime discovery backstop. Slice 19 audits that
+owner in [Discord command registration](2026-10-25-discord-command-registration-sleep-audit.md).
+Runtime discovery, active lease renewal, voice, Teams, and every original pending
+inventory item remain in scope. No merges are authorized.
