@@ -1350,3 +1350,11 @@ Parent #17583 has a Discord rollback/drain test failure to repair at its owner;
 parent #17580 has two new cleanup review findings. Neither is marked complete.
 The remaining chat duties, original ledger, #17490 E2E failure, and final
 master/stack reconciliation remain required. No stack merge is authorized.
+
+Slice 25 published as [#17586](https://github.com/paperclipai/paperclip/pull/17586).
+Parent Discord test settlement and denial-latency repairs are propagated. At the
+report tip, 41 Discord tests and 138 full voice/app tests pass; unchanged report,
+cleanup and retention workers had 37 passing cases. CI/reviews remain required.
+Next owner audit splits Teams unused-consent expiry from abandoned send/upload
+attempt recovery, preserving one reason per PR. Company deletion cleanup policy
+and the earlier E2E failure remain unresolved completion duties.

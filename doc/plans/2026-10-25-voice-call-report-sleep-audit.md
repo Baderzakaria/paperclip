@@ -139,3 +139,14 @@ retention worker cases passed serially on the isolated worker database. Workspac
 and `/tmp/sleep25-workspace-build.log`. These 174 selected cases do not claim the
 entire `pnpm test:run` suite passed locally. This host's embedded PostgreSQL test
 initialization limitation remains; CI must run the complete relevant gates.
+
+## Publication and parent repairs
+
+Published as #17586. The Discord quiet-test settlement repair is propagated from
+#17557 and passes all 41 command ownership tests at the report branch. The inbound
+denial latency fix is also propagated; its held-provider regression is included.
+After both merges, all 138 full voice/app cases pass on a fresh migrated database
+(`/tmp/sleep25-denial-acceptance.log`). The earlier 37 worker cases remain valid;
+those worker implementations are unchanged by the parent repairs. Remote checks
+and reviews are required for the final pushed head. Parent #17580's company
+deletion finding remains unresolved; denial latency finding is resolved.
