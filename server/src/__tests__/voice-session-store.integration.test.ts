@@ -1,3 +1,6 @@
+import { createChatReconciliationCoordinator } from "../app.js";
+import { subscribeDatabaseWork } from "@paperclipai/db";
+import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import * as voiceReplyNotifications from "../services/voice/voice-reply-notifications.js";
 import { voiceReplySchedule } from "../services/voice/voice-reply-schedule.js";
 import { registerVoiceReplyWork } from "../services/voice/voice-reply-work.js";
@@ -77,6 +80,44 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     }
     return { companyId, endpointId, agentId, connectionId, issueId, conversationId, callerId, sessionId, store, request, reserved, accept, toolInput, publication };
   }
+
+  it("limits a new pre-call wake to its admission instead of scanning endpoint history", async () => {
+    const f = await inboundFixture(); const hints: string[] = [];
+    const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.voiceInboundRetention,
+      (event, scopes) => { if (event === "settled") hints.push(...scopes ?? ["*"]); });
+    try {
+      const id = randomUUID(), incoming = f.sign({ ...f.event, session_id: id, call_id: id });
+      await f.service.inbound.lifecycle(f.endpoint.publicId, incoming.body, incoming.headers);
+      const [saved] = await db.select().from(chatVoiceInboundCalls).where(eq(chatVoiceInboundCalls.providerSessionId, id));
+      expect(hints).toEqual([`admission:${saved.id}`]);
+    } finally {
+      unsubscribe(); await db.delete(chatVoiceInboundCalls).where(eq(chatVoiceInboundCalls.companyId, f.companyId));
+    }
+  });
+
+  it("leaves due history intact during chat maintenance and deletes it through retention", async () => {
+    const f = await inboundFixture();
+    const ended = f.sign({ type: "call.status", call_id: f.call.providerSessionId, status: "ended" });
+    await f.service.inbound.lifecycle(f.endpoint.publicId, ended.body, ended.headers);
+    await db.update(chatVoiceInboundCalls).set({ expiresAt: new Date(0), updatedAt: new Date(0) }).where(eq(chatVoiceInboundCalls.id, f.call.id));
+    const onError = vi.fn();
+    const maintenance = createChatReconciliationCoordinator({
+      reconcileVoiceSessions: () => f.service.reconcileMaintenance(),
+      processPendingDeliveries: async () => undefined, projectRunMilestones: async () => 0,
+      flushPublications: async () => undefined, onError,
+    });
+    try {
+      maintenance.reconcile(); await maintenance.drain();
+      expect(await db.select().from(chatVoiceInboundCalls).where(eq(chatVoiceInboundCalls.id, f.call.id))).toHaveLength(1);
+      expect(onError).not.toHaveBeenCalled();
+    } finally { maintenance.stop(); await maintenance.drain(); }
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError });
+    try {
+      await f.service.inbound.registerRetentionWork(coordinator, () => true).ready;
+      expect(await db.select().from(chatVoiceInboundCalls).where(eq(chatVoiceInboundCalls.id, f.call.id))).toHaveLength(0);
+      expect(onError).not.toHaveBeenCalled();
+    } finally { await coordinator.stop(); }
+  });
 
   it.each(["signed callback", "cleanup receipt"])("schedules retained history from a real %s", async confirmation => {
     const f = await inboundFixture();

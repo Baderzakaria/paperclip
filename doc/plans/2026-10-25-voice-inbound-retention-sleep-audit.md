@@ -119,3 +119,33 @@ Final local consumer checks pass: 52 company-deletion/startup tests, 11 parent
 voice recovery tests, and final server typecheck. Selected nonoverlapping test
 coverage totals 218 passing cases. The implementation and local verification are
 complete; remote PR CI/review and the rest of the original stack remain pending.
+
+## Review repairs
+
+The first published head 9c38ddfe53 passed all CI and Greptile 5/5. Paperclip
+Review found unnecessary endpoint-wide retention refresh on every new call and
+missing behavioral coverage of removal from the maintenance lane.
+
+Pre-call admission now allocates its ID before insertion and registers the
+existing intent for that admission only. Retention lookup uses the primary key;
+new calls no longer scan the endpoint's retained history. Cleanup receives the
+same precise hint. Existing endpoint/company configuration changes retain their
+scope, and startup still reconstructs eligible history. No schema change.
+
+Two service regressions verify the actual signed pre-call scope and drive the
+real chat coordinator/voice maintenance path with due, confirmed history. The row
+survives maintenance and is deleted by the retention worker. Temporarily restoring
+pruning to voice maintenance makes this latter test fail with the row missing;
+restoring the implementation passes. All 133 full voice/app wiring tests and
+server typecheck pass after the repair. Logs are /tmp/sleep24-review-acceptance.log,
+/tmp/sleep24-review-types.log, /tmp/sleep24-maintenance-mutation.log and
+/tmp/sleep24-maintenance-restored.log. Typecheck covers production sources; the
+server tsconfig excludes the test directory, whose behavior is verified by Vitest.
+Fresh remote checks/review are required on the repaired head.
+
+Parent #17580 has all checks terminal and Greptile 5/5 at 4f0364d269. Its final
+Paperclip review added two findings: unresolved cleanup can block deletion, and
+rejection awaits provider calls. These require explicit disposition/repair at the
+parent; green checks do not resolve them. An arbitrary retry cap or credential
+failure is not proof that a provider call ended and must not silently discard the
+cleanup obligation. Preserve that requirement while assessing the deletion path.
