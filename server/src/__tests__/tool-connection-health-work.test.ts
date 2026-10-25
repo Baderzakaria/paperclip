@@ -185,8 +185,11 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
   });
   it("retains first writes through drain without querying", async () => {
     await start(); await quiet(); draining = true; await connection();
+    await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(1000); expect(idleWorkSnapshot().active).toBe(0); });
+    const drained = idleWorkSnapshot();
     const reads = vi.spyOn(db, "select"); await vi.advanceTimersByTimeAsync(60_000);
-    expect(reads).not.toHaveBeenCalled(); reads.mockRestore(); expect(probe).not.toHaveBeenCalled();
+    expect(reads).not.toHaveBeenCalled(); expect(idleWorkSnapshot()).toEqual(drained);
+    reads.mockRestore(); expect(probe).not.toHaveBeenCalled();
     draining = false; await checked();
   });
   it("moves the deadline when an actual-use health observation commits", async () => {
