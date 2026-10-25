@@ -1102,7 +1102,9 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       const [publication] = await db.insert(chatPublications).values({ companyId: f.companyId, endpointId: f.endpointId,
         conversationId: f.conversationId, issueId: f.issueId, idempotencyKey: randomUUID(), state: "published", payload: { text: "After resume" } }).returning();
       await f.store.enqueuePublication(f.companyId, publication.id);
-      await worker.quiet(60_000); expect(f.transport.sendCallMessage).toHaveBeenCalledOnce();
+      await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(1000); expect(idleWorkSnapshot().active).toBe(0); });
+      const drained = idleWorkSnapshot();
+      await worker.quiet(60_000); expect(idleWorkSnapshot()).toEqual(drained); expect(f.transport.sendCallMessage).toHaveBeenCalledOnce();
       enabled = true; await worker.settled();
       expect(f.transport.sendCallMessage).toHaveBeenCalledTimes(2); expect(f.transport.sendCallMessage.mock.calls.at(-1)?.[1]).toBe("After resume");
       await worker.quiet(); expect(worker.onError).not.toHaveBeenCalled();
