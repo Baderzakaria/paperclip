@@ -646,7 +646,7 @@ describeEmbeddedPostgres("issueTreeControlService", () => {
     await db.insert(agents).values([readyAgentId, parkedAgentId, previousAgentId].map((id) => ({
       id, companyId, name: id, role: "engineer", status: "idle", adapterType: "process",
     })));
-    const children = ["todo", "in_progress", "in_review", "blocked", "backlog"].map((status) => ({
+    const children = ["todo", "in_progress", "in_review", "blocked", "backlog", "done"].map((status) => ({
       id: randomUUID(), companyId, parentId: rootId, title: status, status,
       assigneeAgentId: status === "blocked" || status === "backlog" ? parkedAgentId : readyAgentId,
     }));
@@ -659,6 +659,10 @@ describeEmbeddedPostgres("issueTreeControlService", () => {
       mode: "pause",
       actor: { actorType: "user", actorId: "board-user", userId: "board-user" },
     });
+    expect(pause.hold.members?.find((member) => member.issueId === children[5].id)).toMatchObject({
+      skipped: true, skipReason: "terminal_status",
+    });
+    await db.update(issues).set({ status: "todo" }).where(eq(issues.id, children[5].id));
     // A previous executor is observable while stopping, but is not the current assignee to wake.
     await db.insert(heartbeatRuns).values({
       id: runId, companyId, agentId: previousAgentId, invocationSource: "assignment",
@@ -667,8 +671,8 @@ describeEmbeddedPostgres("issueTreeControlService", () => {
     await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, children[0].id));
 
     const preview = await svc.preview(companyId, rootId, { mode: "resume" });
-    expect(preview.totals.affectedIssues).toBe(6);
-    expect(preview.affectedAgents).toEqual([{ agentId: readyAgentId, issueCount: 3, activeRunCount: 0 }]);
+    expect(preview.totals.affectedIssues).toBe(7);
+    expect(preview.affectedAgents).toEqual([{ agentId: readyAgentId, issueCount: 4, activeRunCount: 0 }]);
     expect(preview.totals.affectedAgents).toBe(1);
     expect(preview.warnings).toContainEqual({
       code: "resume_tasks_remain_idle",

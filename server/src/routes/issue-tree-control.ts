@@ -436,9 +436,7 @@ export function issueTreeControlRoutes(
         const activeHold = await treeControlSvc.getHold(root.companyId, holdId);
         const issueIds =
           activeHold?.mode === "pause" && activeHold.rootIssueId === root.id
-            ? (activeHold.members ?? [])
-                .filter((member) => !member.skipped)
-                .map((member) => member.issueId)
+            ? (activeHold.members ?? []).map((member) => member.issueId)
             : [];
         if (issueIds.length > 0) {
           const candidates = await db.select({ id: issueRows.id, identifier: issueRows.identifier })
@@ -489,7 +487,6 @@ export function issueTreeControlRoutes(
       const wakeFailures: Array<{ issueId: string; message: string }> = [];
       if (hold.mode === "pause" && req.body.metadata?.wakeAgents === true) {
         for (const member of hold.members ?? []) {
-          if (member.skipped) continue;
           try {
             const issue = await issuesSvc.getById(member.issueId);
             if (
@@ -499,6 +496,9 @@ export function issueTreeControlRoutes(
               !ISSUE_TREE_RESUME_EXECUTABLE_STATUSES.includes(issue.status)
             )
               continue;
+            // The snapshot may predate reopening a task or releasing another
+            // pause. Current task state and remaining holds govern execution.
+            if (await treeControlSvc.getActivePauseHoldGate(root.companyId, issue.id)) continue;
             await heartbeat.wakeup(issue.assigneeAgentId, {
               source: "assignment",
               triggerDetail: "system",

@@ -53,6 +53,8 @@ Resume removes the pause without changing task status. Its wake count includes o
 current agent assignees on todo, in-progress, or in-review tasks. The dialog explains
 that blocked, backlog, and unassigned tasks remain idle. Verify this in both task
 interfaces with [the paused composer browser suite](../../tests/e2e/paused-composer.spec.ts).
+Release rechecks tasks reopened after the pause; another active pause still prevents
+their execution, and uncertain prior executions must be reconciled before waking.
 
 ## Gotchas
 
