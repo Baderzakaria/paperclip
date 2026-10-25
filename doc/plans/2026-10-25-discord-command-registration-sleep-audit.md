@@ -185,3 +185,16 @@ always restores spies. Verification: 87 worker/coordinator/health, eight produce
 and affected Slack, 57 existing lifecycle/startup tests; server types/build pass.
 The health security parent is inherited through company cleanup. See the owning
 Discord document for failure evidence and exact scope. Fresh remote gates remain.
+
+## Idle assertion settlement repair
+
+A descendant CI run (#17583, run 40184498387, server shard 11/12) observed one
+scoped candidate SELECT during the rollback test's quiet interval. The test only
+waited for nextWakeAt to become null. The coordinator consumes a timer before
+its asynchronous transaction reconciliation and scoped load run, so null alone
+can mean work is running, not settled. The test now waits for zero tracked active
+work as well as no deadline before measuring the same 60-second zero-SQL interval.
+No production timeout, dispatch, or quiet predicate was relaxed. All 41 real
+PostgreSQL command ownership cases pass with the repair. Log:
+`/tmp/sleep19-settlement-tests.log`. Propagate this owner-level change through the
+stack; remote checks must verify the new heads.
