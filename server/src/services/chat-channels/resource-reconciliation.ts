@@ -1,3 +1,4 @@
+import { notifyChatConnectionHealth } from "./connection-health-notifications.js";
 import { imessageResourceParticipants } from "./imessage-photon/resources.js";
 import { createGitHubResources, reconcileGitHubRepositoryCoordinates } from "./github/resources.js";
 import { baseTeamsConversationId } from "./microsoft-teams/resources.js";
@@ -522,6 +523,7 @@ export function createChatResourceReconciliation(db: Db, options: ResourceReconc
                     updatedAt: now,
                   })
                   .where(eq(chatEndpoints.id, currentEndpoint.id));
+                await notifyChatConnectionHealth(tx, currentEndpoint);
                 await tx
                   .update(toolConnections)
                   .set({
@@ -551,6 +553,7 @@ export function createChatResourceReconciliation(db: Db, options: ResourceReconc
                   updatedAt: now,
                 })
                 .where(eq(chatEndpoints.id, currentEndpoint.id));
+              await notifyChatConnectionHealth(tx, currentEndpoint);
               await tx
                 .update(toolConnections)
                 .set({

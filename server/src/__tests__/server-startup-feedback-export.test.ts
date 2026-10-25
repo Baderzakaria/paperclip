@@ -424,6 +424,7 @@ vi.mock("../services/index.js", () => ({
   routineService: routineServiceFactoryMock,
   statusCardService: vi.fn(() => ({})),
   toolAccessService: vi.fn(() => ({
+    scheduledHealth: { load: vi.fn(async () => []), check: vi.fn(async () => null) },
     sweepConnectionHealth: vi.fn(async () => ({
       checked: 0,
       healthy: 0,
@@ -847,12 +848,17 @@ describe("startServer feedback export wiring", () => {
       await startServer(); await settleStartupHousekeeping();
       const sweeps = vi.mocked(toolAccessService).mock.results.map(result => vi.mocked(result.value.sweepConnectionHealth));
       const count = () => sweeps.reduce((total, sweep) => total + sweep.mock.calls.length, 0);
-      expect(count()).toBeGreaterThan(0);
-      const startupCalls = count();
+      expect(count()).toBe(0);
+      const registrations = deliveryWorkRegisterMock.mock.calls.filter(([queue]) => queue === DELIVERY_QUEUES.toolConnectionHealth);
+      expect(registrations).toHaveLength(1);
+      const loads = vi.mocked(toolAccessService).mock.results.map(result => result.value.scheduledHealth.load);
+      const loadCount = () => loads.reduce((total, load) => total + load.mock.calls.length, 0);
+      expect(loadCount()).toBe(1);
       expect(tick).toEqual(expect.any(Function));
       tick!(); await new Promise<void>(resolve => setImmediate(resolve));
       tick!(); await new Promise<void>(resolve => setImmediate(resolve));
-      expect(count()).toBe(startupCalls);
+      expect(count()).toBe(0);
+      expect(loadCount()).toBe(1);
     } finally { intervals.mockRestore(); }
   });
 

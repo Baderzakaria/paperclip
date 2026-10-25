@@ -1,3 +1,4 @@
+import { writeToolConnectionHealthChange } from "./tool-connection-health-notifications.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
@@ -690,14 +691,14 @@ export function smokeLabService(db: Db, options: {
     ));
     const now = new Date();
     if (existing) {
-      const [updated] = await db.update(toolApplications).set({
+      const [updated] = await writeToolConnectionHealthChange(db, input.companyId, tx => tx.update(toolApplications).set({
         name: input.name,
         description: input.description,
         type: input.type,
         status: "active",
         metadata: { smokeLab: true },
         updatedAt: now,
-      }).where(eq(toolApplications.id, existing.id)).returning();
+      }).where(eq(toolApplications.id, existing.id)).returning());
       return { row: updated ?? existing, created: false };
     }
     const [created] = await db.insert(toolApplications).values({
@@ -742,41 +743,43 @@ export function smokeLabService(db: Db, options: {
       lastHealthAt: now,
       updatedAt: now,
     };
-    const ensureDefaultOrganizationGrant = async (connectionId: string) => {
-      const [existingGrant] = await db.select({ id: connectionGrants.id }).from(connectionGrants).where(and(
-        eq(connectionGrants.companyId, input.companyId),
-        eq(connectionGrants.connectionId, connectionId),
-        eq(connectionGrants.kind, "organization"),
-        eq(connectionGrants.isDefault, true),
-      ));
-      if (existingGrant) return;
-      await db.insert(connectionGrants).values({
+    return writeToolConnectionHealthChange(db, input.companyId, async tx => {
+      const ensureDefaultOrganizationGrant = async (connectionId: string) => {
+        const [existingGrant] = await tx.select({ id: connectionGrants.id }).from(connectionGrants).where(and(
+          eq(connectionGrants.companyId, input.companyId),
+          eq(connectionGrants.connectionId, connectionId),
+          eq(connectionGrants.kind, "organization"),
+          eq(connectionGrants.isDefault, true),
+        ));
+        if (existingGrant) return;
+        await tx.insert(connectionGrants).values({
+          companyId: input.companyId,
+          connectionId,
+          kind: "organization",
+          status: "active",
+          isDefault: true,
+          credentialSecretRefs: [],
+          createdAt: now,
+          updatedAt: now,
+        });
+      };
+      if (existing) {
+        const [updated] = await tx.update(toolConnections).set(values).where(eq(toolConnections.id, existing.id)).returning();
+        await ensureDefaultOrganizationGrant(existing.id);
+        return { row: updated ?? existing, created: false };
+      }
+      const [created] = await tx.insert(toolConnections).values({
         companyId: input.companyId,
-        connectionId,
-        kind: "organization",
-        status: "active",
-        isDefault: true,
-        credentialSecretRefs: [],
+        name: input.name,
+        uid: `smoke-lab/${input.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")}`,
+        ...values,
+        createdByAgentId: input.actor?.actorType === "agent" ? input.actor.agentId : null,
+        createdByUserId: input.actor?.actorType === "user" ? input.actor.actorId : null,
         createdAt: now,
-        updatedAt: now,
-      });
-    };
-    if (existing) {
-      const [updated] = await db.update(toolConnections).set(values).where(eq(toolConnections.id, existing.id)).returning();
-      await ensureDefaultOrganizationGrant(existing.id);
-      return { row: updated ?? existing, created: false };
-    }
-    const [created] = await db.insert(toolConnections).values({
-      companyId: input.companyId,
-      name: input.name,
-      uid: `smoke-lab/${input.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")}`,
-      ...values,
-      createdByAgentId: input.actor?.actorType === "agent" ? input.actor.agentId : null,
-      createdByUserId: input.actor?.actorType === "user" ? input.actor.actorId : null,
-      createdAt: now,
-    }).returning();
-    await ensureDefaultOrganizationGrant(created.id);
-    return { row: created, created: true };
+      }).returning();
+      await ensureDefaultOrganizationGrant(created.id);
+      return { row: created, created: true };
+    });
   }
 
   async function ensureStdioTemplate(companyId: string, actor?: SmokeLabActorInfo) {
@@ -963,20 +966,21 @@ export function smokeLabService(db: Db, options: {
       eq(toolConnections.name, HTTP_CONNECTION_NAME),
     ));
     if (!connection || !httpSidecar) return;
+    const sidecarUrl = httpSidecar.url;
     const now = new Date();
-    await db.update(toolConnections).set({
+    await writeToolConnectionHealthChange(db, companyId, tx => tx.update(toolConnections).set({
       config: {
         ...asRecord(connection.config),
-        url: `${httpSidecar.url}/mcp`,
-        catalogUrl: `${httpSidecar.url}/catalog`,
-        toolCallUrl: `${httpSidecar.url}/tools/call`,
+        url: `${sidecarUrl}/mcp`,
+        catalogUrl: `${sidecarUrl}/catalog`,
+        toolCallUrl: `${sidecarUrl}/tools/call`,
       },
       healthStatus: "ok",
       healthMessage: "Smoke Lab HTTP fixture sidecar is running.",
       healthCheckedAt: now,
       lastHealthAt: now,
       updatedAt: now,
-    }).where(eq(toolConnections.id, connection.id));
+    }).where(eq(toolConnections.id, connection.id)));
   }
 
   async function startHttpSidecar(companyId?: string) {

@@ -1,3 +1,4 @@
+import { notifyToolConnectionHealth } from "./tool-connection-health-notifications.js";
 import { notifyCompanyRetentionWork } from "./retention-work-notifications.js";
 import { notifyDecisionTargetWork } from "./decision-target-work.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
@@ -118,6 +119,7 @@ export async function deleteCompany(db: Db, id: string) {
         await tx.delete(executionWorkspaces).where(eq(executionWorkspaces.companyId, id));
         await tx.delete(projects).where(eq(projects.companyId, id));
         await agentLifecycleCompanyDeletion.deleteCompanyData(tx, id);
+        await notifyToolConnectionHealth(tx, id);
         const rows = await tx
           .delete(companies)
           .where(eq(companies.id, id))

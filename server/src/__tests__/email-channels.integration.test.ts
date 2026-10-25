@@ -1,3 +1,4 @@
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { aiConnectionService } from "../services/ai-connections.js";
 import { fastResponseService } from "../services/fast-responses.js";
 import { fastResponseReceipt } from "../services/fast-response-provider.js";
@@ -72,6 +73,8 @@ import { toolAccessService } from "../services/tool-access.js";
 import { emailSendSchema } from "@paperclipai/shared";
 import { chatChannelService } from "../services/chat-channels.js";
 
+const externalTestDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_EMAIL_TEST_DATABASE_URL");
+
 describe("AgentMail durable email pipeline", () => {
   let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let db: ReturnType<typeof createDb>;
@@ -83,8 +86,8 @@ describe("AgentMail durable email pipeline", () => {
       folder,
       "master.key",
     );
-    database = await startEmbeddedPostgresTestDatabase("paperclip-email-");
-    db = createDb(database.connectionString);
+    if (!externalTestDatabaseUrl) database = await startEmbeddedPostgresTestDatabase("paperclip-email-");
+    db = createDb(externalTestDatabaseUrl ?? database!.connectionString);
     await instanceSettingsService(db).updateExperimental({
       enableChatConnectors: false,
     });
@@ -111,6 +114,7 @@ describe("AgentMail durable email pipeline", () => {
       );
   });
   afterAll(async () => {
+    await db?.$client.end({ timeout: 1 });
     await database?.cleanup();
     if (previous === undefined)
       delete process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE;

@@ -1,3 +1,4 @@
+import { notifyToolConnectionHealth } from "../../tool-connection-health-notifications.js";
 import { managedConnectorProfile } from "./client-settings.js";
 import type { ActorInfo } from "../types.js";
 import { oauthConfig, normalizeOauthScopes } from "./metadata.js";
@@ -355,6 +356,7 @@ export function createCloudOAuthCallback(db: Db, dependencies: Dependencies) {
           scopes: [...profile.scopes],
         },
       };
+      await notifyToolConnectionHealth(tx, connection.companyId);
       [connection] = await tx
         .update(toolConnections)
         .set({

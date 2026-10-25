@@ -1,3 +1,4 @@
+import { notifyToolConnectionHealth, writeToolConnectionHealthChange } from "./tool-connection-health-notifications.js";
 import { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { fastResponseService, enqueueFastResponse, fastResponseSourceCurrent, fastResponseTurnQueued } from "./fast-responses.js";
@@ -913,6 +914,7 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
             updatedAt: now,
           })
           .where(eq(chatEndpoints.id, endpoint.id));
+        await notifyToolConnectionHealth(tx, endpoint.companyId);
         await tx
           .update(toolConnections)
           .set({ status: "active", enabled: true, healthStatus: "ok" })
@@ -1984,7 +1986,7 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
         .update(chatEndpoints)
         .set({ lastError: null, healthMessage: "Connected" })
         .where(eq(chatEndpoints.id, endpoint.id));
-      await db
+      await writeToolConnectionHealthChange(db, endpoint.companyId, tx => tx
         .update(toolConnections)
         .set({
           healthStatus: "ok",
@@ -1992,7 +1994,7 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
           lastError: null,
           healthCheckedAt: new Date(),
         })
-        .where(eq(toolConnections.id, endpoint.connectionId));
+        .where(eq(toolConnections.id, endpoint.connectionId)));
     }
   }
   async function maintainSocket(endpoint: Endpoint) {
@@ -2092,7 +2094,7 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
     });
   }
   async function markError(endpoint: Endpoint, error: string) {
-    await db
+    await writeToolConnectionHealthChange(db, endpoint.companyId, tx => tx
       .update(toolConnections)
       .set({
         healthStatus: "degraded",
@@ -2100,7 +2102,7 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
         lastError: error,
         healthCheckedAt: new Date(),
       })
-      .where(eq(toolConnections.id, endpoint.connectionId));
+      .where(eq(toolConnections.id, endpoint.connectionId)));
     await db
       .update(chatEndpoints)
       .set({ lastError: error, healthMessage: error, updatedAt: new Date() })
@@ -2362,6 +2364,7 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
         .update(chatEndpoints)
         .set({ status: "paused" })
         .where(eq(chatEndpoints.id, endpoint.id));
+      await notifyToolConnectionHealth(tx, endpoint.companyId);
       await tx
         .update(toolConnections)
         .set({ enabled: false, status: "disabled" })
@@ -2455,6 +2458,7 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
             updatedAt: new Date(),
           })
           .where(eq(chatEndpoints.id, id));
+        await notifyToolConnectionHealth(tx, endpoint.companyId);
         await tx
           .update(toolConnections)
           .set({

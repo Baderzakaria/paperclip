@@ -1,3 +1,4 @@
+import { registerToolConnectionHealthWork } from "./services/tool-connection-health-work.js";
 import { approvalQueueSeedingService, registerApprovalQueueSeedingWork } from "./services/approval-queue-seeding-work.js";
 import { joinRequestRetentionService, registerJoinRequestRetentionWork } from "./services/join-request-retention.js";
 import { approvalRetentionService, registerApprovalRetentionWork } from "./services/approval-retention.js";
@@ -1802,12 +1803,8 @@ async function startServerWithDatabaseTeardown(
       await step("custom_image_setup_cleanup", () => registerCustomImageCleanupWork(deliveryWork, environmentCustomImages,
         () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped,
         config.heartbeatSchedulerIntervalMs).ready);
-      await step("tool_connection_health", async () => {
-        const toolHealthSweep = await tools.sweepConnectionHealth();
-        if (toolHealthSweep.failed > 0) {
-          logger.warn({ ...toolHealthSweep }, "startup tool connection health sweep found failing connections");
-        }
-      });
+      await step("tool_connection_health", () => registerToolConnectionHealthWork(deliveryWork, tools.scheduledHealth,
+        () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped).ready);
       await step("decision_continuation_worker", () => registerDecisionContinuationWork(deliveryWork, decisionExecutor,
         () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped).ready);
       await step("decision_expiry_worker", () => registerDecisionExpiryWork(deliveryWork, decisionExecutor,
@@ -1896,17 +1893,6 @@ async function startServerWithDatabaseTeardown(
         }));
 
         if (isIdleTaskDrainActive() || heartbeatSchedulerStopped) return;
-        trackHeartbeatSchedulerWork(tools
-          .sweepConnectionHealth()
-          .then((swept) => {
-            if (swept.failed > 0) {
-              logger.warn({ ...swept }, "periodic tool connection health sweep found failing connections");
-            }
-          })
-          .catch((err) => {
-            logger.error({ err }, "periodic tool connection health sweep failed");
-          }));
-
         if (isIdleTaskDrainActive() || heartbeatSchedulerStopped) return;
         if (!(await heartbeat.resolveSchedulingSuppression()).suppressed) {
           // Periodically reap orphaned runs (5-min staleness threshold) and make sure

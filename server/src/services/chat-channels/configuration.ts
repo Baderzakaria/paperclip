@@ -1,3 +1,4 @@
+import { notifyChatConnectionHealth } from "./connection-health-notifications.js";
 import { preparePhotonConfiguration, createPhotonConfiguration } from "./imessage-photon/setup.js";
 import { slackRuntimeConfig } from "./slack/setup.js";
 import { createTelegramSetup } from "./telegram/setup.js";
@@ -193,6 +194,7 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
             updatedAt: pausedAt,
           })
           .where(eq(chatEndpoints.id, endpoint.id));
+        await notifyChatConnectionHealth(tx, endpoint);
         await tx
           .update(toolConnections)
           .set({ status: "disabled", enabled: false, updatedAt: new Date() })
@@ -336,6 +338,7 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
             })
             .where(eq(chatEndpoints.id, endpoint.id))
             .returning();
+          await notifyChatConnectionHealth(tx, endpoint);
           await tx
             .update(toolConnections)
             .set({
@@ -380,6 +383,7 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
                   sql`coalesce((${chatEndpoints.setup}->>'runtimeGeneration')::integer, 0) = ${runtimeGeneration(activatedEndpoint.setup)}`,
                 ),
               );
+            await notifyChatConnectionHealth(tx, endpoint);
             await tx
               .update(toolConnections)
               .set({
@@ -484,6 +488,7 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
           .update(chatConversations)
           .set({ state: "endpoint_removed", updatedAt: new Date() })
           .where(eq(chatConversations.endpointId, endpoint.id));
+        await notifyChatConnectionHealth(tx, endpoint);
         await tx
           .update(toolConnections)
           .set({ status: "archived", enabled: false, updatedAt: new Date() })
@@ -812,6 +817,7 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
             updatedAt,
           })
           .where(eq(chatEndpoints.id, endpoint.id));
+        await notifyChatConnectionHealth(tx, endpoint);
         await tx
           .update(toolConnections)
           .set({
@@ -873,6 +879,7 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
             updatedAt: new Date(),
           })
           .where(eq(chatEndpoints.id, endpoint.id));
+        await notifyChatConnectionHealth(tx, endpoint);
         await tx
           .update(toolConnections)
           .set({

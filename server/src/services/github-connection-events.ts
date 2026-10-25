@@ -1,3 +1,4 @@
+import { notifyToolConnectionHealth } from "./tool-connection-health-notifications.js";
 import { dispatchGitHubBotCloudEvent } from "./chat-github-cloud-ingress.js";
 import { chatEndpoints } from "@paperclipai/db";
 import { randomUUID } from "node:crypto";
@@ -326,6 +327,7 @@ export function githubConnectionEventService(
     };
     await database.update(connectionGrants).set({ providerTenant, updatedAt: now() })
       .where(and(eq(connectionGrants.id, binding.grantId), eq(connectionGrants.companyId, binding.companyId)));
+    await notifyToolConnectionHealth(database, binding.companyId);
     await database.update(toolConnections).set({
       healthStatus: unavailable ? "failed" : "ok",
       healthMessage: unavailable

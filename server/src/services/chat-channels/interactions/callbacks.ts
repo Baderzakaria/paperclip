@@ -1,3 +1,4 @@
+import { notifyChatConnectionHealth } from "../connection-health-notifications.js";
 import { createDiscordQuestionForms } from "../discord/question-forms.js";
 
 import { createProviderEffects, type ProviderEffectPayload } from "../provider-effects.js";
@@ -420,6 +421,7 @@ export function createChatInteractionCallbacks(db: Db, options: InteractionCallb
                 updatedAt: processedAt,
               })
               .where(eq(chatEndpoints.id, endpoint.id));
+            await notifyChatConnectionHealth(tx, currentEndpoint);
             await tx
               .update(toolConnections)
               .set({

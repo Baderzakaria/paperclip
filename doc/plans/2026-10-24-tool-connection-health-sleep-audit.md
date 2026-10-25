@@ -144,3 +144,22 @@ Additional owner evidence changes the implementation plan:
 
 These are audited constraints, not implemented guarantees. Complete producer
 classification and prove these paths before removing the health backstop.
+
+## Implemented producer contract, October 25
+
+The implementation and producer dispositions are now recorded in
+[the health lifecycle document](../idle-tool-connection-health.md). Health
+creation/setup mutations commit their grant/binding/runtime-slot SQL before the
+wake. Direct/cloud/Vercel OAuth activation and refresh disablement, catalog and
+actual-use observations, email control, access removal, company deletion, and
+feature changes now notify the owner. Voice connections remain covered through
+the chat lifecycle; the provider-to-transport mapping stays in the chat catalog,
+and excluded SDK chat updates do not notify health work.
+
+The aggregate health scan is replaced by the shared worker. Seventeen lifecycle,
+515 startup/tool-access, and 163 gateway/settings cases pass. The first consumer
+run exposed an ordinal transaction mock; a real SQL restoration fault preserves
+the intended regression and passes. Producer/chat consumers, query-plan evidence,
+build, and remote gates remain pending. Master was refreshed to `8415f4a679`;
+this uncommitted health branch remains based on the open migration stack, so
+final stack reconciliation with master is still required. No merge is authorized.

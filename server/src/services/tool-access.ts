@@ -1,3 +1,5 @@
+import { notifyToolConnectionHealth, writeToolConnectionHealthChange } from "./tool-connection-health-notifications.js";
+import { connectionHealthSchedule } from "./tool-access/catalog/health-schedule.js";
 import { restConnectorFor } from "./connectors/rest-registry.js";
 import { createConnectionCredentialValidation } from "./tool-access/connections/credential-validation.js";
 import { createConnectionGrants } from "./tool-access/connections/grants.js";
@@ -1217,7 +1219,7 @@ export function toolAccessService(
       safeDefault: true,
     };
     if (existing) {
-      const [updated] = await db
+      const [updated] = await writeToolConnectionHealthChange(db, companyId, tx => tx
         .update(toolApplications)
         .set({
           name: definition.applicationName,
@@ -1229,7 +1231,7 @@ export function toolAccessService(
           updatedAt: new Date(),
         })
         .where(eq(toolApplications.id, existing.id))
-        .returning();
+        .returning());
       return { row: updated, created: false };
     }
     const [created] = await db
@@ -1260,11 +1262,46 @@ export function toolAccessService(
       quarantineNewEntries: true,
     };
     if (existing) {
-      const [updated] = await db
-        .update(toolConnections)
-        .set({
+      const updated = await writeToolConnectionHealthChange(db, companyId, async tx => {
+        const [updated] = await tx
+          .update(toolConnections)
+          .set({
+            applicationId,
+            name: definition.connectionName,
+            transport: "local_stdio",
+            status: "active",
+            enabled: true,
+            config,
+            transportConfig: config,
+            credentialRefs: [],
+            credentialSecretRefs: [],
+            updatedAt: new Date(),
+          })
+          .where(eq(toolConnections.id, existing.id))
+          .returning();
+        await ensureDefaultOrganizationGrant(updated, tx);
+        await syncCredentialBindings(updated, [], tx);
+        await createToolRuntimeSlots(tx, runtimeSupervisor).ensureRuntimeSlot(updated);
+        return updated;
+      });
+      emitConnectionUpdated(updated, existing, "example");
+      return { row: updated, created: false };
+    }
+    const connectionId = randomUUID();
+    const created = await writeToolConnectionHealthChange(db, companyId, async tx => {
+      const [created] = await tx
+        .insert(toolConnections)
+        .values({
+          id: connectionId,
+          companyId,
           applicationId,
           name: definition.connectionName,
+          uid: connectionUid(
+            "paperclip",
+            definition.connectionName,
+            connectionId,
+          ),
+          connectionKind: "managed",
           transport: "local_stdio",
           status: "active",
           enabled: true,
@@ -1272,42 +1309,13 @@ export function toolAccessService(
           transportConfig: config,
           credentialRefs: [],
           credentialSecretRefs: [],
-          updatedAt: new Date(),
         })
-        .where(eq(toolConnections.id, existing.id))
         .returning();
-      await ensureDefaultOrganizationGrant(updated);
-      await syncCredentialBindings(updated);
-      await ensureRuntimeSlot(updated);
-      emitConnectionUpdated(updated, existing, "example");
-      return { row: updated, created: false };
-    }
-    const connectionId = randomUUID();
-    const [created] = await db
-      .insert(toolConnections)
-      .values({
-        id: connectionId,
-        companyId,
-        applicationId,
-        name: definition.connectionName,
-        uid: connectionUid(
-          "paperclip",
-          definition.connectionName,
-          connectionId,
-        ),
-        connectionKind: "managed",
-        transport: "local_stdio",
-        status: "active",
-        enabled: true,
-        config,
-        transportConfig: config,
-        credentialRefs: [],
-        credentialSecretRefs: [],
-      })
-      .returning();
-    await ensureDefaultOrganizationGrant(created);
-    await syncCredentialBindings(created);
-    await ensureRuntimeSlot(created);
+      await ensureDefaultOrganizationGrant(created, tx);
+      await syncCredentialBindings(created, [], tx);
+      await createToolRuntimeSlots(tx, runtimeSupervisor).ensureRuntimeSlot(created);
+      return created;
+    });
     emitConnectionCreated(created, "example");
     return { row: created, created: true };
   }
@@ -2478,7 +2486,7 @@ export function toolAccessService(
         personalIdentityUserId || dedicatedAgentId ? [] : credentialSecretRefs;
       if (revivedConnectionPrevious) {
         forgetMcpHttpSessions(revivedConnectionPrevious.id);
-        [connectionRow] = await db
+        [connectionRow] = await writeToolConnectionHealthChange(db, companyId, tx => tx
           .update(toolConnections)
           .set({
             name,
@@ -2500,7 +2508,7 @@ export function toolAccessService(
             updatedAt: new Date(),
           })
           .where(eq(toolConnections.id, revivedConnectionPrevious.id))
-          .returning();
+          .returning());
       } else {
         const connectionId = randomUUID();
         [connectionRow] = await db
@@ -2923,6 +2931,7 @@ export function toolAccessService(
                 connectionSetupMutationFingerprint(attemptedConnection),
             );
             if (connectionMutationIsStillCurrent) {
+              await notifyToolConnectionHealth(tx, companyId);
               await tx
                 .update(toolConnections)
                 .set({
@@ -2998,7 +3007,7 @@ export function toolAccessService(
           // surface the restoration failure instead of returning only the
           // original provider error.
           try {
-            await db
+            await writeToolConnectionHealthChange(db, companyId, tx => tx
               .update(toolConnections)
               .set({
                 status: "draft",
@@ -3014,7 +3023,7 @@ export function toolAccessService(
                   eq(toolConnections.id, revivedConnectionPrevious.id),
                   eq(toolConnections.companyId, companyId),
                 ),
-              );
+              ));
           } catch (quarantineError) {
             identityRollbackError = new AggregateError(
               [rollbackError, quarantineError],
@@ -3023,9 +3032,10 @@ export function toolAccessService(
           }
         }
       } else if (connectionRow) {
-        await db
+        const failedConnectionId = connectionRow.id;
+        await writeToolConnectionHealthChange(db, companyId, tx => tx
           .delete(toolConnections)
-          .where(eq(toolConnections.id, connectionRow.id))
+          .where(eq(toolConnections.id, failedConnectionId)))
           .catch(() => undefined);
       }
       if (
@@ -3138,6 +3148,7 @@ export function toolAccessService(
         await tx.select({ id: toolApplications.id }).from(toolApplications)
           .where(and(eq(toolApplications.id, connection.applicationId), eq(toolApplications.companyId, companyId)))
           .for("update");
+        await notifyToolConnectionHealth(tx, companyId);
         const [row] = await tx.update(toolConnections).set({ config, transportConfig: config, status: "active", enabled: true, ...(input.agentInstructions !== undefined ? { agentInstructions: input.agentInstructions } : {}), updatedAt: new Date() })
           .where(and(eq(toolConnections.id, connection.id), eq(toolConnections.companyId, companyId))).returning();
         await tx.update(toolApplications).set({ status: "active", updatedAt: new Date() }).where(and(eq(toolApplications.id, connection.applicationId), eq(toolApplications.companyId, companyId)));
@@ -3494,6 +3505,7 @@ export function toolAccessService(
         },
         tx,
       );
+      await notifyToolConnectionHealth(tx, companyId);
       const [updatedConnection] = await tx
         .update(toolConnections)
         .set({ status: "active", enabled: true, ...(input.agentInstructions !== undefined ? { agentInstructions: input.agentInstructions } : {}), updatedAt: new Date() })
@@ -4514,41 +4526,44 @@ export function toolAccessService(
       }
       const connectionId = randomUUID();
       const binding = actorBinding(actor);
-      const [row] = await db
-        .insert(toolConnections)
-        .values({
-          id: connectionId,
-          companyId,
-          applicationId,
-          name: input.name,
-          uid: connectionUid(applicationNamespace, input.name, connectionId),
-          connectionKind: input.connectionKind ?? "managed",
-          ownership: input.ownership ?? "customer",
-          transport,
-          authKind: input.authKind ?? "none",
-          credentialPolicy:
-            input.credentialPolicy ??
-            (input.authKind === "oauth" ? "per_user" : "shared"),
-          status: input.status ?? "draft",
-          enabled: input.enabled ?? false,
-          agentInstructions: input.agentInstructions !== undefined ? input.agentInstructions : defaultConnectionAgentInstructions(
-            typeof config.sourceTemplateKey === "string" ? getConnectableAppDefinition(config.sourceTemplateKey)?.agentInstructions : null,
-          ),
-          config,
-          transportConfig: isGoogleSheetsConnectionConfig(config)
-            ? config
-            : (input.transportConfig ?? config),
-          credentialRefs: input.credentialRefs ?? [],
-          credentialSecretRefs: input.credentialSecretRefs ?? [],
-          createdByAgentId:
-            binding.actorType === "agent" ? binding.actorId : null,
-          createdByUserId:
-            binding.actorType === "user" ? binding.actorId : null,
-        })
-        .returning();
-      await ensureDefaultOrganizationGrant(row);
-      await syncCredentialBindings(row);
-      await ensureRuntimeSlot(row);
+      const row = await writeToolConnectionHealthChange(db, companyId, async tx => {
+        const [row] = await tx
+          .insert(toolConnections)
+          .values({
+            id: connectionId,
+            companyId,
+            applicationId,
+            name: input.name,
+            uid: connectionUid(applicationNamespace, input.name, connectionId),
+            connectionKind: input.connectionKind ?? "managed",
+            ownership: input.ownership ?? "customer",
+            transport,
+            authKind: input.authKind ?? "none",
+            credentialPolicy:
+              input.credentialPolicy ??
+              (input.authKind === "oauth" ? "per_user" : "shared"),
+            status: input.status ?? "draft",
+            enabled: input.enabled ?? false,
+            agentInstructions: input.agentInstructions !== undefined ? input.agentInstructions : defaultConnectionAgentInstructions(
+              typeof config.sourceTemplateKey === "string" ? getConnectableAppDefinition(config.sourceTemplateKey)?.agentInstructions : null,
+            ),
+            config,
+            transportConfig: isGoogleSheetsConnectionConfig(config)
+              ? config
+              : (input.transportConfig ?? config),
+            credentialRefs: input.credentialRefs ?? [],
+            credentialSecretRefs: input.credentialSecretRefs ?? [],
+            createdByAgentId:
+              binding.actorType === "agent" ? binding.actorId : null,
+            createdByUserId:
+              binding.actorType === "user" ? binding.actorId : null,
+          })
+          .returning();
+        await ensureDefaultOrganizationGrant(row, tx);
+        await syncCredentialBindings(row, [], tx);
+        await createToolRuntimeSlots(tx, runtimeSupervisor).ensureRuntimeSlot(row);
+        return row;
+      });
       emitConnectionCreated(row, "api");
       return toConnection(row);
     },
@@ -4633,9 +4648,12 @@ export function toolAccessService(
             await syncCredentialBindings(rows[0]!, [], tx);
             return rows;
           })
-        : await write(db);
-      if (existing.transport !== "chat_sdk") await syncCredentialBindings(row);
-      await ensureRuntimeSlot(row);
+        : await writeToolConnectionHealthChange(db, existing.companyId, async tx => {
+            const rows = await write(tx);
+            await syncCredentialBindings(rows[0]!, [], tx);
+            await createToolRuntimeSlots(tx, runtimeSupervisor).ensureRuntimeSlot(rows[0]!);
+            return rows;
+          });
       emitConnectionUpdated(row, existing, "api");
       return toConnection(row);
     },
@@ -4685,6 +4703,7 @@ export function toolAccessService(
     listAppsNeedingAttention,
 
     sweepConnectionHealth,
+    scheduledHealth: connectionHealthSchedule(db, checkConnectionHealth),
 
     sweepGitHubConnectionContinuity,
     ...catalogReader,

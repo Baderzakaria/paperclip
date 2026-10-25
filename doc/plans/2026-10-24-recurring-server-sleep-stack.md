@@ -1000,3 +1000,25 @@ PR-product predicate. All 124 affected worker/queue/startup/retention/attention
 cases pass, along with server types/build. One initial consumer command skipped
 six queue tests because its DB variable was missing; the corrected run executes
 and passes them. Fresh remote checks and review remain required after publication.
+
+## Slice 18: tool-connection health implementation
+
+The health migration now reconstructs per-connection deadlines and reacts to
+committed company changes instead of inventory scans on every maintenance tick.
+See [health lifecycle and producer coverage](../idle-tool-connection-health.md).
+Existing proactive health, provider policy, voice eligibility, transaction
+uncertainty, drain, and shutdown behavior remain explicit. Seventeen lifecycle,
+515 startup/tool-access, and 163 gateway/settings tests pass. Additional producer
+consumers and publication gates remain open. This is not a completed PR yet.
+
+Fresh remote inspection: approval queue #17510 at `0d3100665d` has no failed or
+pending checks. Plugin #17518 at `ba0b6752cd` has no failed checks and one pending
+Paperclip Review check. The full original inventory and #17490 E2E cancellation
+failure remain required; no PR was merged.
+
+Health consumer follow-up: 72 access/email/GitHub/smoke-lab cases pass using a
+separate disposable DB per suite, and three selected chat cases pass. An initial
+shared-DB attempt produced cleanup foreign-key failures after email; those are
+recorded, not counted as passes. Total selected coverage is 770 cases. The server
+build passes. The inventory SQL uses the existing company/enabled index with
+40,000 retained rows (13 buffers, 0.022 ms). Full workspace and remote gates remain.
