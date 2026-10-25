@@ -1237,3 +1237,12 @@ full-refresh failure/backoff case. Server typecheck and build pass. Prior broad
 consumer/workspace verification remains recorded above; these 45 overlap that
 coverage and are not an additional unique total. Publication requires fresh
 remote CI and review. The full migration inventory remains outstanding.
+
+
+Voice recovery checkpoint: receiver repair `1604a9fcba` is published to #17572
+and incorporated into the unpublished voice child. The complete 93-case voice
+suite, eight new recovery lifecycle tests, and 16 startup wiring cases pass.
+See the voice audit for precise coverage and remaining work. Receiver CI
+40175242445 is live with no failures at inspection; no final acceptance or merge
+is claimed. All remaining reasons, older #17490 failure, and final master
+reconciliation stay in scope.

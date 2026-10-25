@@ -2,7 +2,7 @@
 
 Baseline: receiver parent #17572, head 643f4766227e15006b684d2cc7bea7ddd5cc2147.
 Branch: codex/sleep-21-voice-session-recovery.
-Status: owner audit only. No voice polling removal is implemented or verified.
+Status: implementation and local integration/lifecycle verification in progress; unpublished.
 
 ## Separate the reasons before changing the timer
 
@@ -112,3 +112,32 @@ requests suppressing rediscovery after discovery-initiated stops. Its optional
 full-refresh coalescing observation will also be addressed in the owning parent
 before this branch is published. Preserve all unfinished voice changes in this
 commit while repairing that parent.
+
+
+## Expanded lifecycle checkpoint
+
+Receiver review repairs are published in #17572 at `1604a9fcba` and merged into
+this child. The receiver CI run 40175242445 remains live, with no failing checks
+at inspection. The voice worker now also coalesces pending scopes under a full
+refresh and retains its backoff when narrower signals arrive.
+
+The complete existing voice session integration suite passes all 93 tests on a
+fresh disposable PostgreSQL database. This includes the four initial real-service
+producer cases and the adjacent reply, inbound, callback and report consumers.
+Eight new recovery-owner integration tests pass: configured terminal history,
+outer rollback/commit, first write during drain, transient authority failure
+without ending a valid call, restart with the same saved deadline, mutation during
+full refresh, a 105-session paged backlog with one failed provider, and shutdown
+joining admitted inspection. Their provider operations are controlled; real
+service authorization/producer coverage remains in the 93-case suite.
+
+The 16 startup wiring tests also pass. Initial new-suite failures were fixture
+errors (missing channel purpose) and a silence assertion starting before the
+committed cleanup_pending refresh had settled. Both were corrected; the final
+retry check proves no SQL during the actual backoff. No production failure was
+concealed or treated as a successful run.
+
+Outstanding before publication: complete producer/authorization-change audit,
+current-state races, cross-company fairness and failed-scope coverage, affected
+shared producer consumers, full workspace verification and remote gates. The
+other four voice duties and every remaining original stack item remain required.
