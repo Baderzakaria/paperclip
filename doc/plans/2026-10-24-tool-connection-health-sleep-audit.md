@@ -109,3 +109,38 @@ usability after transient tool errors. This migration must preserve that owning
 policy rather than choose new disablement behavior in the scheduler. The search
 also found #14638 for AI health exclusions. Inspect exact diffs before changing
 those paths; titles alone do not establish duplication or compatibility.
+
+
+## Continuation after parent review repairs
+
+The health branch now includes approval backoff/shared matching at `0d3100665d`
+and plugin coalescing/shutdown repair at `ba0b6752cd`. The combined parent
+regressions pass all 73 cases. Fresh master fetched and inspected is `a0e5166e97`;
+its aggregate tick still calls the health sweep. Parent PR checks are still in
+progress. The health migration is not implemented or published yet.
+
+Additional owner evidence changes the implementation plan:
+
+- `checkConnectionHealth` can call catalog discovery before writing its final
+  health observation. `catalog/publication.ts` itself changes health timestamps,
+  config, transport config, and `updatedAt`. A blanket comparison with the
+  connection's original `updatedAt` would reject this operation's own writes.
+  Concurrency fencing must distinguish a newer external configuration/observation
+  from the current probe's owned catalog publication; do not add a naive row-version
+  check that silently drops legitimate results.
+- `oauth/refresh-leases.ts` changes config and `updatedAt` merely to acquire or
+  release its existing refresh lease. Those are active-operation bookkeeping,
+  not independent reasons for proactive health work. Do not notify health for
+  every config-column write by pattern matching.
+- `oauth/connection-refresh.ts` has two different health-relevant transitions:
+  reauthorization failure changes status to draft and disables the connection;
+  successful token refresh changes credential refs/config while keeping the
+  connection usable. The former must cancel eligibility; the latter must refresh
+  the owning schedule without a global scan or a credential-refresh feedback loop.
+- Experimental setup policy resolves application identity and may reject before
+  the current health try/catch writes a timestamp. Disabled candidates therefore
+  need an explicit parked state and reactivation from instance feature changes;
+  they must not monopolize the bounded due page or lose their configuration.
+
+These are audited constraints, not implemented guarantees. Complete producer
+classification and prove these paths before removing the health backstop.
