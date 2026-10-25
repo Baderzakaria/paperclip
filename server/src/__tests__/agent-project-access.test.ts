@@ -92,6 +92,24 @@ describe("additive project access", () => {
     }
   });
 
+  it("keeps a pending existing selection blocked if its workspace is archived before retry", async () => {
+    const f = await seed();
+    const task = await issueService(db).update(f.issue.id, { projectId: f.selected[0]!.id });
+    const [workspace] = await db.insert(executionWorkspaces).values({ companyId: f.companyId,
+      projectId: f.selected[0]!.id, name: "Selected files", cwd: "/tmp/project-access-selected",
+      mode: "isolated_workspace", strategyType: "git_worktree" }).returning();
+    const service = executionWorkspaceService(db);
+    await service.selectTaskWorkspace({ companyId: f.companyId, issueId: f.issue.id, actor: board,
+      selection: { kind: "existing", workspaceId: workspace!.id }, expectedBindingRevision: 0, requestKey: randomUUID() });
+    expect(await taskInterruptionPresentation(db, task!)).toMatchObject({ canRetry: true, projectAccess: { ready: true } });
+    expect(await service.archiveWorkspaceUnderLifecycleLock({ id: workspace!.id, patch: {}, closedAt: new Date() }))
+      .toMatchObject({ outcome: "archived" });
+    await expect(service.applyPendingTaskWorkspaceSelection({ companyId: f.companyId, issueId: f.issue.id,
+      runId: f.runId, actor: { type: "agent", source: "agent_key", agentId: f.agentId, companyId: f.companyId } }))
+      .rejects.toThrow("Workspace is unavailable or inaccessible");
+    expect(await taskInterruptionPresentation(db, task!)).toMatchObject({ canRetry: false, projectAccess: { ready: false } });
+  });
+
   it.each(["denied_project", "foreign_company"] as const)("retains the %s gate on a bound workspace even when its source is allowed", async boundary => {
     const f = await seed(), foreign = boundary === "foreign_company" ? await seed() : null;
     const [source] = await db.insert(projectWorkspaces).values({ companyId: f.companyId, projectId: f.selected[0]!.id,

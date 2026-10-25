@@ -10,6 +10,7 @@ import { resolveCoreTrustPreset } from "./trust-preset-resolver.js";
 import { isDeepStrictEqual } from "node:util";
 import { ProjectAccessDeniedError } from "./project-access-denial.js";
 import { taskWorkspaceSelectionSchema, type TaskWorkspaceSelection } from "@paperclipai/shared";
+import { taskWorkspaceSelectableCondition } from "./task-workspace-selection.js";
 
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 
@@ -37,6 +38,7 @@ export async function taskWorkspaceProjectRequirements(db: Db, companyId: string
   const workspaceIds = [...new Set(selections.flatMap(row => row.workspaceId ? [row.workspaceId] : []))];
   const workspaces = workspaceIds.length ? await db.select({ id: executionWorkspaces.id,
     projectId: executionWorkspaces.projectId, projectWorkspaceId: executionWorkspaces.projectWorkspaceId,
+    selectable: sql<boolean>`${taskWorkspaceSelectableCondition()}`,
   }).from(executionWorkspaces).where(and(eq(executionWorkspaces.companyId, companyId), inArray(executionWorkspaces.id, workspaceIds))) : [];
   const workspaceMap = new Map(workspaces.map(workspace => [workspace.id, workspace]));
   const sources = selections.map(row => {
@@ -54,7 +56,8 @@ export async function taskWorkspaceProjectRequirements(db: Db, companyId: string
     const source = row.sourceId ? sourceMap.get(row.sourceId) : undefined;
     result.set(row.task.id, {
       projectIds: [...new Set([row.task.projectId, row.workspace?.projectId, source?.projectId].filter((id): id is string => Boolean(id)))],
-      available: row.available && (!row.workspaceId || Boolean(row.workspace)) && (!row.sourceId || Boolean(source)),
+      available: row.available && (!row.workspaceId || Boolean(row.workspace)) && (!row.sourceId || Boolean(source))
+        && (row.selection?.kind !== "existing" || row.workspace?.selectable === true),
     });
   }
   return result;
