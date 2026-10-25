@@ -88,7 +88,9 @@ export function registerDiscordCommandWork(
       if (due.length > batch.entries.length) earliest = Date.now() + 1_000;
       if (errors.length) throw new AggregateError(errors, "Discord command registration could not settle");
     },
-    hasPending: async () => dirty.size > 0,
+    // Preserve hints/deadlines for resume without holding settled intent during drain.
+    // The coordinator independently fences unresolved database transactions.
+    hasPending: async () => canRun() && dirty.size > 0,
     nextRunAt: next,
   });
 }
