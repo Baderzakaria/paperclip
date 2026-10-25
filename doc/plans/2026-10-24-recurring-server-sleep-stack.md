@@ -1987,3 +1987,20 @@ failure and 1,581 passes. Waiting for the actual quiet condition fixes that
 fixture; all 211 GitHub workflow tests pass after the change. Fresh remote gates
 for the fixture-only commit remain required. The next slice may build on this
 commit while those independent gates run; no stack merge is authorized.
+
+Slice 37, codex/sleep-37-github-review-projection, separates late stale-head
+review projection repair from periodic chat maintenance. Existing cancellation
+receipts and exact admitted deliveries authorize the repair. Committed receipt,
+cancellation, and relevant review-state writes wake the provider-owned worker;
+assessment ownership is rechecked atomically. The obsolete provider maintenance
+wrapper is removed. Explicit manual recovery and the independent missed-webhook
+lane remain. No table or Cloud wake contract is added. Ten new real-database
+cases plus legacy/startup coverage pass; final scalar-query acceptance and remote
+gates remain pending. See the owner audit for fixture failures, repairs, index
+plan evidence, and lifecycle limits. Other original inventory items and earlier
+stack gates remain open.
+
+Slice 36 final remote gates: all 53 checks passed on 01efd3f4f7, with fresh
+Greptile 5/5 and no review threads. Slice 37 final scalar-query selection passed
+20 tests; workspace typecheck and build passed. Full local acceptance and remote
+PR gates are still pending. No PR in this stack was merged.

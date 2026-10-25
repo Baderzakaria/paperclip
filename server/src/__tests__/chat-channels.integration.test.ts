@@ -1,3 +1,5 @@
+import { registerGitHubReviewProjectionWork } from "../services/chat-channels/github/review-projection-work.js";
+import { retainGitHubReviewReceipt } from "../services/chat-channels/github/task-preparation.js";
 import { settleUnrecoverableExecutions } from "../services/execution-recovery-resolution.js";
 import { environmentService } from "../services/environments.js";
 import { createAdmissionTransactionScope, createWakeAdmissionWriter } from "../modules/wake-queue/adapters/postgres.js";
@@ -6844,6 +6846,223 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         await expect.poll(async () => (await f.action()).status, { timeout: 5000 }).toBe("processed");
         expect(f.writes).toHaveLength(1); expect(errors).toEqual([]);
       } finally { release(); await coordinator.stop(); }
+    });
+
+    async function reviewProjectionFixture(cancelFirst = true) {
+      const f = await reviewBotFixture();
+      const deliveryId = randomUUID();
+      const payload = { action: "synchronize", installation: { id: 2468 },
+        repository: { id: 97531, full_name: "paperclipai/paperclip", name: "paperclip", owner: { id: 1357, login: "paperclipai" } },
+        sender: { id: 42, login: "octocat" },
+        pull_request: { number: 82, title: "Rapid pushes", body: "", draft: false,
+          base: { sha: "a".repeat(40), ref: "master" }, head: { sha: "b".repeat(40) },
+          user: { id: 42, login: "octocat", type: "User" }, labels: [] } };
+      f.setSupplementalProviderFetch(async input => String(input).endsWith("/pulls/82")
+        ? Response.json({ ...payload.pull_request, head: { sha: "c".repeat(40) } }) : undefined);
+      const checks = githubReviewCheckService(db, f.providerFetch);
+      const [endpoint] = await readChatEndpointsById(f.endpoint.id);
+      const event = githubAutomaticReviewEvent(payload, deliveryId)!;
+      await checks.enqueue(endpoint, event, true, "authorized");
+      const action = async () => (await db.select().from(chatActions).where(and(
+        eq(chatActions.endpointId, endpoint.id), eq(chatActions.kind, "github_review_check"))))[0];
+      if (cancelFirst) await checks.processPending();
+      const admit = async () => {
+        expect((await f.service.handleWebhook(endpoint.publicId, "github", signedGitHubWebhookRequest({
+          event: "pull_request", delivery: deliveryId, payload, webhookSecret: f.webhookSecret,
+        }))).status).toBeLessThan(300);
+        await expect.poll(async () => (await readChatGitHubReviewsByEndpointId(endpoint.id)).length,
+          { timeout: 10_000 }).toBe(1);
+        return (await readChatGitHubReviewsByEndpointId(endpoint.id))[0];
+      };
+      const read = async (id: string) => (await db.select().from(chatGitHubReviews).where(eq(chatGitHubReviews.id, id)))[0];
+      return { ...f, endpoint, event, action, checks, admit, read };
+    }
+
+    it("wakes stale GitHub review projection repair from real admission and leaves settled history quiet", async () => {
+      const f = await reviewProjectionFixture();
+      const errors: unknown[] = [];
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+      try {
+        await registerGitHubReviewProjectionWork(db, coordinator, () => true).ready;
+        await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }), { timeout: 5000 })
+          .toEqual({ active: 0, next: null });
+        const review = await f.admit();
+        await expect.poll(async () => (await f.read(review.id)).state, { timeout: 5000 }).toBe("superseded");
+        await f.service.shutdown();
+        const [manual] = await db.insert(chatGitHubReviews).values({ ...review, id: randomUUID(),
+          deliveryId: "run:" + randomUUID() + ":" + review.headSha, state: "queued" }).returning();
+        await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }), { timeout: 5000 })
+          .toEqual({ active: 0, next: null });
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+        const reads = vi.spyOn(db, "select"), writes = vi.spyOn(db, "update");
+        try {
+          await vi.advanceTimersByTimeAsync(120_000);
+          expect(reads).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled();
+        } finally { reads.mockRestore(); writes.mockRestore(); vi.useRealTimers(); }
+        expect((await f.read(manual.id)).state).toBe("queued"); expect(errors).toEqual([]);
+      } finally { await coordinator.stop(); vi.useRealTimers(); }
+    });
+
+    it("wakes stale GitHub review projection repair when cancellation commits after the review is admitted", async () => {
+      const f = await reviewProjectionFixture(false);
+      let entered!: () => void, release!: () => void;
+      const enteredHead = new Promise<void>(resolve => { entered = resolve; });
+      const hold = new Promise<void>(resolve => { release = resolve; });
+      const provider: typeof fetch = async (input, init) => {
+        if (String(input).endsWith("/pulls/82")) { entered(); await hold; }
+        return f.providerFetch(input, init);
+      };
+      const errors: unknown[] = [];
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+      let dispatch: Promise<unknown> | undefined;
+      try {
+        await registerGitHubReviewProjectionWork(db, coordinator, () => true).ready;
+        dispatch = githubReviewCheckService(db, provider).processPending();
+        await enteredHead;
+        const review = await f.admit();
+        expect((await f.read(review.id)).state).toBe("queued");
+        release(); await dispatch;
+        await expect.poll(async () => (await f.read(review.id)).state, { timeout: 5000 }).toBe("superseded");
+        expect((await f.action()).result).toMatchObject({ code: "stale_head" }); expect(errors).toEqual([]);
+      } finally { release(); await dispatch; await coordinator.stop(); }
+    });
+
+    it("holds stale GitHub review projection receipt repair until the outer commit and discards rollback", async () => {
+      const f = await reviewProjectionFixture();
+      const review = await f.admit(); await f.service.shutdown();
+      await db.delete(chatGitHubReviews).where(eq(chatGitHubReviews.id, review.id));
+      const receipt = (tx: Parameters<Parameters<Db["transaction"]>[0]>[0]) => retainGitHubReviewReceipt(tx, f.endpoint,
+        review.issueId, review.deliveryId, { context: review.event, revision: review.configurationRevision, policy: review.policySnapshot });
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
+      let release!: () => void;
+      let pending: Promise<unknown> | undefined;
+      try {
+        await registerGitHubReviewProjectionWork(db, coordinator, () => true).ready;
+        await expect(db.transaction(async tx => { await tx.transaction(receipt); throw new Error("rollback projection receipt"); }))
+          .rejects.toThrow("rollback projection receipt");
+        expect(await readChatGitHubReviewsByEndpointId(f.endpoint.id)).toEqual([]);
+        let entered!: () => void;
+        const held = new Promise<void>(resolve => { entered = resolve; });
+        const wait = new Promise<void>(resolve => { release = resolve; });
+        pending = db.transaction(async tx => { await tx.transaction(receipt); entered(); await wait; });
+        await held;
+        expect(await readChatGitHubReviewsByEndpointId(f.endpoint.id)).toEqual([]);
+        release(); await pending;
+        await expect.poll(async () => (await readChatGitHubReviewsByEndpointId(f.endpoint.id))[0]?.state, { timeout: 5000 }).toBe("superseded");
+      } finally { release?.(); await pending; await coordinator.stop(); }
+    });
+
+    it.each(["restart", "drain", "standby"] as const)("recovers stale GitHub review projection through %s", async mode => {
+      const f = await reviewProjectionFixture();
+      let canRun = mode === "restart";
+      const errors: unknown[] = [];
+      let coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => canRun,
+        canReconcile: () => mode !== "standby" || canRun, onError: error => errors.push(error) });
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+      try {
+        await registerGitHubReviewProjectionWork(db, coordinator, () => canRun).ready;
+        if (mode === "restart") await coordinator.stop();
+        const review = await f.admit(); await f.service.shutdown();
+        await vi.advanceTimersByTimeAsync(60_000);
+        await vi.waitFor(() => {
+          if (mode === "standby") expect(idleWorkSnapshot().active).toBeGreaterThan(0);
+          else expect(idleWorkSnapshot().active).toBe(0);
+        });
+        expect((await f.read(review.id)).state).toBe("queued");
+        const reads = vi.spyOn(db, "select"), writes = vi.spyOn(db, "update");
+        try { await vi.advanceTimersByTimeAsync(60_000); expect(reads).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled(); }
+        finally { reads.mockRestore(); writes.mockRestore(); }
+        canRun = true;
+        if (mode === "restart") {
+          coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+          await registerGitHubReviewProjectionWork(db, coordinator, () => true).ready;
+        }
+        await vi.advanceTimersByTimeAsync(30_000);
+        await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(10); expect((await f.read(review.id)).state).toBe("superseded"); });
+        expect(errors).toEqual([]);
+      } finally { await coordinator.stop(); vi.useRealTimers(); }
+    });
+
+    it("retains failed stale GitHub review projection repair across drain without passive SQL", async () => {
+      const f = await reviewProjectionFixture(); const review = await f.admit(); await f.service.shutdown();
+      let canRun = true;
+      const errors: unknown[] = [];
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => canRun, canReconcile: () => true, onError: error => errors.push(error) });
+      const failure = new Error("projection write unavailable");
+      const update = vi.spyOn(db, "update").mockImplementationOnce(() => { throw failure; });
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+      try {
+        await registerGitHubReviewProjectionWork(db, coordinator, () => canRun).ready;
+        expect(errors).toHaveLength(1); expect((await f.read(review.id)).state).toBe("queued");
+        canRun = false; update.mockRestore();
+        await vi.advanceTimersByTimeAsync(30_000); await vi.waitFor(() => expect(idleWorkSnapshot().active).toBe(0));
+        const reads = vi.spyOn(db, "select"), writes = vi.spyOn(db, "update");
+        try { await vi.advanceTimersByTimeAsync(60_000); expect(reads).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled(); }
+        finally { reads.mockRestore(); writes.mockRestore(); }
+        canRun = true; await vi.advanceTimersByTimeAsync(30_000);
+        await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(10); expect((await f.read(review.id)).state).toBe("superseded"); });
+        expect(errors).toHaveLength(1);
+      } finally { update.mockRestore(); await coordinator.stop(); vi.useRealTimers(); }
+    });
+
+    it.each([false, true])("rechecks assessment ownership after stale GitHub review projection selection waits for a row lock (shutdown: %s)", async shutdown => {
+      const f = await reviewProjectionFixture(); const review = await f.admit(); await f.service.shutdown();
+      const assessment: NonNullable<typeof review.assessment> = { reviewedCommit: review.headSha, score: 4, complete: true,
+        summary: "Reviewed", rationale: "Covered changes", coverage: { reviewedPaths: ["src/a.ts"], omittedPaths: [], limitations: [] }, findings: [] };
+      let locked!: () => void, release!: () => void;
+      const ready = new Promise<void>(resolve => { locked = resolve; }), held = new Promise<void>(resolve => { release = resolve; });
+      const pending = db.transaction(async tx => {
+        await tx.select().from(chatGitHubReviews).where(eq(chatGitHubReviews.id, review.id)).for("update");
+        locked(); await held;
+        await tx.update(chatGitHubReviews).set({ assessment }).where(eq(chatGitHubReviews.id, review.id));
+      });
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
+      const updates = vi.spyOn(db, "update");
+      try {
+        await ready;
+        const starting = registerGitHubReviewProjectionWork(db, coordinator, () => true).ready;
+        await expect.poll(() => updates.mock.calls.length, { timeout: 5000 }).toBe(1);
+        await expect.poll(async () => {
+          const rows = await db.execute<{ waiting: boolean }>(sql`select exists (
+            select 1 from pg_stat_activity where datname = current_database()
+              and wait_event_type = 'Lock' and query like 'update %chat_github_reviews%') as waiting`);
+          return rows[0].waiting;
+        }, { timeout: 5000 }).toBe(true);
+        let stopped = false;
+        const stopping = shutdown ? coordinator.stop().then(() => { stopped = true; }) : undefined;
+        await Promise.resolve(); expect(stopped).toBe(false);
+        release(); await pending; await starting; await stopping;
+        expect(await f.read(review.id)).toMatchObject({ state: "queued", assessment });
+        expect(coordinator.nextWakeAt()).toBeNull();
+      } finally { release(); await pending; await coordinator.stop(); updates.mockRestore(); }
+    });
+
+    it("drains more than one page of stale GitHub review projections without touching manual history", async () => {
+      const f = await reviewProjectionFixture(); const review = await f.admit(); await f.service.shutdown();
+      const [delivery] = await db.select().from(chatDeliveries).where(eq(chatDeliveries.id, review.deliveryId));
+      const action = await f.action();
+      const extra = Array.from({ length: 105 }, () => ({ id: randomUUID(), receipt: randomUUID() }));
+      await db.insert(chatDeliveries).values(extra.map(item => ({ ...delivery, id: item.id, providerEventId: item.receipt,
+        deduplicationKey: item.receipt, normalizedEvent: { ...delivery.normalizedEvent,
+          githubAutomatic: { context: { ...review.event, deliveryId: item.receipt }, revision: review.configurationRevision, policy: review.policySnapshot } } })));
+      await db.insert(chatActions).values(extra.map(item => ({ ...action, id: randomUUID(), providerActionId: "github-check:" + item.receipt,
+        payload: { ...action.payload, event: { ...review.event, deliveryId: item.receipt } } })));
+      await db.insert(chatGitHubReviews).values(extra.map(item => ({ ...review, id: randomUUID(), deliveryId: item.id })));
+      await db.insert(chatGitHubReviews).values(extra.map(item => ({ ...review, id: randomUUID(), deliveryId: "run:" + item.id + ":" + review.headSha })));
+      const errors: unknown[] = [];
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+      try {
+        await registerGitHubReviewProjectionWork(db, coordinator, () => true).ready;
+        await vi.waitFor(async () => {
+          await vi.advanceTimersByTimeAsync(1000);
+          const rows = await readChatGitHubReviewsByEndpointId(f.endpoint.id);
+          expect(rows.filter(row => row.state === "superseded")).toHaveLength(106);
+          expect(rows.filter(row => row.state === "queued")).toHaveLength(105);
+          expect(idleWorkSnapshot().active).toBe(0); expect(coordinator.nextWakeAt()).toBeNull();
+        }, { timeout: 10_000 });
+        expect(errors).toEqual([]);
+      } finally { await coordinator.stop(); vi.useRealTimers(); }
     });
 
     it("supersedes a late review projection after its check already rejected the old head", async () => {

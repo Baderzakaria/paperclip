@@ -2738,6 +2738,13 @@
       "when": 1792966352995,
       "tag": "0392_charming_edwin_jarvis",
       "breakpoints": true
+    },
+    {
+      "idx": 393,
+      "version": "7",
+      "when": 1792968423108,
+      "tag": "0393_fearless_supernaut",
+      "breakpoints": true
     }
   ]
 }

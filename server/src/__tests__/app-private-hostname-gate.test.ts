@@ -95,12 +95,11 @@ describe("createChatReconciliationCoordinator", () => {
     expect(publicationMaintenance).not.toContain("reconcileTerminalConfirmationActions(");
     expect(source).toContain("chatChannels.registerInteractionContinuationWork(deliveryWork,");
     expect(source).toContain("chatChannels.registerGitHubAcknowledgementWork(deliveryWork,");
-    const github = readFileSync(new URL("../services/chat-channels/github/maintenance.ts", import.meta.url), "utf8");
-    expect(github).not.toContain("githubResponseCommentService(db, fetchImpl).processPending()");
-    expect(github).not.toContain("githubResponseCommentService(db, fetchImpl).processTerminalResponses()");
+    expect(chat).not.toContain("scheduleGitHubMaintenance");
+    expect(source).toContain("registerGitHubReviewProjectionWork(db, deliveryWork,");
+    expect(source).not.toContain("chatChannels.processPublicationMaintenance()");
     expect(source).toContain("chatChannels.registerGitHubTerminalResponseWork(deliveryWork,");
     expect(source).toContain("chatChannels.registerGitHubReviewCheckWork(deliveryWork,");
-    expect(github).not.toContain("githubReviewCheckService(db, fetchImpl).processPending()");
     expect(source).toContain("chatChannels.registerTerminalConfirmationWork(deliveryWork,");
     expect(source).toContain("chatFailedRetryNoticeWork(chatChannels).register(deliveryWork,");
   });
@@ -137,10 +136,10 @@ describe("createChatReconciliationCoordinator", () => {
     expect(source).toContain("registerChatDeliveryWork(deliveryWork, chatChannels,");
     expect(source).toContain("registerChatActionWork(deliveryWork, chatChannels,");
     const maintenance = source.slice(
-      source.indexOf("const reconcileChatPublicationMaintenance ="),
       source.indexOf("const chatReconciliation ="),
+      source.indexOf("let chatPublicationTimer:"),
     );
-    expect(maintenance).toContain("chatChannels.processPublicationMaintenance()");
+    expect(maintenance).not.toContain("chatChannels.processPublicationMaintenance()");
     expect(maintenance).not.toContain("chatChannels.schedulePendingPublications()");
     expect(maintenance).not.toContain("chatChannels.processPendingPublications()");
     const workers = readFileSync(new URL("../services/chat-delivery-work.ts", import.meta.url), "utf8");

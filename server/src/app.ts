@@ -1,3 +1,4 @@
+import { registerGitHubReviewProjectionWork } from "./services/chat-channels/github/review-projection-work.js";
 import { finishServiceShutdown } from "./shutdown.js";
 import { promptInjectionPreventionRoutes } from "./routes/prompt-injection-prevention.js";
 import { voiceSessionRoutes, voiceWebhookRoutes } from "./routes/voice-sessions.js";
@@ -199,11 +200,7 @@ import { nativeChatProgressWork } from "./services/chat-native-progress-work.js"
 import { chatInboundWakeNoticeWork } from "./services/chat-inbound-wake-notice-work.js";
 import { chatFailedRetryNoticeWork } from "./services/chat-failed-retry-notice-work.js";
 import { chatRunMilestoneWork } from "./services/chat-run-milestone-work.js";
-import {
-  createCoalescedAsyncTrigger,
-  isChatPublicationCommitSignal,
-} from "./services/chat-publication-reconciliation.js";
-import { subscribeAllCompanyLiveEvents } from "./services/live-events.js";
+import { createCoalescedAsyncTrigger } from "./services/chat-publication-reconciliation.js";
 import { heartbeatService } from "./services/heartbeat.js";
 import { pluginLifecycleManager } from "./services/plugin-lifecycle.js";
 import { registerPluginLifecycleDelivery } from "./services/plugin-lifecycle-delivery.js";
@@ -1289,6 +1286,7 @@ export async function createApp(
   chatChannels.registerTeamsConsentExpiryWork(deliveryWork, () => !isWarmStandby() && !isIdleTaskDrainActive());
   chatChannels.registerTeamsAttemptRecoveryWork(deliveryWork, () => !isWarmStandby() && !isIdleTaskDrainActive());
   chatChannels.registerInteractionContinuationWork(deliveryWork, () => !isWarmStandby() && !isIdleTaskDrainActive());
+  registerGitHubReviewProjectionWork(db, deliveryWork, () => !isWarmStandby() && !isIdleTaskDrainActive());
   chatChannels.registerGitHubReviewCheckWork(deliveryWork, () => !isWarmStandby() && !isIdleTaskDrainActive());
   chatChannels.registerGitHubTerminalResponseWork(deliveryWork, () => !isWarmStandby() && !isIdleTaskDrainActive());
   chatChannels.registerGitHubAcknowledgementWork(deliveryWork, () => !isWarmStandby() && !isIdleTaskDrainActive());
@@ -1301,29 +1299,17 @@ export async function createApp(
     deliveryWork, () => !isWarmStandby() && !isIdleTaskDrainActive(),
   );
   emailChannels.start();
-  const reconcileChatPublicationMaintenance = async () => {
-    await chatChannels.processPublicationMaintenance();
-  };
   const chatReconciliation = createChatReconciliationCoordinator({
     // Chat delivery, action, and Telegram discovery workers now own these
     // duties. Keep the coordinator's other maintenance lanes independent.
     processPendingDeliveries: async () => undefined,
     processFailedGitHubWebhookDeliveries: () =>
       chatChannels.processFailedGitHubWebhookDeliveries(),
-    flushPublications: () => reconcileChatPublicationMaintenance(),
+    flushPublications: async () => undefined,
     onError: (lane, err) => {
       logger.error({ err, lane }, `Failed to reconcile chat ${lane}`);
     },
   });
-  const unsubscribeChatPublicationSignals = subscribeAllCompanyLiveEvents(
-    (event) => {
-      if (!isWarmStandby() && !isIdleTaskDrainActive() && isChatPublicationCommitSignal(event))
-        chatReconciliation.notifyPublications();
-    },
-  );
-  // Remaining publication maintenance still uses this cadence. Lifecycle and
-  // native progress projection have independent commit/deadline workers.
-  // Inbox, outbox, and file receipt queues have independent commit/deadline wakes.
   let chatPublicationTimer: ReturnType<typeof setInterval> | null = setInterval(
     () => {
       if (!isWarmStandby() && !isIdleTaskDrainActive()) chatReconciliation.reconcile();
@@ -1458,7 +1444,6 @@ export async function createApp(
       jobCoordinator.stop();
       resourceLifecycleDelivery.dispose();
       await deliveryWork.stop();
-      unsubscribeChatPublicationSignals();
       chatReconciliation.stop();
       if (chatPublicationTimer) {
         clearInterval(chatPublicationTimer);
