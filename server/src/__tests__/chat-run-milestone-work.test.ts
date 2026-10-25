@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { activityLog, agents, agentWakeupRequests, authUsers, companyMemberships, chatConversations, chatEndpoints, chatMessageLinks, chatPublications, companies, completionContracts, createDb, nativeRunFinalizations, nativeRunResults, statusDecisions, statusDecisionEffects, workAssessments, subscribeDatabaseWork,
+import { activityLog, agents, agentWakeupRequests, authUsers, caseHandoffs, cases, companyMemberships, chatConversations, chatEndpoints, chatMessageLinks, chatPublications, companies, completionContracts, createDb, nativeRunFinalizations, nativeRunResults, statusDecisions, statusDecisionEffects, workAssessments, subscribeDatabaseWork,
   heartbeatRunEvents, heartbeatRuns, issueComments, issueQuestionResponseDeliveries, issueThreadInteractions, issues, toolApplications, toolConnections } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
@@ -15,6 +15,7 @@ import { createAdmissionTransactionScope, createPostgresWakeQueueAdapter, create
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { createHeartbeatQueue } from "../services/heartbeat/queue.js";
 import { createHeartbeatQueueTestDependencies } from "./helpers/heartbeat-queue.js";
+import { CHAT_CONTROL_RECOVERY_ADMISSION_KEY, CHAT_CONTROL_RECOVERY_UNRESOLVED_CODE } from "../services/chat-control-recovery-stop.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { commitNativeStatusDecision, dispatchPendingNativeStatusEffects } from "../services/native-runtime/status-decision-committer.js";
 import { finalizeNativeRun } from "../services/native-runtime/native-run-finalizer.js";
@@ -65,6 +66,8 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await coordinator?.stop(); coordinator = undefined; vi.useRealTimers(); vi.restoreAllMocks();
     for (const companyId of fixtureCompanies.splice(0)) {
       await db.delete(activityLog).where(eq(activityLog.companyId, companyId));
+      await db.delete(caseHandoffs).where(eq(caseHandoffs.companyId, companyId));
+      await db.delete(cases).where(eq(cases.companyId, companyId));
       await db.delete(chatMessageLinks).where(eq(chatMessageLinks.companyId, companyId));
       await db.delete(chatPublications).where(eq(chatPublications.companyId, companyId));
       await db.delete(chatConversations).where(eq(chatConversations.companyId, companyId));
@@ -247,6 +250,67 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await quiet();
     expect(await service.claimQueuedRun(before)).toBeNull();
     await quiet();
+  });
+  it("wakes when claim rejects a superseded case handoff and leaves repeated claims quiet", async () => {
+    const wakeId = randomUUID();
+    await db.insert(agentWakeupRequests).values({ id: wakeId, companyId: f.companyId, agentId: f.agentId,
+      source: "assignment", status: "queued", payload: { issueId: f.issueId },
+    });
+    const seeded = await run(f, { status: "queued", runtimeMode: "legacy", wakeupRequestId: wakeId });
+    const [record] = await db.insert(cases).values({ companyId: f.companyId, caseNumber: 1, identifier: "M-CASE-1",
+      caseType: "work", title: "Chat task", workIssueId: f.issueId, handoffVersion: 2 }).returning();
+    await db.insert(caseHandoffs).values({ companyId: f.companyId, caseId: record.id, issueId: f.issueId,
+      version: 1, toAgentId: f.agentId, phase: "implementation", instructions: "Build the change", actorType: "system",
+      actorId: "test", idempotencyKey: "superseded", inputFingerprint: "fixture", wakeupRequestId: wakeId,
+      expectedIssueStatusVersion: 0, appliedIssueStatusVersion: 0, state: "delivered" });
+    const [before] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.id));
+    const { service, dependencies } = await queue();
+    await start(); await flush(); await quiet();
+    expect(await service.claimQueuedRun(before)).toBeNull();
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.id)))[0])
+      .toMatchObject({ status: "cancelled", errorCode: "case_handoff_superseded" });
+    await flush();
+    expect((await publications()).map(row => row.idempotencyKey)).toContain(`run:${seeded.id}:failed:${f.endpointId}`);
+    expect(dependencies.executeRun).not.toHaveBeenCalled();
+    await quiet();
+    expect(await service.claimQueuedRun(before)).toBeNull();
+    await quiet();
+  });
+  it("wakes when dispatch fails an unverifiable chat recovery and leaves repeated gates quiet", async () => {
+    const seeded = await run(f, { status: "running", runtimeMode: "legacy", invocationSource: "automation",
+      runnerProfileJson: { [CHAT_CONTROL_RECOVERY_ADMISSION_KEY]: {} },
+    });
+    const [before] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.id));
+    const { service, dependencies } = await queue();
+    const dispatch = vi.fn(async () => null);
+    await start(); await flush(); await quiet();
+    await service.withChatControlRecoveryGate(before, "dispatch", dispatch);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.id)))[0])
+      .toMatchObject({ status: "failed", errorCode: CHAT_CONTROL_RECOVERY_UNRESOLVED_CODE });
+    expect(dispatch).not.toHaveBeenCalled(); expect(dependencies.executeRun).not.toHaveBeenCalled();
+    await flush();
+    expect((await publications()).map(row => row.idempotencyKey)).toContain(`run:${seeded.id}:failed:${f.endpointId}`);
+    await quiet();
+    await service.withChatControlRecoveryGate(before, "dispatch", dispatch);
+    await quiet();
+  });
+  it.each(["queued", "scheduled_retry"] as const)("publishes cancellation when admission replaces a reassigned %s owner", async status => {
+    const old = await run(f, { status, runtimeMode: "legacy", scheduledRetryAt: status === "scheduled_retry" ? new Date(Date.now() + 60_000) : null });
+    const [replacement] = await db.insert(agents).values({ companyId: f.companyId, name: "Replacement", adapterType: "paperclip_runner" }).returning();
+    await db.update(issues).set({ assigneeAgentId: replacement.id, executionRunId: old.id }).where(eq(issues.id, f.issueId));
+    const { service, dependencies } = await queue();
+    dependencies.getAgent.mockResolvedValue(replacement);
+    dependencies.getSchedulingSuppression.mockResolvedValue({ suppressed: true, reason: "task_drain" });
+    await start(); await flush(); await quiet();
+    const admitted = await service.enqueueWakeup(replacement.id, { source: "on_demand", reason: "issue_commented",
+      contextSnapshot: runValues().contextSnapshot, requestedByActorType: "user", requestedByActorId: f.userId,
+    });
+    expect(admitted).toMatchObject({ agentId: replacement.id, status: "queued" });
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, old.id)))[0])
+      .toMatchObject({ status: "cancelled", errorCode: status === "queued" ? "lock_released_on_reassignment" : "issue_reassigned" });
+    await flush();
+    expect((await publications()).map(row => row.idempotencyKey)).toContain(`run:${old.id}:failed:${f.endpointId}`);
+    expect(dependencies.executeRun).not.toHaveBeenCalled(); await quiet();
   });
   it("wakes when the real coalescing writer gives an existing run chat lineage", async () => {
     const seeded = await run(f, { contextSnapshot: { issueId: f.issueId, source: "issue_assigned" } });

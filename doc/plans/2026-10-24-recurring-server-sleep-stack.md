@@ -1453,3 +1453,12 @@ fixture cleanup. The audit preserves setup failures and provider-acceptance
 limits. No periodic projector has been removed yet. Fresh remote inspection
 still finds #17590 Paperclip Review queued, #17592 neutral, and #17490 E2E shard
 3 plus aggregate failing. Those gates and all remaining original scope stay open.
+
+
+Slice 28 raw queue cancellation checkpoint: general chat-control recovery,
+superseded case handoffs, stale scheduled retries and reassigned execution owners
+now signal before terminal writes. Missing notices were reproduced for the first
+two; replacement-admission tests cover the latter two and their early intent
+placement is audited. All 60 milestone/queue tests and server production types
+pass. Queued-comment/lineage and remaining dependency producers still prevent
+removing periodic projection. No new PR, merge, or full-goal completion is claimed.

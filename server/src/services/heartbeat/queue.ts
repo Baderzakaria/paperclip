@@ -844,6 +844,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         const error = stopped
           ? "Automatic continuation stopped by the committed chat conversation close. Send a new request in chat or on the Board to start fresh work."
           : "Automatic continuation source could not be verified before provider admission. Review the task and send a fresh request; this attempt will not automatically retry.";
+        await notifyChatRunMilestones(tx, { companyId: current.companyId, issueId });
         [terminal] = await tx
           .update(heartbeatRuns)
           .set({
@@ -959,9 +960,17 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       if (!["pending_dispatch", "delivered"].includes(caseHandoffReceipt.state) || caseHandoffReceipt.toAgentId !== run.agentId ||
           !current || current.version !== caseHandoffReceipt.version || current.issueId !== caseHandoffReceipt.issueId ||
           current.agentId !== run.agentId || (!run.startedAt && current.statusVersion !== caseHandoffReceipt.appliedIssueStatusVersion)) {
-        const [cancelled] = await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date(),
-          errorCode: "case_handoff_superseded", error: "This case handoff was cancelled or superseded.", updatedAt: new Date() })
-          .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.status, "queued"))).returning();
+        const cancelled = await db.transaction(async tx => {
+          const [currentRun] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
+            .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.status, "queued")))
+            .for("update");
+          if (!currentRun) return null;
+          await notifyChatRunMilestones(tx, { companyId: run.companyId });
+          const [row] = await tx.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date(),
+            errorCode: "case_handoff_superseded", error: "This case handoff was cancelled or superseded.", updatedAt: new Date() })
+            .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.status, "queued"))).returning();
+          return row;
+        });
         if (cancelled) await setWakeupStatus(run.wakeupRequestId, "cancelled", { finishedAt: new Date(), error: cancelled.error });
         return null;
       }
@@ -3417,6 +3426,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             const reason = issueCancelled
               ? "Cancelled because the issue was cancelled before the scheduled retry became due"
               : "Cancelled because the issue was reassigned before the scheduled retry became due";
+            await notifyChatRunMilestones(tx, { companyId: scheduledRun.companyId, issueId: issue.id });
             const cancelled = await tx
               .update(heartbeatRuns)
               .set({
@@ -3553,6 +3563,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             issue.assigneeAgentId &&
             activeExecutionRun.agentId !== issue.assigneeAgentId
           ) {
+            await notifyChatRunMilestones(tx, { companyId: activeExecutionRun.companyId, issueId: issue.id });
             const cancelled = await tx
               .update(heartbeatRuns)
               .set({

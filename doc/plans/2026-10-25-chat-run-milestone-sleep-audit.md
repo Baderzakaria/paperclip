@@ -483,3 +483,48 @@ Evidence and limitations:
 Raw queue cancellation, queued-comment/lineage changes, native reviewer claim
 acceptance, and the remaining dependency producer audit still prevent retiring
 the production periodic projector. All original stack scope remains required.
+
+
+## Remaining queue cancellation writers
+
+The general chat-control recovery gate now registers intent before its guarded
+terminal write, after the existing proof/no-op decisions. Invalid admission at
+dispatch still fails closed and never calls the provider callback. Repeated
+attempts against a settled run exit before signaling.
+
+Superseded case handoffs previously cancelled with a root-client UPDATE. That
+single status change now owns a narrow transaction, locks/selects the still-queued
+run, and registers company-scoped intent before updating it. The company scope
+avoids trusting a superseded handoff's issue identity as the run's current chat
+binding. Status/company guards and the existing post-update wake-status callback
+remain unchanged. A repeated claim finds no queued row and creates no intent.
+The added run-first lock does not enclose provider I/O or introduce an issue lock.
+
+Admission's stale scheduled-retry and reassigned execution-owner cancellations
+also signal before their existing transaction writes. Those transactions may
+later insert/notify a replacement run, but that later intent is insufficient for
+the protocol's before-first-write requirement. Company/issue identity comes from
+the owning admission state; no new module port or provider branch is added.
+
+Evidence:
+
+- `/tmp/sleep28-case-handoff-before.log` reproduces committed cancellation with
+  no terminal notice before the fix.
+- `/tmp/sleep28-chat-control-before.log` reproduces the same gap for a failed
+  recovery gate; the repaired case-handoff regression passes in that run.
+- Both gate tests verify no provider execution and quiet repeated attempts.
+- The two real replacement-admission cases cover queued and scheduled-retry
+  predecessors, their distinct cancellation codes, the old run's terminal notice,
+  and the drain-held replacement. These are behavioral coverage, not claimed
+  missing-notice-before reproductions: later admission signaling can also wake
+  the same issue. Their early intent placement is established by code audit.
+- `/tmp/sleep28-cancellation-final-tests.log`: all 60 milestone/queue cases pass,
+  including 35 milestone worker cases. Earlier 58-case and two-case runs overlap.
+- `/tmp/sleep28-cancellation-final-typecheck.log`: server production types pass.
+  Test files are excluded. `git diff --check` passes. No PR acceptance claimed.
+
+The identified raw queue cancellation and native wake receipt writers are now
+covered. Still required: queued-comment/lineage mutations, native reviewer claim
+acceptance, publication and interaction changes, conversation/configuration,
+question claim/retry, and monitor/semantic receipt dependencies. Production still
+uses the combined periodic projector until those producers are complete.
