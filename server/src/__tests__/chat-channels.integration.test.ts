@@ -41213,13 +41213,18 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     await service.shutdown();
   });
 
-  it("publishes a closed-choice question, settles its Slack card, and delivers its exact continuation response", async () => {
+  it("publishes a closed-choice question, settles its Slack card, and delivers its exact continuation response", async ({ onTestFinished }) => {
+    let receiptWakeObserved = false;
     const fixture = await seedCompany();
     const continuationRunId = randomUUID();
     const resolveNativeQuestion = vi.fn(async () => "not_native" as const);
     const { callbacks, endpoint, runtime, service } =
       await configuredSlackEndpoint(fixture, {
         resolveNativeQuestion,
+        questionResolutionPersistBarrier: async () => {
+          // Receipt commit must wake projection before the separate answer write.
+          expect(receiptWakeObserved).toBe(true);
+        },
         wakeup: async (agentId, options) => {
           if (options.contextSnapshot?.source !== "issue.interaction.respond") {
             return { accepted: true };
@@ -41542,6 +41547,12 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       .set({ state: "delivery_unknown", providerMessageId: null })
       .where(eq(chatPublications.id, publication.id));
 
+    const unsubscribeReceipt = subscribeDatabaseWork(db, "chat-run-milestones", (event, hints) => {
+      if (event === "settled" && hints?.has(JSON.stringify({ companyId: fixture.companyId, issueId: conversation.issueId }))) {
+        receiptWakeObserved = true;
+      }
+    });
+    onTestFinished(unsubscribeReceipt);
     const providerAcknowledgement = callbacks.onAction(actionEvent());
     await expect(
       Promise.race([

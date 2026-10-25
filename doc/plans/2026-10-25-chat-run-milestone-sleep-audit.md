@@ -994,3 +994,53 @@ above or chat-run-publications since the preceding 3536b3649f inspection. Full
 stack reconciliation remains outstanding. The lifecycle projector remains
 unregistered and its periodic production scan remains until the rest of the
 publication, configuration, and recovery producer audit is complete.
+
+
+## Interactive callback receipt recovery
+
+The shared interactive callback can recover a question/confirmation prompt from
+`delivery_unknown` to `published` before attempting to resolve the interaction.
+That receipt alone can authorize existing continuation lineage, even when the
+later resolution does not write. It now supplies the issue scope to the existing
+publication notification in that receipt transaction. A published row receiving
+only its missing provider message ID keeps its existing delivery wake without
+adding a milestone wake: prompt lineage reads publication state, not that ID.
+No provider protocol, action authorization, or dispatch policy moved into wiring.
+
+The existing full Slack closed-choice test now observes the scoped settled signal
+at its pre-resolution barrier. This prevents the later answer transaction from
+masking a missing receipt wake. `/tmp/sleep28-callback-receipt-before.log` fails
+there before the change; `/tmp/sleep28-callback-receipt-tests.log` passes all five
+selected Slack/Discord/Telegram callback, modal, and continuation cases. The test
+still verifies actual publication receipt, answer, continuation, deduplication,
+unauthorized actions and acknowledged callback behavior. Provider transports are
+controlled test ports, not live-provider qualification. Server production types
+pass in `/tmp/sleep28-callback-receipt-typecheck.log`; diff whitespace checks pass.
+
+Additional producer dispositions inspected at this checkpoint:
+- Discord and Telegram large-publication preparation explicitly reject cards and
+  interactionId. They preserve the root publication identity while splitting text
+  or attachments; they do not confirm an interactive prompt receipt.
+- Slack file-receipt admission rejects cards/interactionId. Teams file-transfer
+  authority also rejects those plus progress/control/wake publications. Their
+  file delivery settlement is not an interactive prompt lineage producer.
+- Authored-final suppression tests durable publication/comment identity, not the
+  transport state. File receipt outcomes do not remove that identity.
+- Ordinary provider question/confirmation winner-action writes run in the same
+  resolution transaction as the already-covered interaction signal. Winner
+  actions restrict eligible destinations; they do not create a separate callback
+  polling obligation. Alternate recovery writers still require review.
+- Tool-action continuation admission selects already-terminal requests joined to
+  existing delivery receipts before calling heartbeat.wakeup. Delivery's later
+  deliveredAt write is not read by milestone lineage. Normal admission therefore
+  observes the earlier durable request/receipt and supplies its existing wake.
+  Do not add an unconditional signal to every tool-request metadata write merely
+  because the lineage query joins that table.
+- Gateway connection-authorization creation/reopening inserts a pending review
+  without superseding another or changing sourceRunId. It restricts eligibility;
+  its later ordinary resolution is covered by interaction-service signals.
+
+These dispositions do not finish the entire publication/configuration/recovery
+audit. In particular, endpoint and conversation reactivation, policy changes and
+alternate recovery receipts still need complete real-producer coverage before
+production registration and removal of the lifecycle scan.

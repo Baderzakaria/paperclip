@@ -1536,3 +1536,11 @@ native review acceptance cases. Server production types pass. The slice audit
 retains the invalid fixture and missed test-file selection. Polling removal,
 remaining producers, fresh CI/review, older findings and the full inventory remain
 unfinished; no stack merge or whole-goal completion is claimed.
+
+
+Slice 28 also covers interactive callback recovery of an unknown prompt receipt.
+Its existing Slack acceptance test failed before the answer-write barrier without
+the receipt signal, then five Slack/Discord/Telegram cases and server production
+types passed after the one-line integration. File transport and ordinary tool
+receipt ordering were audited without adding unnecessary notifications. Remaining
+configuration/recovery producers and production wiring still gate polling removal.

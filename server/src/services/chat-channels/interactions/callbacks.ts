@@ -781,7 +781,7 @@ export function createChatInteractionCallbacks(db: Db, options: InteractionCallb
           .then((rows) => rows[0] ?? null);
         if (occupied && occupied.publicationId !== current.id) return null;
         const reconciledAt = new Date();
-        await notifyChatPublicationWork(tx);
+        await notifyChatPublicationWork(tx, current.state === "delivery_unknown" ? current : undefined);
         const [reconciled] = await tx
           .update(chatPublications)
           .set({
