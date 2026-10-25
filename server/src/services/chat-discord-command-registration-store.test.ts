@@ -765,7 +765,9 @@ suite("Discord command ownership store (real PostgreSQL, no network)", () => {
     await sqlQuiet(60_000);
     draining = true;
     await db.transaction(async tx => activate(tx as unknown as typeof db));
-    await sqlQuiet(90_000); expect(f.calls).toEqual([]);
+    await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(1000); expect(idleWorkSnapshot().active).toBe(0); });
+    const drained = idleWorkSnapshot();
+    await sqlQuiet(90_000); expect(idleWorkSnapshot()).toEqual(drained); expect(f.calls).toEqual([]);
     draining = false;
     await vi.advanceTimersByTimeAsync(30_000);
     await vi.waitFor(() => expect(f.calls).toEqual(["GET", "POST"]));
