@@ -1799,3 +1799,25 @@ filesystem execution proof, and retains the fake-clock connection failure and
 Runner CI receipt timeout. Existing lease acceptance, updated full acceptance,
 remote gates, older parent findings, and every remaining original duty are still
 required. No stack PR has been merged.
+
+
+## Slice 31 accepted checkpoint and slice 32 owner audit
+
+[#17649](https://github.com/paperclipai/paperclip/pull/17649) at
+`2384384eeec4f32d073242ebf597b81df2df1ccb` has all 53 checks passing,
+fresh Greptile 5/5, and no inline review findings. Full chat/startup acceptance
+passes all 1,505 cases on fresh `paperclip_sleep31_native_full_20261025_test`
+(`/tmp/sleep31-native-full-chat.log`, 446.10 seconds, exit 0). The lease service
+passes 51 tests; focused native/notice acceptance passes 36; final server
+typecheck and build pass. This supersedes the earlier slice-31 pending statuses.
+The initial Runner receipt timeout did not reproduce after building debug Rust
+binaries (10 local tests pass), nor in a controlled 500ms event-loop-delay
+experiment. The updated-head remote Runner gate passes without an unchanged-job
+retry. Its exact initial cause remains unproven.
+
+The next branch is `codex/sleep-32-terminal-confirmations`, based on the accepted
+slice-31 commit. See the terminal confirmation owner audit. There is no slice-32
+implementation or PR yet. Older #17490/#17572 CI failures, #17576 inventory
+amplification findings, #17580 offboarding/cleanup ownership findings, the entire
+remaining original list, final master reconciliation and all final-head checks
+remain required. All stack PRs remain unmerged.
