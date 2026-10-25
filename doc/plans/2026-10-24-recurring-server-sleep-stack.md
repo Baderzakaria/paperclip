@@ -1022,3 +1022,31 @@ shared-DB attempt produced cleanup foreign-key failures after email; those are
 recorded, not counted as passes. Total selected coverage is 770 cases. The server
 build passes. The inventory SQL uses the existing company/enabled index with
 40,000 retained rows (13 buffers, 0.022 ms). Full workspace and remote gates remain.
+
+
+## Discord publication and health fairness repair
+
+Discord registration is [#17557](https://github.com/paperclipai/paperclip/pull/17557),
+head `3755d7caced67589de474e0ca3e1b8b5b4e659c4`, based on #17554 and attached.
+It has 639 selected passing tests, workspace typecheck/build, and final server
+verification. CI run **40168371442** and review run **40168371311** are confirmed
+live on that head. Fresh CI and review remain required; no merge is authorized.
+The source and detailed producer audit are on the Discord child branch.
+
+The health parent Paperclip Review completed neutral with 4/5 at `da40899606`.
+It requests fair company batching and direct real-service producer coverage.
+The existing probes are already scoped by connection ID, so the review's concern
+about full inventory scans around each probe needs clarification rather than
+removing current-state eligibility checks. Self-generated observation hints still
+cause a bounded coalesced company refresh; avoid muting correctness signals merely
+to reduce that bounded work without proving equivalent recovery.
+
+Fairness was reproduced with 30 unchecked connections in one company and one due
+connection in another. The quiet company was omitted from the first batch. The
+shared selector from Discord commit `e77979d4fc` was applied to the health branch
+as `097f5c8aff`; the health worker now rotates companies. All 22 health/selection
+tests pass (`/tmp/sleep18-fairness-after.log`), after the recorded failing baseline
+(`/tmp/sleep18-fairness-before.log`). The fix is local until the additional
+AgentMail activation/pause, GitHub installation event, and access-removal producer
+tests are complete. Then push the owning PR, request fresh review, and merge it
+into the Discord branch. Full original inventory and earlier unresolved CI remain.

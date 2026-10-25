@@ -23,7 +23,9 @@ plus 15 minutes. A company hint refreshes that company's cache. Startup and an
 instance feature-settings change can refresh the whole instance. Refreshes are
 coalesced with a 30-second minimum spacing. There is no scheduled refresh when
 there are no eligible rows or unresolved changes. Future checks cause no SQL
-before their deadline. Each pass checks at most 25 due connections.
+before their deadline. Each pass checks at most 25 due connections, taking turns
+across companies and preserving due order within each company. The company cursor
+rotates across passes when more companies are due than fit in one batch.
 
 Before a provider check, the service reloads current eligibility and deadline.
 A saved health result, including a failed health observation, owns the next

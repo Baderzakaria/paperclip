@@ -164,6 +164,25 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await tools.archiveConnection(row.id, companyId); await quiet();
   });
 
+  it("checks a quiet company in the first batch despite another company's unchecked backlog", async () => {
+    for (let index = 0; index < 30; index++) await connection({}, false);
+    const otherId = randomUUID();
+    await db.insert(companies).values({ id: otherId, name: "Quiet health", issuePrefix: `Q${otherId.slice(0, 6)}` });
+    const [app] = await db.insert(toolApplications).values({ companyId: otherId, name: "Quiet health", type: "mcp_http" }).returning();
+    try {
+      const [other] = await db.insert(toolConnections).values({
+        companyId: otherId, applicationId: app.id, name: "Quiet", uid: randomUUID(), transport: "mcp_remote",
+        status: "active", enabled: true, healthCheckedAt: new Date(Date.now() - 901_000),
+      }).returning();
+      await start();
+      expect(probe).toHaveBeenCalledTimes(25);
+      expect(probe.mock.calls.map(([id]) => id)).toContain(other.id);
+    } finally {
+      await coordinator?.stop(); coordinator = undefined;
+      await db.delete(companies).where(eq(companies.id, otherId));
+    }
+  });
+
   it("continues another company's checks when one scope cannot refresh", async () => {
     const service = connectionHealthSchedule(db, probe), load = service.load;
     await start(service); await quiet();
