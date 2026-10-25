@@ -90,7 +90,16 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await settled(); expect(inspect).toHaveBeenCalledOnce(); await quiet();
   });
   it("preserves the first session during drain without passive database reads", async () => {
-    await start(); await settled(); enabled = false; await session(); await quiet(60_000); expect(inspect).not.toHaveBeenCalled();
+    await start(); await settled(); enabled = false;
+    await db.transaction(async tx => {
+      await session({}, tx as unknown as typeof db);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(idleWorkSnapshot().active).toBeGreaterThan(0);
+      expect(inspect).not.toHaveBeenCalled();
+    });
+    await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(1000); expect(idleWorkSnapshot().active).toBe(0); });
+    const drained = idleWorkSnapshot();
+    await quiet(60_000); expect(idleWorkSnapshot()).toEqual(drained); expect(inspect).not.toHaveBeenCalled();
     enabled = true; await settled(); expect(inspect).toHaveBeenCalledOnce(); await quiet();
   });
   it("retries unavailable authority without ending a valid provider call", async () => {
