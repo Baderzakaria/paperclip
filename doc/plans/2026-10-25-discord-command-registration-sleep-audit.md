@@ -2,13 +2,13 @@
 
 Parent: tool-health PR #17554, head `da4089960619d3da2112a4eed3cc7a3d97dbebf8`.
 The parent has 771 selected passing local tests, passing workspace typecheck and
-build, passing Actions checks, and fresh Greptile 5/5. Paperclip Review is queued;
-it is not accepted or merged. This branch owns
+build, passing Actions checks, and fresh Greptile 5/5. Paperclip Review completed neutral with a 4/5 assessment and follow-ups for
+company fairness and real-producer coverage. It is not accepted or merged. This branch owns
 one newly separated reason from the existing chat-runtime inventory.
 
 ## Evidence and boundary
 
-`app.ts` calls `reconcileProviderRuntimes` from its recurring chat maintenance
+At the parent revision, `app.ts` calls `reconcileProviderRuntimes` from its recurring chat maintenance
 lane. That service discovers eligible Discord and Photon endpoints, restores
 runtime ownership, and calls `discord/runtime-reconciliation.ts`. The latter
 calls `reconcileDiscordCommands` before inspecting registered command state and
@@ -65,9 +65,9 @@ Persistent transports remain host-sleep limitations even after discovery is quie
 `app.ts` also invokes `chatChannels.voice.reconcile()` and Teams maintenance in
 this lane. Voice, Teams, milestones, wake notices, terminal confirmations,
 interaction continuations, and GitHub history recovery remain distinct duties.
-The scheduling foundation is implemented below, but is not wired into application
-startup. The existing runtime backstop remains until the producer audit and
-integration tests are complete. No slice-19 PR is published yet.
+The worker is now wired into application startup, and runtime reconciliation no
+longer initiates registration. Runtime discovery and receipt projection remain
+separate. Publication and remote acceptance gates are still pending.
 
 
 ## Implemented scheduling foundation, October 25
@@ -113,7 +113,7 @@ the scoped worker. That preserves the requirement that real uncertain writes
 must be reconciled before an instance can become quiet. Final evidence is in
 `/tmp/sleep19-cancellation-tests.log` and `/tmp/sleep19-final-types.log` on this host.
 
-## Required next integration
+## Integration checklist at the foundation checkpoint
 
 - Wire configuration, readiness, provider failures, generic connection mutation,
   connection removal, and company deletion producers to the scoped topic. Audit
@@ -128,3 +128,49 @@ must be reconciled before an instance can become quiet. Final evidence is in
   reviews and final reconciliation with master remain mandatory.
 - Continue every remaining original inventory item and unresolved earlier PR gate.
   This foundation does not finish this slice or the full goal.
+
+
+## Integrated owner and verification
+
+The production wiring and producer audit are complete for this slice; see
+[the behavior and producer table](../idle-discord-command-registration.md).
+The shared application wiring only registers the chat-owned command worker.
+Discord scheduling policy stays under `chat-channels/discord/`; shared health,
+access and deletion callers use neutral chat notification contracts. The existing
+runtime reconciler no longer calls the command protocol. Direct configure/resume
+calls remain unchanged, and the worker refreshes an existing local runtime after
+command settlement through its current owner.
+
+The actual configure/removal integration test proves a first configuration after
+empty startup publishes its deadline, removal cancels it, and the removed worker
+has no further reads or transactions. The real-protocol suite proves a committed
+pause arriving during provider I/O is retained and eventually disarms the worker.
+The parent health review identified company backlog starvation, and an equivalent
+Discord worker regression failed before repair. Shared fair-batch selection now
+gives each due company a turn, with a rotating cursor across bounded passes.
+The isolated fairness helper commit is `e77979d4fc` for application to the parent.
+
+Local final evidence:
+- `/tmp/sleep19-fairness-after.log`: 41 tests pass (38 protocol/worker + 3 selection).
+- `/tmp/sleep19-discord-isolated.log`: 91 selected Discord integrations pass;
+  1,327 deselected cases are not counted as passes.
+- `/tmp/sleep19-connection-consumers.log`: 487 tool-access/access tests pass.
+- `/tmp/sleep19-startup-consumers.log`: 20 chat coordinator/startup tests pass.
+- `/tmp/sleep19-workspace-types.log` and `/tmp/sleep19-workspace-build.log`:
+  workspace typechecking and build pass before the final fairness addition.
+- `/tmp/sleep19-fair-types.log` and `/tmp/sleep19-final-server-build.log`: final
+  server typechecking and build pass after the fairness addition.
+
+The initial integrated configuration test used a real timer before installing its
+fake clock, then attempted pause while the endpoint was still verifying, and then
+removed its fixture twice. Those setup/cleanup mistakes were repaired; no product
+assertion was weakened. Repeated broad runs reused fixture data: inspection found
+one paused endpoint for the unchanged hard-coded concurrent-identity test and two
+retained contender comments for the unchanged global-body assertion. A fresh
+schema-only database resolves that cross-run contamination. Dynamic registration
+fixture IDs are now unique across processes, while ownership tombstones remain.
+
+Next gates: publish the stacked PR, complete all remote checks
+and reviews, repair the health parent's fairness and producer-coverage findings,
+and propagate its changes. Full original inventory and earlier unresolved CI
+remain required. No merge is authorized.

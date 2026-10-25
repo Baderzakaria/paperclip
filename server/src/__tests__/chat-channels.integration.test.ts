@@ -782,11 +782,13 @@ class FakeChatSdkRuntime {
 
 const TEST_SLACK_BOT_SCOPES =
   "app_mentions:read,assistant:write,channels:history,channels:read,chat:write,commands,files:read,files:write,groups:history,groups:read,im:history,im:read,mpim:history,mpim:read,reactions:read,reactions:write,users:read";
+const discordApplicationPrefix = 1_400_000_000_000_000_000n +
+  BigInt(`0x${randomUUID().replaceAll("-", "").slice(0, 12)}`) * 1000n;
 let discordApplicationSequence = 0n;
 
 function uniqueDiscordApplicationId() {
   discordApplicationSequence += 1n;
-  return (123_456_789_012_345_678n + discordApplicationSequence).toString();
+  return (discordApplicationPrefix + discordApplicationSequence).toString();
 }
 
 function fakeSlackFetch(botId = `U-BOT-${randomUUID()}`) {
@@ -6600,6 +6602,17 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     return { ...context, endpoint, callbacks };
   }
 
+  async function recoverDiscordCommands(service: ChatChannelService) {
+    const onError = vi.fn();
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError });
+    try {
+      await service.registerCommandWork(coordinator, () => true).ready;
+      expect(onError).not.toHaveBeenCalled();
+    } finally {
+      await coordinator.stop();
+    }
+  }
+
   describe("Discord automatic command registration", () => {
     async function retireRegistrationFixture(
       service: ChatChannelService,
@@ -6610,7 +6623,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           .select()
           .from(chatDiscordCommandOwners)
           .where(eq(chatDiscordCommandOwners.endpointId, endpointId));
-        await service.configure(endpointId, { action: "remove" }, "owner-user");
+        if ((await service.get(endpointId))?.status !== "archived") {
+          await service.configure(endpointId, { action: "remove" }, "owner-user");
+        }
         expect((await service.get(endpointId))?.status).toBe("archived");
         // Removal retires only this fixture's runtime; immutable application
         // ownership stays available to the no-adoption/tombstone checks.
@@ -6737,6 +6752,35 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       };
     }
 
+    it("learns the first configured command and cancels its deadline when the endpoint is removed", async () => {
+      const f = await registrationFixture();
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+      const onError = vi.fn();
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError });
+      try {
+        await f.service.registerCommandWork(coordinator, () => true).ready;
+        expect(coordinator.nextWakeAt()).toBeNull();
+        await f.configure();
+        expect(f.calls).toEqual(["GET", "POST"]);
+        await vi.advanceTimersByTimeAsync(31_000);
+        await vi.waitFor(() => expect(coordinator.nextWakeAt()).toBeGreaterThan(Date.now()));
+        const deadline = coordinator.nextWakeAt();
+        expect(deadline).toBeGreaterThan(Date.now() + 200_000);
+        await f.service.configure(f.endpoint.id, { action: "remove" }, "owner-user");
+        await vi.advanceTimersByTimeAsync(31_000);
+        await vi.waitFor(() => expect(coordinator.nextWakeAt()).toBeNull());
+        const reads = vi.spyOn(db, "select"), writes = vi.spyOn(db, "transaction");
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(reads).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled();
+        reads.mockRestore(); writes.mockRestore();
+        expect(f.calls).toEqual(["GET", "POST"]);
+        expect(onError).not.toHaveBeenCalled();
+      } finally {
+        await coordinator.stop(); vi.useRealTimers();
+        await retireRegistrationFixture(f.service, f.endpoint.id);
+      }
+    });
+
     it("keeps mention setup usable on registration failure and upgrades automatically when due", async () => {
       const f = await registrationFixture("unavailable");
       try {
@@ -6750,7 +6794,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         ).toBeTypeOf("function");
         f.available();
         await f.makeDue();
-        await f.service.reconcileProviderRuntimes();
+        await recoverDiscordCommands(f.service);
         expect(
           (await f.service.get(f.endpoint.id))?.capabilities.slashCommands,
         ).toBe(true);
@@ -6778,6 +6822,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         await f.makeDue();
         restarted = createService(new FakeChatSdkRuntime(), f.providerFetch);
         await restarted.service.reconcileProviderRuntimes();
+        await recoverDiscordCommands(restarted.service);
         expect(
           (await restarted.service.get(f.endpoint.id))?.capabilities
             .slashCommands,
@@ -6852,7 +6897,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         };
         f.available(false);
         await f.makeDue();
-        await f.service.reconcileProviderRuntimes();
+        await recoverDiscordCommands(f.service);
         expect(f.runtime.endpoints.get(f.endpoint.id)).toBe(original);
         expect(f.runtime.configurations.get(f.endpoint.id)?.callbacks).toBe(
           originalCallbacks,
@@ -6893,7 +6938,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
             ),
         );
         await f.makeDue();
-        await f.service.reconcileProviderRuntimes();
+        await recoverDiscordCommands(f.service);
         expect(
           (await f.service.get(f.endpoint.id))?.capabilities.slashCommands,
         ).toBe(false);
@@ -51278,6 +51323,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           });
           coldContexts.push(cold);
           await cold.service.reconcileProviderRuntimes();
+          await recoverDiscordCommands(cold.service);
           return {
             ...cold,
             adapter: await parser(

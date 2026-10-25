@@ -1,3 +1,4 @@
+import { takeCompanyWorkBatch } from "../../company-work-batch.js";
 import type { createDeliveryWorkCoordinator } from "../../delivery-work-coordinator.js";
 import { DELIVERY_QUEUES } from "../../delivery-work-notifications.js";
 import type { CommandRegistrationDeadline, discordCommandSchedule } from "./command-schedule.js";
@@ -27,6 +28,7 @@ export function registerDiscordCommandWork(
   const failures = new Map<string, { count: number; retryAt: number }>();
   const retryMs = 30_000;
   let earliest = 0;
+  let lastCompany: string | null = null;
   function next() {
     let at: number | null = dirty.size ? earliest : null;
     for (const entry of deadlines.values()) {
@@ -66,8 +68,10 @@ export function registerDiscordCommandWork(
       const due = [...deadlines.values()]
         .filter(entry => !unavailable.some(scope => matches(entry, scope)) &&
           Math.max(entry.dueAt, failures.get(entry.id)?.retryAt ?? 0) <= Date.now())
-        .sort((a, b) => a.dueAt - b.dueAt || a.id.localeCompare(b.id)).slice(0, 25);
-      for (const entry of due) {
+        .sort((a, b) => a.dueAt - b.dueAt || a.id.localeCompare(b.id));
+      const batch = takeCompanyWorkBatch(due, 25, lastCompany);
+      lastCompany = batch.lastCompany;
+      for (const entry of batch.entries) {
         if (signal.aborted || !canRun()) break;
         try {
           const current = await service.check(entry.id, signal);

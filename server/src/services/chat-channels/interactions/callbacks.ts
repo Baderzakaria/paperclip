@@ -1,3 +1,4 @@
+import { notifyChatCommandRegistration } from "../command-work-notifications.js";
 import { notifyChatConnectionHealth } from "../connection-health-notifications.js";
 import { createDiscordQuestionForms } from "../discord/question-forms.js";
 
@@ -411,6 +412,7 @@ export function createChatInteractionCallbacks(db: Db, options: InteractionCallb
             ["active"],
           );
           if (currentEndpoint) {
+            await notifyChatCommandRegistration(tx, currentEndpoint);
             await tx
               .update(chatEndpoints)
               .set({

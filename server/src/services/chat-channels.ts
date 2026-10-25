@@ -1,3 +1,7 @@
+import { notifyChatCommandRegistration } from "./chat-channels/command-work-notifications.js";
+import { registerDiscordCommandWork } from "./chat-channels/discord/command-work.js";
+import { discordCommandSchedule } from "./chat-channels/discord/command-schedule.js";
+import type { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
 import { notifyChatConnectionHealth } from "./chat-channels/connection-health-notifications.js";
 import { createChatSdkMessageReceiver } from "./chat-channels/runtime/sdk-messages.js";
 import { admitDiscordSdkMessage } from "./chat-channels/discord/messages.js";
@@ -889,7 +893,15 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   const { authenticateGitHubWebhook } = createGitHubWebhookAuthentication(db, { endpointRecord, runtimeContextForRecord, withCredentialMutationLease, resolveCredentials, reconcileGitHubWebhookRepository, stageGitHubWebhookIngress, processGitHubWebhookIngress, githubIngressAcceptedResponse, scheduleMessageProcessing, backgroundMessageTasks, redactError, get githubWebhookAuthenticationBarrier() { return options.githubWebhookAuthenticationBarrier; }, get deferWebhookProcessing() { return options.deferWebhookProcessing; } });
   const { inspectSlackWebhookScope, recordSlackWebhookCallback } = createSlackWebhookCallbacks(db, { resolveCredentials, runtimeCallbackEndpoint, getWebhookPublicBaseUrl, scheduleMessageProcessing, slackRegistration: { notifyVerified: (endpointId) => slackRegistration.notifyVerified(endpointId) } });
 
-  const { reconcileDiscordRuntime } = createDiscordRuntimeReconciliation(db, { reconcileDiscordCommands, endpointRecord, runtimeContexts, invalidateRuntime, runtimeFor, runtime, runtimeCallbackEndpoint, credentialFingerprint, discordGatewayRuntimeIsCurrent });
+  const { reconcileDiscordRuntime } = createDiscordRuntimeReconciliation(db, { endpointRecord, runtimeContexts, invalidateRuntime, runtimeFor, runtime, runtimeCallbackEndpoint, credentialFingerprint, discordGatewayRuntimeIsCurrent });
+
+  function registerCommandWork(coordinator: ReturnType<typeof createDeliveryWorkCoordinator>, canRun: () => boolean) {
+    return registerDiscordCommandWork(coordinator, discordCommandSchedule(db, async endpointId => {
+      await reconcileDiscordCommands(endpointId);
+      const instance = runtime.get(endpointId);
+      if (instance) await reconcileDiscordRuntime(endpointId, instance);
+    }), () => !shuttingDown && canRun());
+  }
 
   async function runtimeFor(
     endpoint: EndpointRow,
@@ -2203,6 +2215,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
               ? "Started a conversation by mentioning the agent."
               : "Sent an empty message.");
         let comment!: Awaited<ReturnType<typeof issuesSvc.addComment>>;
+        await notifyChatCommandRegistration(taskTx, taskEndpoint);
         await taskTx
           .update(chatEndpoints)
           .set({
@@ -3461,6 +3474,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   const { prepareTeamsBoardSend } = createTeamsBoardSendPreparation(db, { endpointRecord, runtimeFor });
   const { getPublicationBatchStatus, publishComment, publishBoardMessage } = createChatPublicationRequests(db, { endpointRecord, stageTeamsBoardFileIntent, processPendingSlackBoardMessages, processPendingPublications, prepareTeamsBoardSend });
 return {
+    registerCommandWork,
     voice,
     authorizeFastResponse,
     slackRegistration,

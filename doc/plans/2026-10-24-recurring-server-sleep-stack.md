@@ -1052,3 +1052,20 @@ Tool-health #17554 at `da4089960619d3da2112a4eed3cc7a3d97dbebf8` has passing
 Actions checks and fresh Greptile 5/5 after the failed-probe warning repair.
 Paperclip Review remains queued, so final acceptance is still open. Its PR body
 now records 771 selected local tests and the outstanding gate. No PR was merged.
+
+
+## Slice 19 integration
+
+Discord registration now has complete producer wiring and a startup worker;
+recurring runtime reconciliation no longer invokes its command protocol. The
+[contract](../idle-discord-command-registration.md) records retained verification
+policy, scoped producer coverage, supported writers and separate runtime duties.
+Local selected coverage is 639 unique passing tests, with workspace types/build
+passing before the final fair-batch addition. Final server typechecking and build
+also pass. Remote publication/gates remain open.
+
+The latest health Paperclip Review completed neutral, with a 4/5 assessment and
+follow-ups for cross-company backlog fairness and direct service-producer tests.
+These remain owning-PR work despite green Actions and Greptile 5/5. The same
+fairness defect was reproduced and repaired in the Discord worker. Shared helper
+commit `e77979d4fc` is ready to carry into #17554. No PR is newly accepted or merged.

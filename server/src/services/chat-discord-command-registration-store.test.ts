@@ -805,4 +805,40 @@ suite("Discord command ownership store (real PostgreSQL, no network)", () => {
     expect(coordinator!.nextWakeAt()).toBeNull(); expect(errors).toEqual([]);
   });
 
+  it("retains a committed eligibility change while the provider attempt is in flight", async () => {
+    const f = await fixture(); await f.reconcile(); await f.due();
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    f.beforeResponse(async method => { if (method === "GET") await held; });
+    const starting = scheduled(f.scope.companyId, async () => { await f.reconcile(); });
+    try {
+      await vi.waitFor(() => expect(f.calls).toEqual(["GET", "POST", "GET"]));
+      await db.transaction(async tx => {
+        await notifyDiscordCommandRegistration(tx, { kind: "endpoint", id: f.scope.endpointId });
+        await tx.update(chatEndpoints).set({ status: "paused" }).where(eq(chatEndpoints.id, f.scope.endpointId));
+      });
+    } finally { release(); }
+    const { errors } = await starting;
+    await vi.advanceTimersByTimeAsync(31_000);
+    await vi.waitFor(() => expect(coordinator!.nextWakeAt()).toBeNull());
+    await sqlQuiet(120_000);
+    expect(f.calls).toEqual(["GET", "POST", "GET"]); expect(errors).toEqual([]);
+  });
+
+  it("checks a quiet company's due command in the first batch despite another company's backlog", async () => {
+    await reconcileDatabaseWork(db, DELIVERY_QUEUES.chatCommandRegistration);
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    const entries = Array.from({ length: 30 }, (_, index) => ({
+      id: `busy-${index.toString().padStart(2, "0")}`, companyId: "busy", connectionId: "busy-connection", dueAt: 0,
+    }));
+    entries.push({ id: "quiet", companyId: "quiet", connectionId: "quiet-connection", dueAt: 1 });
+    const check = vi.fn(async (id: string) => ({ ...entries.find(entry => entry.id === id)!, dueAt: Date.now() + 300_000 }));
+    const errors: unknown[] = [];
+    coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+    await registerDiscordCommandWork(coordinator, { load: async () => entries, check }, () => true).ready;
+    expect(check).toHaveBeenCalledTimes(25);
+    expect(check.mock.calls.map(call => call[0])).toContain("quiet");
+    expect(errors).toEqual([]);
+  });
+
 });

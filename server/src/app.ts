@@ -1298,6 +1298,7 @@ export async function createApp(
   }
   registerChatDeliveryWork(deliveryWork, chatChannels, () => !isIdleTaskDrainActive());
   registerChatActionWork(deliveryWork, chatChannels, () => !isIdleTaskDrainActive());
+  chatChannels.registerCommandWork(deliveryWork, () => !isWarmStandby() && !isIdleTaskDrainActive());
   emailChannels.start();
   const reconcileChatPublicationMaintenance = async () => {
     await chatChannels.processPublicationMaintenance();

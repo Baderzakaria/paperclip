@@ -1,3 +1,4 @@
+import { notifyChatEndpointWork } from "./chat-work-notifications.js";
 import { notifyToolConnectionHealth } from "./tool-connection-health-notifications.js";
 import { and, eq, inArray, ne, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -130,6 +131,7 @@ export function accessService(db: Db) {
     }> = [];
     let connectionRefs: Array<{
       id: string;
+      transport: typeof toolConnections.$inferSelect.transport;
       credentialRefs: typeof toolConnections.$inferSelect.credentialRefs;
       credentialSecretRefs: typeof toolConnections.$inferSelect.credentialSecretRefs;
     }> = [];
@@ -168,6 +170,7 @@ export function accessService(db: Db) {
         }).from(connectionGrants).where(eq(connectionGrants.companyId, companyId)),
         tx.select({
           id: toolConnections.id,
+          transport: toolConnections.transport,
           credentialRefs: toolConnections.credentialRefs,
           credentialSecretRefs: toolConnections.credentialSecretRefs,
         }).from(toolConnections).where(eq(toolConnections.companyId, companyId)),
@@ -324,6 +327,7 @@ export function accessService(db: Db) {
             && grant.credentialSecretRefs.length > 0
             && grant.credentialSecretRefs.every((ref) => !connectionSecretIdsToRemove.has(ref.secretId)),
           );
+          if (connection.transport === "chat_sdk") await notifyChatEndpointWork(tx, connection.id);
           if (!hasUnaffectedActiveGrant) await notifyToolConnectionHealth(tx, companyId);
           await tx.update(toolConnections).set({
             credentialRefs,
