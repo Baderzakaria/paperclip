@@ -4310,6 +4310,7 @@ export function recoveryService(
   }
 
   async function persistAdapterFailureRecoveryClassification(
+    issue: Pick<typeof issues.$inferSelect, "id" | "companyId">,
     latestRun: NonNullable<LatestIssueRun>,
     classification: NonNullable<AdapterFailureRecoveryClassification>,
   ): Promise<NonNullable<LatestIssueRun>> {
@@ -4321,17 +4322,20 @@ export function recoveryService(
     const classificationMetadata = withAdapterFailureRecoveryClassification(
       { ...latestRun, resultJson: {} }, classification,
     ).resultJson;
-    const [updated] = await db
-      .update(heartbeatRuns)
-      .set({
-        errorCode: classifiedRun.errorCode,
-        // Classification owns retry metadata, not workspace repair receipts
-        // that may have committed after this run was selected.
-        resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify(classificationMetadata)}::jsonb`,
-        updatedAt: new Date(),
-      })
-      .where(eq(heartbeatRuns.id, latestRun.id))
-      .returning({ resultJson: heartbeatRuns.resultJson, errorCode: heartbeatRuns.errorCode });
+    const [updated] = await db.transaction(async tx => {
+      await notifyChatRunMilestones(tx, { companyId: issue.companyId, issueId: issue.id });
+      return tx
+        .update(heartbeatRuns)
+        .set({
+          errorCode: classifiedRun.errorCode,
+          // Classification owns retry metadata, not workspace repair receipts
+          // that may have committed after this run was selected.
+          resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify(classificationMetadata)}::jsonb`,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(heartbeatRuns.id, latestRun.id), eq(heartbeatRuns.companyId, issue.companyId)))
+        .returning({ resultJson: heartbeatRuns.resultJson, errorCode: heartbeatRuns.errorCode });
+    });
 
     return updated ? { ...classifiedRun, ...updated } : classifiedRun;
   }
@@ -4930,6 +4934,7 @@ export function recoveryService(
           });
           if (monitored) {
             latestRun = await persistAdapterFailureRecoveryClassification(
+              issue,
               latestRun,
               adapterFailureClassification,
             );
@@ -4951,6 +4956,7 @@ export function recoveryService(
           });
           if (updated) {
             latestRun = await persistAdapterFailureRecoveryClassification(
+              issue,
               latestRun,
               adapterFailureClassification,
             );
@@ -5154,6 +5160,7 @@ export function recoveryService(
           });
           if (monitored) {
             latestRun = await persistAdapterFailureRecoveryClassification(
+              issue,
               participantLatestRun,
               participantAdapterFailureClassification,
             );
@@ -5180,6 +5187,7 @@ export function recoveryService(
           });
           if (updated) {
             latestRun = await persistAdapterFailureRecoveryClassification(
+              issue,
               participantLatestRun,
               participantAdapterFailureClassification,
             );

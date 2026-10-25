@@ -1317,3 +1317,36 @@ Adapter-failure classification remains a separate producer audit: it changes
 errorCode/resultJson/updatedAt after issue-monitor or escalation writes, so an
 earlier issue notification cannot by itself prove coverage of the later run
 commit. Production registration and removal of the lifecycle poll remain gated.
+
+
+## Late adapter-failure classification
+
+The owning recovery path updates the issue monitor/escalation before persisting
+its run classification. That later run write refreshes updatedAt and can bring
+an old failed run into the projector's existing 24-hour window. The earlier
+issue wake is insufficient: a real quota-recovery case established the monitor
+and classification but produced no notice after the worker exhausted startup.
+
+Classification now registers the issue intent in its own short write transaction.
+All four original-assignee/review-participant classification paths pass their
+already-owned issue identity. The update is company scoped and preserves its
+JSON merge so concurrent workspace receipts remain intact. Provider execution,
+classification policy, monitor deadlines, escalation and existing recovery
+ownership are unchanged. Repeated recovery with an existing quota monitor is
+quiet and does not dispatch another run.
+
+Evidence: /tmp/sleep28-classification-before.log fails on the missing notice;
+/tmp/sleep28-classification-tests.log passes all three recovery milestone cases.
+All 89 existing recovery-action cases pass in
+/tmp/sleep28-recovery-actions-acceptance.log. Their guarded external DB harness
+uses paperclip_sleep28_recovery_actions_20261025_test, separately from worker
+fixtures. Server typecheck/build pass in
+/tmp/sleep28-classification-{typecheck,build}.log. The earlier 40 stale-lock and
+43 identity/credential cases passed at their recorded checkpoints and were not
+blindly repeated for this private classification write.
+
+Still required: finish the authority/configuration producer dispositions,
+register the lifecycle worker, retain the separate native-progress duty, remove
+only the lifecycle poll, and complete current-head CI/review. Fresh master
+34409a92c4 is fetched but not yet reconciled into the stack. Older parent CI and
+voice security/deletion findings plus every original remaining reason stay open.

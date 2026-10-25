@@ -1668,3 +1668,12 @@ all 40 existing stale-lock ownership/race cases and server types/build pass.
 The conditional update and provider/process authority retain their existing
 owners. Adapter-failure classification and remaining producer audits still gate
 production registration; this does not migrate the stale-lock polling duty itself.
+
+
+Slice 28 now covers the late adapter-failure classification write, which can
+return an old failed run to the existing publication window after the issue's
+earlier wake. The missing notice reproduced before repair; all three recovery
+milestone cases, 89 recovery-action cases and server types/build pass. Four
+classification callers reuse their issue identity, with no new queue table or
+provider policy in shared code. Authority/configuration audit and production
+wiring remain next; the original full stack and remote gates remain incomplete.

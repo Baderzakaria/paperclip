@@ -13,7 +13,7 @@ import { idleWorkSnapshot } from "../services/task-admission.js";
 
 const external = resolveExternalTestDatabaseUrl("PAPERCLIP_MILESTONE_RECOVERY_TEST_DATABASE_URL");
 const support = external ? { supported: true } : await getEmbeddedPostgresTestSupport();
-(support.supported ? describe : describe.skip)("chat milestones after orphan recovery", () => {
+(support.supported ? describe : describe.skip)("chat milestones after run recovery", () => {
   let db: ReturnType<typeof createDb>;
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
   let fixtures: ReturnType<typeof createChatMilestoneFixtures>;
@@ -75,4 +75,29 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect(await recovery.sweepStaleIssueLocks()).toEqual({ cleared: 0, issueIds: [], terminalizedRunIds: [] });
     await flush(); await quiet(); expect(await publications()).toHaveLength(2);
   });
+
+  it("wakes an older failed run when recovery refreshes its quota classification", async () => {
+    const runId = randomUUID(), old = new Date(Date.now() - 48 * 60 * 60_000);
+    await db.insert(heartbeatRuns).values({ id: runId, companyId: f.companyId, agentId: f.agentId,
+      status: "failed", runtimeMode: "legacy", responsibleUserId: f.userId,
+      createdAt: old, startedAt: old, finishedAt: old, updatedAt: old,
+      error: "You've hit your usage limit for GPT-5. Try again at 12:00 AM (UTC).", errorCode: "adapter_failed",
+      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
+      contextSnapshot: { issueId: f.issueId, source: "chat:slack", endpointId: f.endpointId, wakeCommentId: f.commentId },
+    });
+    coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, canReconcile: () => true, onError: error => errors.push(error) });
+    await chatRunMilestoneWork(db).register(coordinator, () => true).ready;
+    await flush(); expect(await publications()).toEqual([]); await quiet();
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+    expect(await recovery.reconcileStrandedAssignedIssues()).toMatchObject({ providerQuotaMonitored: 1 });
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0].errorCode).toBe("provider_quota");
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+    await flush();
+    expect(await publications()).toEqual([expect.objectContaining({ idempotencyKey: `run:${runId}:failed:${f.endpointId}` })]);
+    await quiet();
+    expect(await recovery.reconcileStrandedAssignedIssues()).toMatchObject({ providerQuotaMonitored: 0, skipped: 1 });
+    await flush(); await quiet(); expect(await publications()).toHaveLength(1);
+  });
+
 });
