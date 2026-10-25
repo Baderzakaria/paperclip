@@ -197,6 +197,7 @@ import { chatChannelService } from "./services/chat-channels.js";
 import { deliverNativeQuestionResponse } from "./services/native-runtime/native-question-bridge.js";
 import { nativeChatProgressWork } from "./services/chat-native-progress-work.js";
 import { chatInboundWakeNoticeWork } from "./services/chat-inbound-wake-notice-work.js";
+import { chatFailedRetryNoticeWork } from "./services/chat-failed-retry-notice-work.js";
 import { chatRunMilestoneWork } from "./services/chat-run-milestone-work.js";
 import {
   createCoalescedAsyncTrigger,
@@ -1290,6 +1291,7 @@ export async function createApp(
   chatChannels.registerCommandWork(deliveryWork, () => !isWarmStandby() && !isIdleTaskDrainActive());
   nativeChatProgressWork(db).register(deliveryWork, () => !isWarmStandby() && !isIdleTaskDrainActive());
   chatInboundWakeNoticeWork(chatChannels).register(deliveryWork, () => !isWarmStandby() && !isIdleTaskDrainActive());
+  chatFailedRetryNoticeWork(chatChannels).register(deliveryWork, () => !isWarmStandby() && !isIdleTaskDrainActive());
   chatRunMilestoneWork(db, opts.authPublicBaseUrl).register(
     deliveryWork, () => !isWarmStandby() && !isIdleTaskDrainActive(),
   );

@@ -91,7 +91,8 @@ describe("createChatReconciliationCoordinator", () => {
     const publicationMaintenance = chat.slice(chat.indexOf("async function processPublicationMaintenance("),
       chat.indexOf("async function schedulePendingPublications("));
     expect(publicationMaintenance).not.toContain("await enqueueInboundWakeupPublications(");
-    expect(publicationMaintenance).toContain("await enqueueFailedChatRetryPublications(");
+    expect(publicationMaintenance).not.toContain("await enqueueFailedChatRetryPublications(");
+    expect(source).toContain("chatFailedRetryNoticeWork(chatChannels).register(deliveryWork,");
   });
 
   it("separates live voice recovery from the remaining periodic maintenance", () => {

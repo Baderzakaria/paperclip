@@ -1774,3 +1774,16 @@ voice inventory amplification findings 4371283330/4371307607, and #17580 still
 has unresolved company-offboarding/cleanup findings 4370459800/4370543984. These
 are required repairs, not exemptions. The full original migration scope,
 master reconciliation, and all latest-head gates remain required.
+
+
+## Slice 31 worker and producer checkpoint (2026-10-25)
+
+Failed-retry notices now register a scoped worker and leave periodic publication
+maintenance. Real missed wakes were reproduced for admission, agent/tree
+cancellation, resumed-admission denial, early admission refusal, and requester
+restoration. Their owning transactions now notify through the existing shared
+boundary. Fourteen selected lifecycle cases and all 1,503 chat/startup acceptance
+cases pass. Workspace typecheck and build pass. See the retry audit for retained
+failures, exact commands/logs, and native source-cleanup qualification still open.
+This is a draft checkpoint, not a merge-ready claim. Older parent gates and every
+remaining original recurring-server duty stay in scope. No merge occurred.

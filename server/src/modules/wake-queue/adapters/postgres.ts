@@ -995,6 +995,7 @@ export function createWakeAdmissionWriter(): WakeAdmissionWriter {
 
     async mergeIntoExistingDeferredWake(scope, input) {
       const tx = requireAdmissionTx(scope, input.companyId);
+      if (input.manualUserWakeActorId) await notifyChatInboundWakeNotices(tx, { companyId: input.companyId });
       const rows = await tx
         .update(agentWakeupRequests)
         .set({

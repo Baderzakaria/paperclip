@@ -17,8 +17,6 @@ type Options = {
   isShuttingDown: () => boolean;
 };
 
-/** Retry authorization belongs to the retry service. This projection owns only
- * the queued/not-started notice, selected from its existing durable receipt. */
 export function createFailedRetryNotices(db: Db, options: Options) {
   let manualCursor: FailedRetryNoticeCursor | null = null;
   async function candidates(limit: number, cursor: FailedRetryNoticeCursor | null, scope?: FailedRetryNoticeScope) {

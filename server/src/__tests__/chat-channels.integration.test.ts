@@ -1,3 +1,5 @@
+import { createAdmissionTransactionScope, createWakeAdmissionWriter } from "../modules/wake-queue/adapters/postgres.js";
+import { chatFailedRetryNoticeWork } from "../services/chat-failed-retry-notice-work.js";
 import { issueTreeControlService } from "../services/issue-tree-control.js";
 import { chatInboundWakeNoticeWork } from "../services/chat-inbound-wake-notice-work.js";
 import { nativeChatProgressWork } from "../services/chat-native-progress-work.js";
@@ -11,7 +13,7 @@ import { configureAgentLifecycle } from "../services/agent-lifecycle.js";
 import { deleteCompany } from "../services/company-deletion.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
 import { readFreshWorkspaceReadiness } from "../services/fresh-workspace-continuation.js";
-import { requestTaskRetry } from "../services/task-retry.js";
+import { requestTaskRetry, reconcileTaskChatRetryReceipts } from "../services/task-retry.js";
 import { createSystemRecovery } from "../services/system-recovery-state.js";
 import { remoteTerminationReceipt } from "../services/remote-execution-termination.js";
 import { stageReceiptReactionRemovals } from "../services/chat-receipt-reactions.js";
@@ -62604,6 +62606,281 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       });
     } finally {
       await context.service.shutdown();
+    }
+  });
+
+  async function deferredFailedRetryNoticeFixture(wakeOnDemand = true) {
+    const context = await failedChatRetryFixture("telegram", undefined, true);
+    const companyId = context.fixture.companyId, issueId = context.issue.id, leaseId = randomUUID();
+    await db.update(heartbeatRuns).set({ runtimeMode: "native", nativeIssueId: issueId,
+      nativePhase: "terminal_failure", runnerProfileJson: {},
+      resultJson: { workspaceRestoreFailure: "restore_failed", workspaceRestoreRecovery: {
+        schema: "paperclip.workspace-restore-recovery.v1", runId: context.runId, leaseIds: [leaseId],
+      } },
+    }).where(eq(heartbeatRuns.id, context.runId));
+    await db.insert(nativeRunFinalizations).values({ companyId, issueId, runId: context.runId, phase: "terminal_failure" });
+    await db.insert(environmentLeases).values({ id: leaseId, companyId, issueId,
+      heartbeatRunId: context.runId, provider: "daytona", providerLeaseId: randomUUID(),
+      status: "pending_cleanup", cleanupStatus: "failed", leasePolicy: "retain_on_failure",
+      metadata: { remoteCwd: "/home/daytona/paperclip-workspace", pendingCleanupInFlight: false },
+    });
+    await db.insert(issueRecoveryActions).values({ companyId, sourceIssueId: issueId,
+      kind: "active_run_watchdog", status: "resolved", ownerType: "system",
+      cause: "native_continuation_requires_reconciliation", fingerprint: randomUUID(),
+      nextAction: "Verify and preserve the retained source before continuing.",
+      evidence: { runId: context.runId, automaticRecovery: { replay: "blocked" },
+        workspaceRestoreRecovery: { schema: "paperclip.workspace-restore-recovery.v1", leaseIds: [leaseId] },
+        historicalWorkspaceSource: { schema: "paperclip.historical-workspace-source.v1", runId: context.runId, leaseIds: [leaseId] },
+        systemRecovery: { ...createSystemRecovery(context.runId), state: "exhausted", attempts: 2, retriesUsed: 1,
+          attemptId: randomUUID(), firstFailureAt: Date.now() - 1000, deadlineAt: Date.now() + 60_000,
+          preservationOperationIds: [randomUUID()] },
+      },
+    });
+    const retry = await requestTaskRetry({ db, companyId, issueId, actorId: "owner-user",
+      actorSource: "cloud_tenant", observedRunId: context.runId, idempotencyKey: randomUUID(),
+      prepareChatRetry: context.service.prepareFailedChatRunRetry });
+    await db.update(agents).set({ adapterType: "paperclip_runner", status: "running",
+      runtimeConfig: { heartbeat: { wakeOnDemand, maxConcurrentRuns: 1 } },
+    }).where(eq(agents.id, context.fixture.assignedAgentId));
+    await db.insert(heartbeatRuns).values({ companyId, agentId: context.fixture.assignedAgentId,
+      status: "running", startedAt: new Date() });
+    context.wakeup.mockImplementation(heartbeatService(db).wakeup);
+    return { ...context, retry, admit: () => context.service.processFailedChatRunRetry(retry.chatActionId!) };
+  }
+
+  it.each(["normal", "drain", "failed selection", "stopped", "disabled"] as const)("reactivates failed retry notices from real admission after idle through %s", async mode => {
+    const context = await deferredFailedRetryNoticeFixture(mode !== "disabled");
+    let canRun = true;
+    const errors: unknown[] = [];
+    let coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => canRun,
+      canReconcile: () => true, onError: error => errors.push(error) });
+    const selection = vi.spyOn(context.service, "loadFailedRetryNoticeScopes");
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    const settle = async () => vi.waitFor(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(idleWorkSnapshot().active).toBe(0); expect(coordinator.nextWakeAt()).toBeNull();
+    }, { timeout: 10_000 });
+    const quiet = async () => {
+      const select = vi.spyOn(db, "select"), transaction = vi.spyOn(db, "transaction");
+      try {
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(select).not.toHaveBeenCalled(); expect(transaction).not.toHaveBeenCalled();
+      } finally { select.mockRestore(); transaction.mockRestore(); }
+    };
+    try {
+      await chatFailedRetryNoticeWork(context.service).register(coordinator, () => canRun).ready;
+      await settle(); await quiet();
+      if (mode === "drain") canRun = false;
+      if (mode === "stopped") await coordinator.stop();
+      if (mode === "failed selection") selection.mockRejectedValueOnce(new Error("temporary retry selection failure"));
+      expect(await context.admit()).toMatchObject({ status: mode === "disabled" ? "failed" : "deferred" });
+      if (mode === "failed selection") {
+        await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(1000); expect(errors).toHaveLength(1); });
+        canRun = false;
+      }
+      if (["drain", "failed selection", "stopped"].includes(mode)) {
+        await vi.advanceTimersByTimeAsync(30_000);
+        await vi.waitFor(() => expect(idleWorkSnapshot().active).toBe(0));
+        expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(0);
+        await quiet(); canRun = true;
+        if (mode === "stopped") {
+          await context.service.processPublicationMaintenance();
+          expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(0);
+          coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => canRun,
+            canReconcile: () => true, onError: error => errors.push(error) });
+          await chatFailedRetryNoticeWork(context.service).register(coordinator, () => canRun).ready;
+        }
+      }
+      await vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(30_000);
+        expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toEqual([expect.objectContaining({
+          payload: mode === "disabled"
+            ? { text: "This retry was not started. Open the task in Paperclip for details.", progressState: "failed" }
+            : { text: "Your retry is queued.", progressState: "queued" },
+        })]);
+        expect(coordinator.nextWakeAt()).toBeNull(); expect(idleWorkSnapshot().active).toBe(0);
+      }, { timeout: 10_000 });
+      await quiet();
+      expect(errors).toEqual(mode === "failed selection" ? [expect.objectContaining({ errors: [expect.objectContaining({ message: "temporary retry selection failure" })] })] : []);
+    } finally {
+      await coordinator.stop(); selection.mockRestore(); vi.useRealTimers(); await context.service.shutdown();
+      await db.delete(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, context.fixture.companyId),
+        inArray(agentWakeupRequests.id, [context.retry.requestId!, context.retry.chatActionId!]), isNull(agentWakeupRequests.runId)));
+    }
+  });
+
+  it.each(["idle", "bounded pass", "requester merge"] as const)("reactivates denied retry notices when authority is restored during %s", async mode => {
+    const context = await deferredFailedRetryNoticeFixture();
+    const rejectedIds = mode === "bounded pass" ? Array.from({ length: 100 }, () => randomUUID()) : [];
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true,
+      canReconcile: () => true, onError: error => errors.push(error) });
+    let held = false, release!: () => void;
+    const pending = new Promise<void>(resolve => { release = resolve; });
+    let ready: Promise<unknown> | undefined;
+    const reconcile = context.service.reconcileFailedRetryNotices.bind(context.service);
+    const pass = vi.spyOn(context.service, "reconcileFailedRetryNotices");
+    try {
+      expect(await context.admit()).toMatchObject({ status: "deferred" });
+      const [originalReceipt] = await readAgentWakeupRequestsById(context.retry.chatActionId!);
+      if (mode === "requester merge") {
+        expect(originalReceipt.requestedByActorType).toBe("user");
+        await db.update(agentWakeupRequests).set({ requestedByActorId: "another-requester" })
+          .where(eq(agentWakeupRequests.id, originalReceipt.id));
+      } else {
+        await db.update(issues).set({ visibility: "private", privacyRootIssueId: context.issue.id,
+          createdByUserId: null, responsibleUserId: null, assigneeUserId: null,
+        }).where(eq(issues.id, context.issue.id));
+      }
+      if (rejectedIds.length) {
+        const [action] = await db.select().from(chatActions).where(eq(chatActions.id, context.retry.chatActionId!));
+        const [receipt] = await readAgentWakeupRequestsById(action.id);
+        await db.insert(chatActions).values(rejectedIds.map(id => ({ ...action, id,
+          providerActionId: `retry-cursor:${id}`, createdAt: new Date(action.createdAt.getTime() + 1000),
+          payload: { ...action.payload, sourceScopeSha256: "invalid-source" },
+        })));
+        await db.insert(agentWakeupRequests).values(rejectedIds.map(id => ({ ...receipt, id,
+          idempotencyKey: `retry-cursor:${id}`,
+        })));
+        pass.mockImplementationOnce(async input => {
+          const result = await reconcile(input);
+          expect(result).toMatchObject({ inserted: 0, nextCursor: expect.any(Object) });
+          held = true; await pending; return result;
+        });
+      }
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+      ready = chatFailedRetryNoticeWork(context.service).register(coordinator, () => true).ready;
+      if (mode === "bounded pass") await vi.waitFor(() => expect(held).toBe(true), { timeout: 10_000 });
+      else {
+        await ready;
+        await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(1000);
+          expect(coordinator.nextWakeAt()).toBeNull(); expect(idleWorkSnapshot().active).toBe(0); });
+        const select = vi.spyOn(db, "select"), transaction = vi.spyOn(db, "transaction");
+        try {
+          await vi.advanceTimersByTimeAsync(120_000);
+          expect(select).not.toHaveBeenCalled(); expect(transaction).not.toHaveBeenCalled();
+        } finally { select.mockRestore(); transaction.mockRestore(); }
+      }
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(0);
+      if (mode === "requester merge") {
+        await db.transaction(async tx => {
+          await tx.execute(sql`select id from issues where id = ${context.issue.id} for update`);
+          await createWakeAdmissionWriter().mergeIntoExistingDeferredWake(
+            createAdmissionTransactionScope(context.fixture.companyId, tx as unknown as Db), {
+              companyId: context.fixture.companyId, existingDeferredWakeId: originalReceipt.id,
+              mergedPayload: originalReceipt.payload ?? {}, nextCoalescedCount: 1,
+              manualUserWakeActorId: originalReceipt.requestedByActorId!,
+            });
+        });
+      } else await issueService(db).update(context.issue.id, { visibility: "open" });
+      release(); await ready;
+      await vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(1);
+        expect(coordinator.nextWakeAt()).toBeNull(); expect(idleWorkSnapshot().active).toBe(0);
+      }, { timeout: 10_000 });
+      const select = vi.spyOn(db, "select"), transaction = vi.spyOn(db, "transaction");
+      try {
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(select).not.toHaveBeenCalled(); expect(transaction).not.toHaveBeenCalled();
+      } finally { select.mockRestore(); transaction.mockRestore(); }
+      expect(errors).toEqual([]);
+    } finally {
+      release(); await ready; await coordinator.stop(); pass.mockRestore(); vi.useRealTimers();
+      await context.service.shutdown();
+      await db.delete(agentWakeupRequests).where(inArray(agentWakeupRequests.id,
+        [...rejectedIds, context.retry.requestId!, context.retry.chatActionId!]));
+      if (rejectedIds.length) await db.delete(chatActions).where(inArray(chatActions.id, rejectedIds));
+    }
+  });
+
+  it("wakes a not-started retry notice after resumed admission is denied", async () => {
+    const context = await deferredFailedRetryNoticeFixture();
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true,
+      canReconcile: () => true, onError: error => errors.push(error) });
+    try {
+      expect(await context.admit()).toMatchObject({ status: "deferred" });
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+      await chatFailedRetryNoticeWork(context.service).register(coordinator, () => true).ready;
+      await vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(1);
+        expect(coordinator.nextWakeAt()).toBeNull(); expect(idleWorkSnapshot().active).toBe(0);
+      });
+      await reconcileTaskChatRetryReceipts(db);
+      context.wakeup.mockRejectedValueOnce(Object.assign(new Error("denied at resume"), {
+        details: { code: "chat_failed_run_retry_not_authorized" },
+      }));
+      expect(await context.admit()).toMatchObject({ status: "failed" });
+      expect((await readAgentWakeupRequestsById(context.retry.chatActionId!))[0].status).toBe("failed");
+      await vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(2);
+        expect(coordinator.nextWakeAt()).toBeNull(); expect(idleWorkSnapshot().active).toBe(0);
+      }, { timeout: 5000 });
+      const select = vi.spyOn(db, "select"), transaction = vi.spyOn(db, "transaction");
+      try {
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(select).not.toHaveBeenCalled(); expect(transaction).not.toHaveBeenCalled();
+      } finally { select.mockRestore(); transaction.mockRestore(); }
+      expect(errors).toEqual([]);
+    } finally {
+      await coordinator.stop(); vi.useRealTimers(); await context.service.shutdown();
+      await db.delete(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, context.fixture.companyId),
+        inArray(agentWakeupRequests.id, [context.retry.requestId!, context.retry.chatActionId!]), isNull(agentWakeupRequests.runId)));
+    }
+  });
+
+  it.each(["agent", "tree"] as const)("wakes a failed retry notice only after %s cancellation commits", async kind => {
+    const context = await failedChatRetryFixture("telegram");
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true,
+      canReconcile: () => true, onError: error => errors.push(error) });
+    let stagedActionId: string | undefined;
+    const settle = async () => vi.waitFor(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(idleWorkSnapshot().active).toBe(0); expect(coordinator.nextWakeAt()).toBeNull();
+    }, { timeout: 10_000 });
+    const cancel = (database: typeof db) => kind === "agent"
+      ? heartbeatService(database).cancelInvocationsForAgents([context.fixture.assignedAgentId], "Cancelled retry fixture")
+      : issueTreeControlService(database).cancelUnclaimedWakeupsForTree(context.fixture.companyId, context.issue.id, "Cancelled retry fixture");
+    try {
+      const staged = await db.transaction(tx => context.service.prepareFailedChatRunRetry(tx, {
+        companyId: context.fixture.companyId, issueId: context.issue.id,
+        agentId: context.fixture.assignedAgentId, failedRunId: context.runId, initiatedByUserId: "owner-user",
+      }));
+      stagedActionId = staged.actionId;
+      await context.service.processFailedChatRunRetry(staged.actionId);
+      await db.update(agentWakeupRequests).set({ status: "deferred_issue_execution" })
+        .where(eq(agentWakeupRequests.id, staged.actionId));
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+      await chatFailedRetryNoticeWork(context.service).register(coordinator, () => true).ready;
+      await settle();
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(1);
+      const rollback = new Error("rollback retry cancellation");
+      await expect(db.transaction(async tx => { await cancel(tx as unknown as typeof db); throw rollback; })).rejects.toBe(rollback);
+      await settle();
+      expect((await readAgentWakeupRequestsById(staged.actionId))[0].status).toBe("deferred_issue_execution");
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(1);
+      await db.transaction(async tx => { await cancel(tx as unknown as typeof db); });
+      await settle();
+      expect((await readAgentWakeupRequestsById(staged.actionId))[0].status).toBe("cancelled");
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toEqual(expect.arrayContaining([expect.objectContaining({
+        payload: { text: "This retry was not started. Open the task in Paperclip for details.", progressState: "failed" },
+      })]));
+      const select = vi.spyOn(db, "select"), transaction = vi.spyOn(db, "transaction");
+      try {
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(select).not.toHaveBeenCalled(); expect(transaction).not.toHaveBeenCalled();
+      } finally { select.mockRestore(); transaction.mockRestore(); }
+      expect(errors).toEqual([]);
+    } finally {
+      await coordinator.stop(); vi.useRealTimers(); await context.service.shutdown();
+      if (stagedActionId) {
+        await db.delete(chatActions).where(eq(chatActions.id, stagedActionId));
+        await db.delete(agentWakeupRequests).where(eq(agentWakeupRequests.id, stagedActionId));
+      }
     }
   });
 
