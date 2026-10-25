@@ -82,7 +82,9 @@ export function registerToolConnectionHealthWork(
       if (due.length > batch.entries.length) earliest = Date.now() + 1_000;
       if (errors.length) throw new AggregateError(errors, "Tool connection health checks could not settle");
     },
-    hasPending: async () => dirty.size > 0,
+    // Keep the hints/deadlines for resume, but release settled intent while
+    // paused. The coordinator independently fences unresolved transactions.
+    hasPending: async () => canRun() && dirty.size > 0,
     nextRunAt: next,
   });
 }
