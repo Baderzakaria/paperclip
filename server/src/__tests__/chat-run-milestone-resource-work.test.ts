@@ -49,10 +49,10 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
   }
   const publications = () => db.select().from(chatPublications).where(eq(chatPublications.issueId, f.issueId));
 
-  it.each(["inventory", "lifecycle", "github repository"] as const)("wakes only reopened conversations after %s commits, preserving rollback and completed history", async path => {
-    const provider = path === "github repository" ? "github" : "slack";
-    const resourceType = provider === "github" ? "repository" : "channel";
-    const providerResourceId = provider === "github" ? "owner/repo" : "recovered-channel";
+  it.each(["inventory", "lifecycle", "github repository", "telegram migration"] as const)("wakes only reopened conversations after %s commits, preserving rollback and completed history", async path => {
+    const provider = path === "github repository" ? "github" : path === "telegram migration" ? "telegram" : "slack";
+    const resourceType = provider === "github" ? "repository" : provider === "telegram" ? "chat" : "channel";
+    const providerResourceId = provider === "github" ? "owner/repo" : provider === "telegram" ? "-100222" : "recovered-channel";
     await db.update(chatEndpoints).set({ provider }).where(eq(chatEndpoints.id, f.endpointId));
     const runId = randomUUID();
     await db.insert(heartbeatRuns).values({ id: runId, companyId: f.companyId, agentId: f.agentId,
@@ -62,12 +62,14 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, f.issueId));
     const [endpoint] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, f.endpointId));
     const [resource] = await db.insert(chatEndpointResources).values({ companyId: f.companyId, endpointId: f.endpointId,
-      type: resourceType, providerResourceId, label: "Recovered", availability: "unavailable", enabled: true,
+      type: resourceType, providerResourceId: provider === "telegram" ? "-111" : providerResourceId, label: "Recovered", availability: "unavailable", enabled: true,
     }).returning();
-    await db.update(chatConversations).set({ resourceId: resource.id, state: "unavailable" }).where(eq(chatConversations.id, f.conversationId));
+    await db.update(chatConversations).set({ resourceId: resource.id, state: "unavailable", ...(provider === "telegram" ? { externalConversationId: "telegram:-111", externalThreadId: "telegram:-111:42" } : {}) }).where(eq(chatConversations.id, f.conversationId));
     const completedId = randomUUID();
     await db.insert(chatConversations).values({ id: completedId, companyId: f.companyId, endpointId: f.endpointId,
-      resourceId: resource.id, issueId: f.issueId, state: "completed", externalConversationId: completedId, externalThreadId: completedId, externalLabel: "History" });
+      // Telegram migration intentionally rebinds all conversations on the old resource.
+      // Unrelated completed history must remain passive.
+      resourceId: provider === "telegram" ? null : resource.id, issueId: f.issueId, state: "completed", externalConversationId: completedId, externalThreadId: completedId, externalLabel: "History" });
     const [delivery] = await db.insert(chatDeliveries).values({ companyId: f.companyId, endpointId: f.endpointId,
       providerEventId: randomUUID(), deduplicationKey: randomUUID(), eventKind: "installation", normalizedEvent: {}, state: "processing", attempts: 1,
     }).returning();
@@ -75,7 +77,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await chatRunMilestoneWork(db).register(coordinator, () => true).ready;
     await flush(); expect(await publications()).toEqual([]); await quiet();
     const withLease = chatCredentialMutationLease(db);
-    const recover = (rollback: boolean) => withLease(endpoint, lease => db.transaction(async tx => {
+    const recover = (rollback: boolean, alreadyPublished = false) => withLease(endpoint, lease => db.transaction(async tx => {
       const resources = createChatResourceReconciliation(tx as unknown as typeof db, {
         endpointRecord: async () => ({ endpoint }), withCredentialMutationLease: withLease, runtimeGeneration: () => 0, maxErrorText: 1000,
       });
@@ -85,12 +87,13 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
         await resources.reconcileGitHubWebhookRepository(endpoint, { repository: { id: 123, full_name: providerResourceId, name: "repo", owner: { id: 321, login: "owner" } } }, lease);
       } else {
         await resources.applyProviderAvailability({ currentEndpoint: endpoint, credentialLease: lease, staleResourceEffect: false,
-          claimed: delivery, candidate: { attempts: 0 }, effect: { kind: "resource", provider: "slack", providerEventId: delivery.providerEventId,
-            providerResourceId: "recovered-channel", resourceType: "channel", label: "Recovered", availability: "available" },
+          claimed: delivery, candidate: { attempts: 0 }, effect: { kind: "resource", provider, providerEventId: delivery.providerEventId,
+            providerResourceId, resourceType, ...(provider === "telegram" ? { previousProviderResourceId: "-111" } : {}), label: "Recovered", availability: "available" },
         });
       }
       // The owner used a nested transaction. Its savepoint release cannot publish.
-      await vi.advanceTimersByTimeAsync(1000); expect(await publications()).toEqual([]);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(await publications()).toHaveLength(alreadyPublished ? 1 : 0);
       if (rollback) throw new Error("outer rollback");
     }));
     await expect(recover(true)).rejects.toThrow("outer rollback");
@@ -98,6 +101,10 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await recover(false); await flush();
     expect(await publications()).toEqual([expect.objectContaining({ idempotencyKey: `run:${runId}:failed:${f.endpointId}` })]);
     expect((await db.select().from(chatConversations).where(eq(chatConversations.id, completedId)))[0].state).toBe("completed");
+    if (provider === "telegram") {
+      expect((await db.select().from(chatConversations).where(eq(chatConversations.id, f.conversationId)))[0])
+        .toMatchObject({ externalConversationId: "telegram:-100222", externalThreadId: "telegram:-100222:42", state: "active" });
+    }
     await quiet();
     // Unchanged inventory must not turn a provider refresh into milestone polling.
     const notices: string[] = [];
@@ -107,6 +114,11 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
         endpointRecord: async () => ({ endpoint }), withCredentialMutationLease: withLease, runtimeGeneration: () => 0, maxErrorText: 1000,
       }).reconcileProviderResourceRows(endpoint, { provider, resources: [{ type: resourceType, providerResourceId, label: "Recovered" }] }, lease));
       expect(notices).toEqual([]);
+      if (provider === "telegram") {
+        // A duplicate migration has no old bindings left to reactivate.
+        await recover(false, true);
+        expect(notices).toEqual([]);
+      }
     } finally { unsubscribe(); }
     await flush(); await quiet();
   });

@@ -1152,3 +1152,38 @@ Slack waiting-to-active helpers preserve selector eligibility (both states are
 already admitted). Email uses explicit publication mode, which the lifecycle
 selector and lineage resolver exclude. These dispositions narrow the remaining
 configuration audit; they do not authorize removing the periodic scan yet.
+
+
+## Telegram migration producer
+
+Telegram group migration reactivates conversations before the generic resource
+availability helper runs. A real owner regression at b634353059 fails to publish
+the existing failed run after commit (/tmp/sleep28-resource-telegram-before.log).
+The Telegram module now locks the bindings it moves and registers distinct issue
+milestone intents before its existing update. It preserves the caller's outer
+transaction, current migration/authorization semantics, and canonical topic IDs.
+No shared scheduler contract or new durable table is introduced.
+
+All four resource producer cases pass, including nested-savepoint/outer rollback,
+commit reactivation, unrelated completed history, two minutes of quiet, unchanged
+inventory and duplicate Telegram migration without a new milestone intent:
+/tmp/sleep28-resource-telegram-tests.log. All 88 existing lifecycle/governed cases
+pass in /tmp/sleep28-resource-telegram-lifecycle.log. Eight existing Telegram
+migration integration cases pass in /tmp/sleep28-resource-telegram-acceptance.log
+(1,422 deselected): unset/inherited/cleared/configured execution defaults, with
+and without an existing destination, topic identity and subsequent reply routing.
+Server production typecheck and build pass in the corresponding
+/tmp/sleep28-resource-telegram-{typecheck,build}.log files. Total: 100 distinct
+selected tests; no live Telegram or host-suspension qualification is claimed.
+
+The cancellation E2E diagnostic completed at b634353059: focused two cases pass,
+the full Agent Chat projects file passes all 16, and the two cases with a
+100ms database-only running-row delay pass. Evidence is retained in
+/tmp/sleep-cancel-e2e-20261025, /tmp/sleep-cancel-full-e2e-20261025 and
+/tmp/sleep-cancel-delayed-e2e-20261025. Captured lock waits do not establish the
+CI deadlock cycle. These passing runs do not resolve the actual #17572/#17490
+E2E failures; no blind retry or cancellation-error masking was applied.
+
+Normal inbound conversation/link activation and remaining authority/lineage
+producer dispositions still gate production registration and polling removal.
+Fresh master is 7ebf98eafd; final base reconciliation remains outstanding.

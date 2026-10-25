@@ -1616,3 +1616,19 @@ review blocker is resolved merely by pushing inherited changes. No PRs merged.
 Origin/master refreshed to e335265568 (task-run UI polling removal #17608).
 Full base reconciliation, remaining recurring-work slices, milestone startup
 wiring, fresh reviews, and all latest-head CI gates remain required.
+
+
+Slice 28 Telegram migration now registers affected issue intents in its owning
+transaction before reactivating/rebinding conversations. The missing wake was
+reproduced first. All 92 milestone/resource/governed tests, eight existing
+Telegram migration cases, server typecheck and server build pass. Duplicate
+migration and unchanged inventory remain quiet. See the milestone audit for
+failure and verification logs. Inbound activation and remaining producer audits
+still gate production wiring; no recurring projector has been removed yet.
+
+Fresh pre-push gates: #17606 at b634353059 has passing checks; #17572 at
+8815dfad38 and #17490 at 31bcd19888 still fail E2E shard 3 and aggregate.
+Three local cancellation diagnostic runs passed, including full projects coverage
+and a database-only delay, without proving the CI deadlock's competing owner.
+Those failures, parent security/deletion findings, all other original slices,
+fresh remote review and reconciliation with master 7ebf98eafd remain open.
