@@ -1,3 +1,4 @@
+import { notifyChatRunMilestones } from "./chat-run-milestone-notifications.js";
 import { notifyToolReviewChange } from "./tool-review-work-notifications.js";
 import { normalizeEscapedLineBreaks } from "@paperclipai/shared/validators/text";
 import { notifyDeliveryWork, DELIVERY_QUEUES } from "./delivery-work-notifications.js";
@@ -4832,6 +4833,7 @@ export function issueThreadInteractionService(
         // lifecycle reflection.
         const updated = await db
           .transaction(async (tx) => {
+            if (["ask_user_questions", "request_confirmation"].includes(row.kind)) await notifyChatRunMilestones(tx, row);
             if (row.kind === "connection_intent") {
               await tx
                 .delete(toolOauthStates)
@@ -4922,6 +4924,7 @@ export function issueThreadInteractionService(
       // request must not outlive a withdrawn card.
       const updated = await db.transaction(async (tx) => {
         await assertInteractionRunWriteAllowed(tx as unknown as Db, issue, actor);
+        if (["ask_user_questions", "request_confirmation"].includes(current.kind)) await notifyChatRunMilestones(tx, current);
         await resolveLinkedToolActionRequests(tx, current, {
           status: "cancelled",
           fromStatuses: ["pending", "approved"],
@@ -5057,6 +5060,7 @@ export function issueThreadInteractionService(
           if (!historicalAnswer) throw interactionIssueClosedError();
         }
         await assertInteractionRunWriteAllowed(tx as unknown as Db, issue, actor);
+        await notifyChatRunMilestones(tx, current);
         await mutationOptions.beforeResolveInTransaction?.(tx);
         const resolvedAt = new Date();
         const [row] = await tx
@@ -5181,6 +5185,7 @@ export function issueThreadInteractionService(
       const now = new Date();
       const updated = await db.transaction(async (tx) => {
         await assertInteractionRunWriteAllowed(tx as unknown as Db, issue, actor);
+        if (["ask_user_questions", "request_confirmation"].includes(current.kind)) await notifyChatRunMilestones(tx, current);
         await resolveLinkedToolActionRequests(tx, current, {
           status: "cancelled",
           fromStatuses: ["pending", "approved"],
@@ -5278,6 +5283,7 @@ export function issueThreadInteractionService(
       const reason = data.reason?.trim() || null;
       const updated = await db.transaction(async (tx) => {
         await assertInteractionRunWriteAllowed(tx as unknown as Db, issue, actor);
+        await notifyChatRunMilestones(tx, current);
         const resolvedAt = new Date();
         const [row] = await tx
           .update(issueThreadInteractions)

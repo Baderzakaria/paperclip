@@ -721,3 +721,50 @@ called after an interaction mutation cannot replace intent before that earlier
 mutation. Production registration and removal of the combined periodic owner
 remain pending. Publish this slice as a draft for CI feedback, not as a completed
 sleep migration or merge-ready PR.
+
+## Interaction resolution checkpoint
+
+Question answers, question cancellation, withdrawal, skipping and terminal-task
+expiry now signal milestone work before their relevant mutations. Withdrawal,
+skipping and expiry restrict the signal to ask_user_questions and
+request_confirmation, the two kinds used by lifecycle presentation arbitration.
+Existing actor checks, linked tool/secret resolution, pending-state CAS, caller
+hooks and transaction ownership remain in place. No service wrapper or new table
+was introduced. Dismissal alone does not change the arbitration predicate and
+adds no notification.
+
+Historical answers are a distinct case: an ordinary deferred question on a done
+task remains answerable, but deliberately enqueues no question delivery. That
+path cannot rely on a later delivery claim to wake the milestone projector.
+The actual answer transaction now owns its notification without reopening work.
+
+- `/tmp/sleep28-interaction-resolution-before.log`: answer, skip and historical
+  answer all leave an eligible failure notice asleep before the fix.
+- `/tmp/sleep28-interaction-transitions-before.log`: six real producer variants
+  fail the missing-notice assertion: answer, skip, cancel, withdraw, terminal
+  expiry and historical answer. Cancel/withdraw also exposed a fixture cleanup
+  error because they create durable chat actions referencing the conversation.
+- `/tmp/sleep28-interaction-transitions-tests.log`: notice assertions pass after
+  the fix; cancel/withdraw still fail the missing chat-action cleanup. Cleanup
+  now deletes this fixture's actions before its conversations. The old
+  `paperclip_sleep28_worker_final_20261025_test` database retains partial failed
+  fixtures and must not be reused for global worker quiet assertions.
+- `/tmp/sleep28-interaction-final-tests.log`: all 160 cases pass across the full
+  milestone and existing interaction-service suites, on fresh separate databases
+  `paperclip_sleep28_interaction_worker_20261025_test` and
+  `paperclip_sleep28_interaction_service_20261025_test`. The former is the new
+  self-cleaning milestone test database; the latter is exclusive to the service
+  suite's broad cleanup.
+- `/tmp/sleep28-interaction-typecheck.log`: production server typecheck passes;
+  test files are excluded. `git diff --check` passes.
+
+Draft PR #17606 targets #17592. Its first head `f398314ecd406d2e0eebbfb81a5d9dd7edc7c437`
+started CI run 40198190088 and review run 40198190000. At the last inspection,
+24 checks succeeded and 27 remained in progress, with no reported failures.
+That is progress evidence, not final acceptance of this subsequent checkpoint.
+
+Remaining producer work includes confirmation accept/reject and invalidation,
+interaction creation/source changes, provider-specific receipts, conversation
+bindings, configuration and alternate recovery writers. Production registration,
+removal of only the lifecycle polling lane, complete latest-head checks and final
+stack/master reconciliation remain required. No merge or full-goal completion.

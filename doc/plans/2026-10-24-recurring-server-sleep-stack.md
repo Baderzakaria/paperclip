@@ -1472,3 +1472,19 @@ coverage. All 74 selected worker/adapter/policy cases and server production type
 pass. Remaining publication, interaction, configuration, question and monitor
 producer coverage still gates periodic-projector removal. Original inventory,
 remote gates/findings and final master reconciliation remain open.
+
+## Slice 28 draft and publication/interaction coverage
+
+[Draft #17606](https://github.com/paperclipai/paperclip/pull/17606) is stacked on
+#17592. It adds the lifecycle projector worker and covered producer signals;
+production registration and polling removal remain intentionally unfinished until
+the remaining producer audit is complete. Native progress stays a separate slice.
+
+The latest local checkpoint covers real publication success/failure/operator
+resolution and question answer/cancel/withdraw/skip/terminal-expiry paths,
+including historical answers that enqueue no continuation. All 160 milestone and
+interaction-service cases pass on fresh isolated PostgreSQL databases. Four
+existing chat acceptance cases, publication policy cases, and server production
+typecheck passed at their recorded checkpoints. See the detailed milestone audit
+for retained regression/setup failures, controlled ports and remaining coverage.
+The initial draft CI was running; no final green-check or readiness claim is made.

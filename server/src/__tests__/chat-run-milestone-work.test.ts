@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { activityLog, agents, agentWakeupRequests, authUsers, caseHandoffs, cases, companyMemberships, chatConversations, chatEndpoints, chatMessageLinks, chatPublications, companies, completionContracts, createDb, nativeRunFinalizations, nativeRunResults, statusDecisions, statusDecisionEffects, workAssessments, subscribeDatabaseWork,
+import { activityLog, agents, agentWakeupRequests, authUsers, caseHandoffs, cases, companyMemberships, chatActions, chatConversations, chatEndpoints, chatMessageLinks, chatPublications, companies, completionContracts, createDb, nativeRunFinalizations, nativeRunResults, statusDecisions, statusDecisionEffects, workAssessments, subscribeDatabaseWork,
   heartbeatRunEvents, heartbeatRuns, issueComments, issueQuestionResponseDeliveries, issueThreadInteractions, issues, toolApplications, toolConnections } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
@@ -76,6 +76,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       await db.delete(activityLog).where(eq(activityLog.companyId, companyId));
       await db.delete(caseHandoffs).where(eq(caseHandoffs.companyId, companyId));
       await db.delete(cases).where(eq(cases.companyId, companyId));
+      await db.delete(chatActions).where(eq(chatActions.companyId, companyId));
       await db.delete(chatMessageLinks).where(eq(chatMessageLinks.companyId, companyId));
       await db.delete(chatPublications).where(eq(chatPublications.companyId, companyId));
       await db.delete(chatConversations).where(eq(chatConversations.companyId, companyId));
@@ -630,6 +631,44 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await expect(delivery.deliver(interaction.id)).resolves.toMatchObject({ status: "fallback_queued" });
     await flush();
     expect((await publications()).map(row => row.idempotencyKey)).toContain(`run:${targetId}:queued:${f.endpointId}`);
+    await quiet();
+  });
+  it.each(["answer", "skip", "cancel", "withdraw", "expire", "historical answer"] as const)("rechecks an unsent question after %s", async action => {
+    const source = await run(f, { status: "failed", errorCode: "test_run_failed" });
+    const interactions = issueThreadInteractionService(db);
+    const issue = { id: f.issueId, companyId: f.companyId, status: "in_progress" };
+    const interaction = await interactions.create(issue, {
+      kind: "ask_user_questions", continuationPolicy: "wake_assignee", sourceRunId: source.id,
+      title: "Choose", payload: { version: 1, title: "Choose", questions: [{
+        id: "choice", prompt: "Continue?", selectionMode: "single", required: true,
+        options: [{ id: "yes", label: "Yes" }],
+      }] },
+    }, { agentId: f.agentId, runId: source.id });
+    if (action === "historical answer") {
+      await interactions.dismissInteraction(issue, interaction.id, { userId: f.userId });
+      await db.update(issues).set({ status: "done" }).where(eq(issues.id, f.issueId));
+    }
+    await start(); await flush();
+    expect((await publications()).some(row => row.idempotencyKey.startsWith(`run:${source.id}:`))).toBe(false);
+    await quiet();
+    if (action === "skip") {
+      await interactions.skipInteraction(issue, interaction.id, { reason: "No longer needed" }, { userId: f.userId });
+    } else if (action === "cancel") {
+      await interactions.cancelQuestions(issue, interaction.id, { reason: "No longer needed" }, { userId: f.userId });
+    } else if (action === "withdraw") {
+      await interactions.withdrawInteraction(issue, interaction.id, { reason: "No longer needed" }, { userId: f.userId });
+    } else if (action === "expire") {
+      await db.update(issues).set({ status: "cancelled" }).where(eq(issues.id, f.issueId));
+      await interactions.expirePendingInteractionsForTerminalIssue({ ...issue, status: "cancelled" }, { userId: f.userId });
+    } else {
+      await interactions.answerQuestions(issue, interaction.id,
+        { answers: [{ questionId: "choice", optionIds: ["yes"] }] }, { userId: f.userId });
+    }
+    await flush();
+    expect((await publications()).map(row => row.idempotencyKey)).toContain(`run:${source.id}:failed:${f.endpointId}`);
+    if (action === "historical answer") {
+      expect(await db.select().from(issueQuestionResponseDeliveries).where(eq(issueQuestionResponseDeliveries.interactionId, interaction.id))).toEqual([]);
+    }
     await quiet();
   });
   it("wakes a question continuation after its in-flight prompt receipt commits", async () => {
