@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { activityLog, agents, authUsers, companyMemberships, chatConversations, chatEndpoints, chatMessageLinks, chatPublications, companies, createDb,
+import { activityLog, agents, authUsers, companyMemberships, chatConversations, chatEndpoints, chatMessageLinks, chatPublications, companies, completionContracts, createDb, nativeRunFinalizations, nativeRunResults,
   heartbeatRunEvents, heartbeatRuns, issueComments, issueQuestionResponseDeliveries, issueThreadInteractions, issues, toolApplications, toolConnections } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
@@ -11,6 +11,7 @@ import { notifyChatRunMilestones } from "../services/chat-run-milestone-notifica
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
 import { questionResponseDeliveryService } from "../services/question-response-delivery.js";
 import { heartbeatService } from "../services/heartbeat.js";
+import { finalizeNativeRun } from "../services/native-runtime/native-run-finalizer.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
 
 const external = resolveExternalTestDatabaseUrl("PAPERCLIP_MILESTONE_TEST_DATABASE_URL");
@@ -66,7 +67,10 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       await db.delete(issueThreadInteractions).where(eq(issueThreadInteractions.companyId, companyId));
       await db.delete(issueComments).where(eq(issueComments.companyId, companyId));
       await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.companyId, companyId));
+      await db.delete(nativeRunFinalizations).where(eq(nativeRunFinalizations.companyId, companyId));
+      await db.delete(nativeRunResults).where(eq(nativeRunResults.companyId, companyId));
       await db.delete(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId));
+      await db.delete(completionContracts).where(eq(completionContracts.companyId, companyId));
       await db.delete(issues).where(eq(issues.companyId, companyId));
       await db.delete(agents).where(eq(agents.companyId, companyId));
       await db.delete(companyMemberships).where(eq(companyMemberships.companyId, companyId));
@@ -127,6 +131,41 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       `run:${row.id}:failed:${f.endpointId}`, `run:${row.id}:queued:${f.endpointId}`,
     ].sort());
     await quiet();
+  });
+  it("wakes from native committed-result projection and leaves repeated finalization quiet", async () => {
+    const contractId = randomUUID(), resultId = randomUUID();
+    await db.insert(completionContracts).values({
+      id: contractId, companyId: f.companyId, issueId: f.issueId, revision: 1,
+      schemaVersion: "paperclip.completion-contract.v1", policyVersion: "phase6-v1", risk: "standard",
+      completionAuthority: "server_arbiter", incompleteCriteriaPolicy: "preserve_non_terminal",
+      contractJson: { objective: "Respond to chat" }, canonicalSha256: "milestone-contract",
+      createdByActorType: "system", createdByActorId: "test",
+    });
+    // Persisted audit-only routing can commit without a status decision. Recovery
+    // still owes the terminal run projection after the controller restarts.
+    const row = await run(f, { runtimeMode: "native", nativeIssueId: f.issueId, completionContractId: contractId,
+      resultJson: { nativeAttentionRouting: [{ decisionId: null, reasonCode: "attention_duplicate_suppressed",
+        materializedTargets: [{ kind: "existing_attention" }] }] },
+    });
+    await db.insert(nativeRunResults).values({ id: resultId, companyId: f.companyId, issueId: f.issueId,
+      runId: row.id, completionContractId: contractId, serverFingerprint: resultId, schemaStatus: "accepted",
+      resultJson: { terminal: { runTerminalState: "cancelled" } }, canonicalSha256: "milestone-result",
+    });
+    await db.insert(nativeRunFinalizations).values({ runId: row.id, companyId: f.companyId, issueId: f.issueId,
+      phase: "committed", resultId,
+    });
+    await start(); await flush(); await quiet();
+    await finalizeNativeRun({ db, runId: row.id, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
+    await flush();
+    expect((await publications()).map(publication => publication.idempotencyKey).sort()).toEqual([
+      `run:${row.id}:failed:${f.endpointId}`, `run:${row.id}:working:${f.endpointId}`,
+    ].sort());
+    await quiet();
+    await finalizeNativeRun({ db, runId: row.id, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
+    // A no-op repair must not enqueue another scan. This also catches deferred
+    // coordinator callbacks that start after the finalizer returns.
+    await quiet();
+    expect(await publications()).toHaveLength(2);
   });
   it("projects a continuation only after the real question delivery receipt commits", async () => {
     const source = await run(f, { status: "succeeded" });

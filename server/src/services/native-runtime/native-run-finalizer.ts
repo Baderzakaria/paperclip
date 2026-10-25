@@ -1,4 +1,5 @@
 import { pendingNativeGovernance } from "./native-governance.js";
+import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js";
 import { notifyExecutionRunWork } from "../execution-control-notifications.js";
 import { reconcileMuseNativeTerminalRun } from "./muse-terminal-reconciliation.js";
 import { assertNativeCaseHandoffResult } from "./native-case-handoff.js";
@@ -376,6 +377,7 @@ async function recordRetryableFailure(input: {
           : input.failureCode;
     if (phase === "terminal_failure") await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, input.run.companyId);
     await notifyExecutionRunWork(tx);
+    await notifyChatRunMilestones(tx, { companyId: input.run.companyId, issueId: input.coordinator.issueId });
     await tx
       .update(nativeRunFinalizations)
       .set({
@@ -665,6 +667,7 @@ async function projectCommittedRun(input: {
     const tx = transaction as unknown as Db;
     await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, input.run.companyId);
     await notifyExecutionRunWork(tx);
+    await notifyChatRunMilestones(tx, { companyId: input.run.companyId, issueId: input.coordinator.issueId });
     return tx
       .update(heartbeatRuns)
       .set({
@@ -938,6 +941,7 @@ export async function repairCommittedNativeChatResponse(
         const authorizationReason = await resolveChatRunPresentationAuthorizationReason(tx, input);
         const resolved = resolveHeartbeatRunResponse({ resultJson: monitorResult });
         if (!resolved.text) return false;
+        await notifyChatRunMilestones(tx, input);
         const comment = await issueService(db).addComment(input.issueId, resolved.text,
           { agentId: run.agentId, runId: run.id }, { authorizationReason, completionReply: true }, tx);
         await tx.update(heartbeatRuns).set({
@@ -992,6 +996,7 @@ export async function repairCommittedNativeChatResponse(
           finalAgentMessage,
         });
         if (!resolved.text || resolved.decision.commentAction !== "create") return false;
+        await notifyChatRunMilestones(tx, input);
         const comment = await issueService(db).addComment(input.issueId, resolved.text,
           { agentId: run.agentId, runId: run.id },
           { authorizationReason: "internal_agent_write", completionReply: true }, tx);
@@ -1035,6 +1040,7 @@ export async function repairCommittedNativeChatResponse(
       });
       if (!resolved.text || resolved.decision.commentAction !== "create")
         return false;
+      await notifyChatRunMilestones(tx, input);
       const comment = await issueService(db).addComment(
         input.issueId,
         resolved.text,
@@ -1597,6 +1603,7 @@ export async function finalizeNativeRun(input: {
         const tx = transaction as unknown as Db;
         if (input.projectRunStatus) await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, run.companyId);
         await notifyExecutionRunWork(tx);
+        await notifyChatRunMilestones(tx, { companyId: run.companyId, issueId: coordinator.issueId });
         return projectRun(tx);
       });
       if (

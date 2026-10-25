@@ -1402,3 +1402,14 @@ children pass 30 report/startup tests after propagation. Fresh remote gates stil
 apply. The next new reason is chat run-milestone projection, separate from wake
 notices, terminal confirmations, interaction continuations and GitHub recovery.
 The entire original inventory and older unresolved findings remain open.
+
+
+Slice 28 native finalization checkpoint: existing native finalizer transactions
+now signal milestone projection; governed review metadata restoration avoids
+unchanged writes and signals only actual changes. Both missing wake and repeated
+rewrite were reproduced before repair. All 16 milestone worker cases, nine
+selected native chat recovery integrations, and server production types pass.
+See the slice audit for failure logs and coverage limits. The production scan
+remains until status-decision/effect, admission, lineage, publication, and remaining
+producer coverage is complete. This is local progress, not a published migration
+or completion of the full stack.

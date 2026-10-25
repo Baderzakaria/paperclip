@@ -241,3 +241,50 @@ This checkpoint is progress on slice 28, not a new independently complete reason
 or a claim that milestone polling is retired. The original full PR-stack scope,
 older unresolved CI/review findings, final master reconciliation and each PR's
 latest-head acceptance remain required.
+
+
+## Native finalization producer checkpoint
+
+Native finalization now registers issue-scoped milestone intent in its existing
+transactions before failure recording, committed terminal projection, and the
+normal final run projection. All three committed-response repair branches signal
+only after their authorization/no-op guards and immediately before comment and
+presentation writes. The status arbiter, provider interpretation, and execution
+policy remain with their native owners; the milestone signal carries only company
+and issue identity.
+
+Governed review-presentation restoration also signals an actual change. Previously
+it rewrote identical metadata (including updated_at) on every accepted repair.
+The owner now locks the run, compares the exact proposed JSON merge against the
+current result, and returns successfully without a write or signal when unchanged.
+It still returns true for an already valid projection: callers may need to
+materialize the response even when its metadata is already present. Existing
+coordinator/proof/digest/company checks remain before this decision.
+
+Evidence at this checkpoint:
+
+- The new real-finalizer regression failed before the signal: a persisted committed
+  native cancellation projected its terminal run state but never generated the
+  terminal chat notice. Log: `/tmp/sleep28-native-before.log`.
+- After wiring, all 16 milestone-worker PostgreSQL cases pass. The new case calls
+  the real finalizer without a manual milestone notification and verifies that
+  replaying the settled finalization causes no deferred worker SQL. Its input is
+  a seeded committed audit-only result; this is a recovery-producer proof, not a
+  test of accepting provider results. Log: `/tmp/sleep28-native-worker.log`.
+- The new governed-review repair test failed first because an unchanged repair
+  advanced updated_at. Log: `/tmp/sleep28-review-before.log`.
+- After repair, nine selected real PostgreSQL chat integration cases pass. They
+  cover unchanged metadata, changed metadata intent before the write and settlement
+  after commit, repeat repair, Slack/Telegram accepted-response recovery, canonical
+  response recovery, already-selected/deleted answer protection, contention, and
+  review authority changes. Expected contention is retained as retryable.
+  Log: `/tmp/sleep28-native-recovery-tests.log` (1,421 cases not selected).
+- Server production typecheck passes: `/tmp/sleep28-native-typecheck.log`.
+  It excludes test files. No full-workspace or remote PR acceptance is claimed.
+
+The periodic projector remains enabled. Next producer audit: status-decision
+commit/replay and pending-effect delivery, then admission/recovery, interaction,
+publication, conversation/configuration, and monitor/semantic-receipt writers
+from the table above. Signals added here do not establish complete producer
+coverage. The full original stack, unresolved earlier gates, and master
+reconciliation remain required; no PR has been merged by this checkpoint.

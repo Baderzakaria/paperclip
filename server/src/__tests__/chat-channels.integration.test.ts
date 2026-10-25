@@ -1,3 +1,5 @@
+import { subscribeDatabaseWork } from "@paperclipai/db";
+import { restoreNativeChatReviewPresentationInTransaction } from "../services/native-runtime/native-chat-review-presentation.js";
 import { notifyChatEndpointConfiguration, notifyChatCompanyConfiguration } from "../services/chat-channels/configuration-work-notifications.js";
 import { configureAgentLifecycle } from "../services/agent-lifecycle.js";
 import { deleteCompany } from "../services/company-deletion.js";
@@ -70399,6 +70401,40 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       service,
     };
   }
+
+  it("restores changed native review metadata once and signals only its committed change", async () => {
+    const context = await committedNativeReviewPublicationFixture("milestone-repair");
+    const events: string[] = [];
+    const unsubscribe = subscribeDatabaseWork(db, "chat-run-milestones", event => events.push(event));
+    try {
+      const [coordinator] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, context.runId));
+      const input = { companyId: context.fixture.companyId, issueId: coordinator.issueId, runId: context.runId,
+        decisionId: coordinator.decisionId!, resultId: coordinator.resultId!, assessmentId: coordinator.assessmentId! };
+      const savedAt = new Date(Date.now() - 60_000);
+      await db.update(heartbeatRuns).set({ updatedAt: savedAt }).where(eq(heartbeatRuns.id, context.runId));
+      // Already-restored metadata still authorizes materialization by the caller,
+      // but must neither rewrite the run nor wake projection again.
+      await expect(db.transaction(tx => restoreNativeChatReviewPresentationInTransaction(tx as unknown as typeof db, input))).resolves.toBe(true);
+      expect((await readHeartbeatRunsById(context.runId))[0].updatedAt).toEqual(savedAt);
+      expect(events).toEqual([]);
+      await db.update(heartbeatRuns).set({ resultJson: sql`${heartbeatRuns.resultJson} - 'externalChatReviewPresentation'` })
+        .where(eq(heartbeatRuns.id, context.runId));
+      await db.transaction(async tx => {
+        expect(await restoreNativeChatReviewPresentationInTransaction(tx as unknown as typeof db, input)).toBe(true);
+        expect(events).toEqual(["intent"]);
+      });
+      expect(events).toEqual(["intent", "settled"]);
+      expect((await readHeartbeatRunsById(context.runId))[0].resultJson).toMatchObject({
+        externalChatReviewPresentation: { decisionId: coordinator.decisionId, runId: context.runId },
+      });
+      events.length = 0;
+      await db.transaction(tx => restoreNativeChatReviewPresentationInTransaction(tx as unknown as typeof db, input));
+      expect(events).toEqual([]);
+    } finally {
+      unsubscribe();
+      await context.service.shutdown();
+    }
+  });
 
   it.each(["principal_revoked", "gate_changed"] as const)(
     "blocks a committed native review response and selected files at transport after %s",
