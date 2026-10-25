@@ -1222,3 +1222,18 @@ cleanup, inbound history retention, and call reports. See
 [the voice owner audit](2026-10-25-voice-maintenance-sleep-audit.md).
 Branch codex/sleep-21-voice-session-recovery starts with the first reason; the
 other four remain explicit required slices. No voice migration is implemented yet.
+## Receiver review repair
+
+The real company-removal producer regression reproduced two inventory reads for
+one observed removal. Discovery-initiated stops now suppress their own completion
+wake; independent token loss still wakes discovery after listener retirement.
+A full reconstruction also covers its already-pending scoped hints. Hints that
+arrive during the load remain dirty, and narrower writes cannot bypass a failed
+full reconstruction's retry deadline.
+
+Both redundant-load regressions failed before repair. All 45 selected receiver,
+startup and real Discord producer tests pass after repair, including the added
+full-refresh failure/backoff case. Server typecheck and build pass. Prior broad
+consumer/workspace verification remains recorded above; these 45 overlap that
+coverage and are not an additional unique total. Publication requires fresh
+remote CI and review. The full migration inventory remains outstanding.

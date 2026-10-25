@@ -28,7 +28,7 @@ export function registerChatReceiverWork(
   function next() {
     let nextAt: number | null = null;
     const take = (at: number) => { nextAt = nextAt === null ? at : Math.min(nextAt, at); };
-    for (const hint of dirty) take(Math.max(earliest, scopeFailures.get(hint)?.retryAt ?? 0));
+    for (const hint of dirty.has("*") ? ["*"] : dirty) take(Math.max(earliest, scopeFailures.get(hint)?.retryAt ?? 0));
     const unavailable = dirtyScopes();
     for (const entry of entries.values()) if (entry.dueAt !== null && !unavailable.some(scope => matches(entry, scope)))
       take(Math.max(earliest, entry.dueAt, failures.get(entry.id)?.retryAt ?? 0));
@@ -42,10 +42,11 @@ export function registerChatReceiverWork(
       if (!canRun() || Date.now() < earliest) return;
       earliest = Date.now() + 1000;
       const errors: unknown[] = [];
-      const requested = [...dirty].filter(hint => (scopeFailures.get(hint)?.retryAt ?? 0) <= Date.now());
-      for (const hint of requested) dirty.delete(hint);
+      const requested = (dirty.has("*") ? ["*"] : [...dirty]).filter(hint => (scopeFailures.get(hint)?.retryAt ?? 0) <= Date.now());
+      const covered = requested.includes("*") ? [...dirty] : requested;
+      for (const hint of covered) dirty.delete(hint);
       for (let index = 0; index < requested.length; index++) {
-        if (signal.aborted || !canRun()) { for (const hint of requested.slice(index)) dirty.add(hint); return; }
+        if (signal.aborted || !canRun()) { for (const hint of requested.includes("*") ? covered : requested.slice(index)) dirty.add(hint); return; }
         const hint = requested[index];
         let scope: ReceiverScope | undefined;
         let decoded = false;
@@ -57,7 +58,7 @@ export function registerChatReceiverWork(
             entries.delete(entry.id); failures.delete(entry.id);
           }
           for (const entry of rows) entries.set(entry.id, entry);
-          scopeFailures.delete(hint);
+          if (!scope) scopeFailures.clear(); else scopeFailures.delete(hint);
         } catch (error) {
           const retryHint = decoded ? hint : "*";
           dirty.add(retryHint); failed(scopeFailures, retryHint); errors.push(error);

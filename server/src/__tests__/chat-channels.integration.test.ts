@@ -1,4 +1,4 @@
-import { notifyChatEndpointConfiguration } from "../services/chat-channels/configuration-work-notifications.js";
+import { notifyChatEndpointConfiguration, notifyChatCompanyConfiguration } from "../services/chat-channels/configuration-work-notifications.js";
 import { configureAgentLifecycle } from "../services/agent-lifecycle.js";
 import { deleteCompany } from "../services/company-deletion.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
@@ -6796,6 +6796,29 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       } finally {
         await coordinator.stop(); await f.service.shutdown(); vi.useRealTimers();
         await retireRegistrationFixture(f.service, f.endpoint.id);
+      }
+    });
+
+    it("does not rediscover a receiver stopped by a company removal refresh", async () => {
+      const f = await registrationFixture("success", { discordGatewayLeaseTtlMs: 600_000, discordGatewayLeaseRenewalIntervalMs: 300_000 });
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"], shouldAdvanceTime: true });
+      const onError = vi.fn(), coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError });
+      let reads: ReturnType<typeof vi.spyOn> | undefined;
+      try {
+        await f.configure(); await f.service.registerReceiverWork(coordinator, () => true).ready;
+        await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(1000); expect(idleWorkSnapshot().active).toBe(0); expect(coordinator.nextWakeAt()).toBeNull(); });
+        const owned = f.runtime.get(f.endpoint.id)!;
+        reads = vi.spyOn(db, "select");
+        await db.transaction(async tx => {
+          await notifyChatCompanyConfiguration(tx, f.fixture.companyId);
+          await tx.delete(chatEndpoints).where(eq(chatEndpoints.id, f.endpoint.id));
+        });
+        await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(1000); expect(idleWorkSnapshot().active).toBe(0); expect(coordinator.nextWakeAt()).toBeNull(); });
+        expect(owned.shutdown).toHaveBeenCalledOnce();
+        expect(reads).toHaveBeenCalledOnce(); expect(onError).not.toHaveBeenCalled();
+      } finally {
+        reads?.mockRestore(); await coordinator.stop(); vi.useRealTimers(); await f.service.shutdown();
+        await db.update(chatEndpoints).set({ status: "archived" }).where(eq(chatEndpoints.id, f.endpoint.id));
       }
     });
 
