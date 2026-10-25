@@ -6,7 +6,7 @@ Parent: [#17647](https://github.com/paperclipai/paperclip/pull/17647),
 This is slice 31 of the recurring-server-work stack. The branch now registers
 a scoped worker and removes retry notices from periodic publication maintenance.
 Producer audit and full acceptance remain in progress; this is not merge-ready.
-No PR has been opened for this slice yet.
+Draft PR: [#17649](https://github.com/paperclipai/paperclip/pull/17649).
 
 ## Obligation and boundary
 
@@ -231,3 +231,99 @@ are covered by the general milestone fanout merely because run finalizers use it
 
 All older stack failures and original recurring-server duties remain required.
 No merge, expanded Cloud wake coverage, or deployed host sleep is claimed.
+
+
+## Native lease producer qualification
+
+Two real producer gaps are now repaired without changing retry authority:
+
+- `environmentService.releaseLease` can settle a source lease after a notice
+  pass was denied. It now locks the exact matching row and registers the
+  existing scoped notice intent before changing eligibility fields. The
+  pending-cleanup attempt predicate remains on both selection and update;
+  stale claims cannot release the resource or create a notice wake. Unchanged
+  release repeats do not notify this worker. The existing environment-cleanup
+  transaction remains the owner, including caller-owned outer transactions.
+- `environmentService.acquireLease` can retire a retained predecessor when
+  transferring a reusable sandbox to a new run. It registers a company-scoped
+  intent in that existing transaction before retirement. The predecessor can
+  belong to another issue in the same execution workspace, so the new issue is
+  not a sufficient scope. The original company/environment/resource/ownership
+  predicates and rollback on failed handoff remain unchanged. The notice worker
+  still bounds candidate authorization per pass.
+
+Both regressions start with an admitted retry receipt, make its native source
+ineligible through a lease, settle the denied worker, then use the actual service
+writer. They cover stale claims, outer rollback and commit, repeat writes, one
+publication, and 120 seconds of logical idle with no root SQL or transactions.
+The retained before-fix logs are `/tmp/sleep31-native-cleanup-before.log` and
+`/tmp/sleep31-replacement-before.log`. Atomic release passed 35 selected cases
+in `/tmp/sleep31-native-cleanup-atomic.log`. Both producers and the other notice
+lifecycle cases pass 36 tests in `/tmp/sleep31-native-lease-producers-fixed.log`.
+
+The intermediate combined run `/tmp/sleep31-native-lease-producers.log` passed
+the new producer cases but failed the disabled-admission case with a recorded
+PostgreSQL `CONNECT_TIMEOUT`. Its fake clock advanced 1,000ms on each wait while
+real TCP connection work was pending. Those waits now advance 10ms; the same
+strict error assertions and 120,000ms settled-quiet assertion pass. This supplies
+a concrete cause for this failure, not proof that the earlier unprinted error
+had the same cause. Keep that earlier observation in the acceptance record.
+
+### Native cleanup boundary disposition
+
+The notice projection calls `authorizeFailedChatRunRetry(publication: true)`.
+For a non-task Retry this reaches `failedNativeRetryCoordinator`, which reads
+saved native ownership, recovery and environment lease state. It does not call
+`assertFailedNativeRetryState` or its filesystem activation/checkpoint verifier.
+The stronger filesystem check remains on initial preparation and admission.
+Task Retry uses its saved intent authority and intentionally bypasses the
+non-task coordinator check for status publications; it does not gain execution
+permission from the notice worker. Therefore filesystem activation completion
+is not itself a new notice-eligibility producer.
+
+For the retired-owner recovery path, initial non-task retry preparation already
+requires settled native maintenance and the physical checkpoint proof. The
+maintenance service refuses another ordinary pass over a nonempty canonical
+root with existing maintenance history; its interrupted-copy path requires
+exactly the earlier incomplete history and cannot recreate a settled generation.
+The first successful cleanup precedes creation of that non-task retry action.
+Do not add a pre-activation notification to filesystem cleanup on the assumption
+that all execution predicates are also notice predicates. Existing source
+finalization writers use the milestone notification boundary; source lease
+release and reuse were the actual missing producers found here.
+
+`releaseLeasesForRun` has no production caller in the inspected repository;
+only its definition and environment-service test call it. `extendLease` changes
+expiry/last-used metadata, which these notice authorization predicates do not
+read. Same-run reacquisition makes a lease active (revokes eligibility); its
+later settlement uses the covered release writer. Current publication authority
+is still rechecked before sending. Future producers must use the same committed
+notification contract rather than relying on this audit as a blanket exemption.
+
+### Remote and local gate record
+
+At `cbfaab918a`, Greptile reports 5/5 with no inline findings, explicitly leaving
+the native audit unresolved. CI run 40224785432 has a Runner failure in
+`local-runner.test.ts`: duplicate command receipt `command_happy_path_3` timed
+out. Evidence: `/tmp/sleep31-ci-runner-failure.log`, job 121263785884.
+The first local attempt was invalid because debug Rust binaries were missing
+(`/tmp/sleep31-runner-receipt-check.log`). After the prescribed `build:rust`,
+all 10 cases pass in `/tmp/sleep31-runner-receipt-built.log`. This does not alone
+clear remote CI. No unchanged-job retry has been used for this PR.
+
+Server typecheck passed with the two lease producers in
+`/tmp/sleep31-native-lease-types.log`. The environment-service suite now accepts
+an explicitly named isolated external test database ending in `_test`, retaining
+embedded startup by default and closing the external client afterward. This
+allows verification of the existing lease contracts on this host. Its result,
+full updated acceptance, latest-head review and CI still need recording.
+
+
+Existing environment-service acceptance passes all 51 cases on fresh migrated
+`paperclip_sleep31_environment_20261025_test` in
+`/tmp/sleep31-environment-service.log`. Server typecheck and build pass at this
+lease-repair checkpoint (`/tmp/sleep31-native-final-types.log` and
+`/tmp/sleep31-native-final-build.log`). Updated full chat acceptance and remote
+checks remain required. Initial remote head `cbfaab918a` finished with only the
+Runner receipt timeout and dependent `ci / verify` failing; all other 51 checks
+passed. The forthcoming source-change push must earn its own checks and review.

@@ -1787,3 +1787,15 @@ cases pass. Workspace typecheck and build pass. See the retry audit for retained
 failures, exact commands/logs, and native source-cleanup qualification still open.
 This is a draft checkpoint, not a merge-ready claim. Older parent gates and every
 remaining original recurring-server duty stay in scope. No merge occurred.
+
+
+## Slice 31 native producer repairs
+
+Draft [#17649](https://github.com/paperclipai/paperclip/pull/17649) now covers
+source lease cleanup and reusable-lease retirement, each with a reproduced
+missing notice and real writer transaction tests. All 36 selected native/notice
+cases pass. The owning audit distinguishes notice authority from the stronger
+filesystem execution proof, and retains the fake-clock connection failure and
+Runner CI receipt timeout. Existing lease acceptance, updated full acceptance,
+remote gates, older parent findings, and every remaining original duty are still
+required. No stack PR has been merged.

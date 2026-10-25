@@ -1,3 +1,4 @@
+import { environmentService } from "../services/environments.js";
 import { createAdmissionTransactionScope, createWakeAdmissionWriter } from "../modules/wake-queue/adapters/postgres.js";
 import { chatFailedRetryNoticeWork } from "../services/chat-failed-retry-notice-work.js";
 import { issueTreeControlService } from "../services/issue-tree-control.js";
@@ -129,6 +130,7 @@ import {
   nativeRunResults,
   nativeRunFinalizations,
   environmentLeases,
+  environments,
   principalPermissionGrants,
   projects,
   projectWorkspaces,
@@ -61868,6 +61870,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     "integrity",
     "cleanup",
     "active_environment",
+    "notice_cleanup",
+    "notice_replacement",
     "live_pid",
     "missing_input",
     "late_provider_event",
@@ -61901,6 +61905,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
               : providerAccount;
       const previousStateDirectory = process.env.PAPERCLIP_RUNNER_STATE_DIR;
       let stateDirectory: string | null = null;
+      let noticeCoordinator: ReturnType<typeof createDeliveryWorkCoordinator> | undefined;
+      let noticeActionId: string | undefined;
+      let noticeEnvironmentId: string | undefined;
       try {
         const nativeSessionId = randomUUID();
         const runnerInstanceId = randomUUID();
@@ -62109,7 +62116,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         );
         // A null account without existing provider-session evidence remains
         // conservatively ineligible for the exhausted-run recovery lane.
-        if (["bootstrap", "checkpoint", "distinct_account"].includes(kind)) {
+        if (["bootstrap", "checkpoint", "distinct_account", "notice_cleanup", "notice_replacement"].includes(kind)) {
           const staged = await attempt;
           await expect(
             context.service.processFailedChatRunRetry(staged.actionId),
@@ -62119,12 +62126,101 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
             retryOfRunId: context.runId,
             wakeCommentIds: [context.action.payload.commentId],
           });
+          if (kind === "notice_cleanup" || kind === "notice_replacement") {
+            noticeActionId = staged.actionId;
+            await db.update(agentWakeupRequests).set({ status: "deferred_issue_execution" })
+              .where(eq(agentWakeupRequests.id, staged.actionId));
+            const cleanupAttemptId = randomUUID();
+            if (kind === "notice_replacement") {
+              const [environment] = await db.insert(environments).values({ name: randomUUID(), driver: "ssh" }).returning();
+              noticeEnvironmentId = environment.id;
+            }
+            const [lease] = await db.insert(environmentLeases).values({
+              companyId: context.fixture.companyId, issueId: context.issue.id,
+              heartbeatRunId: context.runId, status: "pending_cleanup", cleanupStatus: "failed",
+              metadata: { pendingCleanupAttemptId: cleanupAttemptId, agentId: context.fixture.assignedAgentId },
+              ...(kind === "notice_replacement" ? { environmentId: noticeEnvironmentId,
+                status: "retained", leasePolicy: "reuse_by_environment", providerLeaseId: randomUUID() } : {}),
+            }).returning();
+            const errors: unknown[] = [];
+            noticeCoordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true,
+              canReconcile: () => true, onError: error => errors.push(error) });
+            vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+            await chatFailedRetryNoticeWork(context.service).register(noticeCoordinator, () => true).ready;
+            await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(1000);
+              expect(noticeCoordinator!.nextWakeAt()).toBeNull(); expect(idleWorkSnapshot().active).toBe(0); });
+            expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(0);
+            const replace = (owner: Db, replacesReusableLeaseId = lease.id) => environmentService(owner).acquireLease({
+              companyId: context.fixture.companyId, environmentId: noticeEnvironmentId!, issueId: context.issue.id,
+              leasePolicy: "reuse_by_environment", providerLeaseId: lease.providerLeaseId,
+              metadata: { agentId: context.fixture.assignedAgentId }, replacesReusableLeaseId,
+            });
+            if (kind === "notice_replacement") {
+              await expect(replace(db, randomUUID())).rejects.toThrow("ownership changed");
+              const rollback = new Error("rollback reusable lease handoff");
+              await expect(db.transaction(async tx => {
+                await replace(tx as unknown as Db);
+                throw rollback;
+              })).rejects.toBe(rollback);
+              await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(1000);
+                expect(noticeCoordinator!.nextWakeAt()).toBeNull(); expect(idleWorkSnapshot().active).toBe(0); });
+              expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(0);
+              await db.transaction(tx => replace(tx as unknown as Db));
+            } else {
+              expect(await environmentService(db).releaseLease(lease.id, "released", {
+                cleanupStatus: "success", expectedPendingCleanupAttemptId: randomUUID(),
+              })).toBeNull();
+              const rollback = new Error("rollback native lease settlement");
+              await expect(db.transaction(async tx => {
+                await environmentService(tx as unknown as Db).releaseLease(lease.id, "released", {
+                  cleanupStatus: "success", expectedPendingCleanupAttemptId: cleanupAttemptId,
+                });
+                throw rollback;
+              })).rejects.toBe(rollback);
+              await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(1000);
+                expect(noticeCoordinator!.nextWakeAt()).toBeNull(); expect(idleWorkSnapshot().active).toBe(0); });
+              expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(0);
+              await db.transaction(async tx => {
+                await environmentService(tx as unknown as Db).releaseLease(lease.id, "released", {
+                  cleanupStatus: "success", expectedPendingCleanupAttemptId: cleanupAttemptId,
+                });
+              });
+            }
+            await vi.waitFor(async () => {
+              await vi.advanceTimersByTimeAsync(1000);
+              expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(1);
+              expect(noticeCoordinator!.nextWakeAt()).toBeNull(); expect(idleWorkSnapshot().active).toBe(0);
+            }, { timeout: 5000 });
+            const selection = vi.spyOn(context.service, "loadFailedRetryNoticeScopes");
+            try {
+              if (kind === "notice_replacement") await expect(replace(db)).rejects.toThrow("ownership changed");
+              else await environmentService(db).releaseLease(lease.id, "released", { cleanupStatus: "success" });
+              await vi.advanceTimersByTimeAsync(1000);
+              expect(selection).not.toHaveBeenCalled();
+            } finally { selection.mockRestore(); }
+            const select = vi.spyOn(db, "select"), transaction = vi.spyOn(db, "transaction");
+            try {
+              await vi.advanceTimersByTimeAsync(120_000);
+              expect(select).not.toHaveBeenCalled(); expect(transaction).not.toHaveBeenCalled();
+            } finally { select.mockRestore(); transaction.mockRestore(); }
+            expect(errors).toEqual([]);
+          }
         } else
           await expect(attempt).rejects.toMatchObject({
             details: { code: "chat_failed_run_retry_not_authorized" },
           });
       } finally {
+        await noticeCoordinator?.stop();
+        if (kind === "notice_cleanup" || kind === "notice_replacement") vi.useRealTimers();
         await context.service.shutdown();
+        if (noticeEnvironmentId) {
+          await db.delete(environmentLeases).where(eq(environmentLeases.environmentId, noticeEnvironmentId));
+          await db.delete(environments).where(eq(environments.id, noticeEnvironmentId));
+        }
+        if (noticeActionId) {
+          await db.delete(agentWakeupRequests).where(eq(agentWakeupRequests.id, noticeActionId));
+          await db.delete(chatActions).where(eq(chatActions.id, noticeActionId));
+        }
         if (stateDirectory) {
           if (previousStateDirectory === undefined)
             delete process.env.PAPERCLIP_RUNNER_STATE_DIR;
@@ -62657,7 +62753,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const selection = vi.spyOn(context.service, "loadFailedRetryNoticeScopes");
     vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
     const settle = async () => vi.waitFor(async () => {
-      await vi.advanceTimersByTimeAsync(1000);
+      await vi.advanceTimersByTimeAsync(10);
       expect(idleWorkSnapshot().active).toBe(0); expect(coordinator.nextWakeAt()).toBeNull();
     }, { timeout: 10_000 });
     const quiet = async () => {
@@ -62675,7 +62771,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       if (mode === "failed selection") selection.mockRejectedValueOnce(new Error("temporary retry selection failure"));
       expect(await context.admit()).toMatchObject({ status: mode === "disabled" ? "failed" : "deferred" });
       if (mode === "failed selection") {
-        await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(1000); expect(errors).toHaveLength(1); });
+        await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(10); expect(errors).toHaveLength(1); });
         canRun = false;
       }
       if (["drain", "failed selection", "stopped"].includes(mode)) {
@@ -62753,7 +62849,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       if (mode === "bounded pass") await vi.waitFor(() => expect(held).toBe(true), { timeout: 10_000 });
       else {
         await ready;
-        await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(1000);
+        await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(10);
           expect(coordinator.nextWakeAt()).toBeNull(); expect(idleWorkSnapshot().active).toBe(0); });
         const select = vi.spyOn(db, "select"), transaction = vi.spyOn(db, "transaction");
         try {
@@ -62775,7 +62871,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       } else await issueService(db).update(context.issue.id, { visibility: "open" });
       release(); await ready;
       await vi.waitFor(async () => {
-        await vi.advanceTimersByTimeAsync(1000);
+        await vi.advanceTimersByTimeAsync(10);
         expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(1);
         expect(coordinator.nextWakeAt()).toBeNull(); expect(idleWorkSnapshot().active).toBe(0);
       }, { timeout: 10_000 });
