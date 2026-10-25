@@ -1,4 +1,4 @@
-import { subscribeDatabaseWork } from "@paperclipai/db";
+import { signalDatabaseWork, subscribeDatabaseWork } from "@paperclipai/db";
 import { restoreNativeChatReviewPresentationInTransaction } from "../services/native-runtime/native-chat-review-presentation.js";
 import { notifyChatEndpointConfiguration, notifyChatCompanyConfiguration } from "../services/chat-channels/configuration-work-notifications.js";
 import { configureAgentLifecycle } from "../services/agent-lifecycle.js";
@@ -70404,8 +70404,15 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
 
   it("restores changed native review metadata once and signals only its committed change", async () => {
     const context = await committedNativeReviewPublicationFixture("milestone-repair");
+    // Earlier failure cases can leave intent awaiting XID reconciliation on the
+    // suite's shared owner. Subscribing to that owner immediately replays intent.
+    await expect(db.transaction(async tx => {
+      await signalDatabaseWork(tx, "chat-run-milestones");
+      throw new Error("unrelated rolled-back producer");
+    })).rejects.toThrow("unrelated rolled-back producer");
+    const repairDb = createDb(externalTestDatabaseUrl ?? tempDb!.connectionString);
     const events: string[] = [];
-    const unsubscribe = subscribeDatabaseWork(db, "chat-run-milestones", event => events.push(event));
+    const unsubscribe = subscribeDatabaseWork(repairDb, "chat-run-milestones", event => events.push(event));
     try {
       const [coordinator] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, context.runId));
       const input = { companyId: context.fixture.companyId, issueId: coordinator.issueId, runId: context.runId,
@@ -70414,12 +70421,12 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       await db.update(heartbeatRuns).set({ updatedAt: savedAt }).where(eq(heartbeatRuns.id, context.runId));
       // Already-restored metadata still authorizes materialization by the caller,
       // but must neither rewrite the run nor wake projection again.
-      await expect(db.transaction(tx => restoreNativeChatReviewPresentationInTransaction(tx as unknown as typeof db, input))).resolves.toBe(true);
+      await expect(repairDb.transaction(tx => restoreNativeChatReviewPresentationInTransaction(tx as unknown as typeof db, input))).resolves.toBe(true);
       expect((await readHeartbeatRunsById(context.runId))[0].updatedAt).toEqual(savedAt);
       expect(events).toEqual([]);
       await db.update(heartbeatRuns).set({ resultJson: sql`${heartbeatRuns.resultJson} - 'externalChatReviewPresentation'` })
         .where(eq(heartbeatRuns.id, context.runId));
-      await db.transaction(async tx => {
+      await repairDb.transaction(async tx => {
         expect(await restoreNativeChatReviewPresentationInTransaction(tx as unknown as typeof db, input)).toBe(true);
         expect(events).toEqual(["intent"]);
       });
@@ -70428,10 +70435,11 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         externalChatReviewPresentation: { decisionId: coordinator.decisionId, runId: context.runId },
       });
       events.length = 0;
-      await db.transaction(tx => restoreNativeChatReviewPresentationInTransaction(tx as unknown as typeof db, input));
+      await repairDb.transaction(tx => restoreNativeChatReviewPresentationInTransaction(tx as unknown as typeof db, input));
       expect(events).toEqual([]);
     } finally {
       unsubscribe();
+      await repairDb.$client.end({ timeout: 1 });
       await context.service.shutdown();
     }
   });

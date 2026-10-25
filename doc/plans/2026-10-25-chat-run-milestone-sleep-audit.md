@@ -943,3 +943,54 @@ Native automatic/obsolete review retirement, conversation reset, authorization
 prompt reactivation and tool-request execution lineage still need disposition,
 alongside remaining publication/configuration/recovery producers. Production
 registration, lifecycle polling removal and full-stack final checks remain pending.
+
+
+## Native review retirement, conversation reset, and CI isolation
+
+Automatic fallback review retirement and obsolete policy review retirement now
+register milestone intent inside their existing transactions, after finding and
+locking the issue and before changing the interaction. Existing selection,
+explicit-review protections, lock order, and terminal publication handling remain
+with their owners. The real selectors are tested with retained prompt history,
+no prompt history, and explicit requests that must remain pending. Current
+system-authored cards are not newly externalized; the retained-prompt cases prove
+recovery of stored history rather than claiming a new provider send path.
+
+Conversation reset registers intent before its existing issue/comment/question
+writes. The regression exercises the actual reset service with a valid saved
+conversation identity and chat binding. It establishes the service contract for
+stored bindings, not a claim that the current UI creates combined Agent Chat and
+external-chat conversations. Its failed prompt remains historical; expiring the
+question releases response ownership and reactivates the failed-run notice.
+
+Evidence:
+- `/tmp/sleep28-native-retirement-before.log`: both retained-prompt retirement
+  cases fail at the missing-notice assertion. Four control cases pass. The reset
+  case initially fails fixture setup because conversationState was missing.
+- `/tmp/sleep28-conversation-reset-before.log`: after supplying the required
+  active conversation state, reset expires the question but fails to produce
+  the newly eligible notice before the signal is added.
+- `/tmp/sleep28-native-retirement-tests.log`: all 16 governed producer cases pass.
+- `/tmp/sleep28-retirement-combined-tests.log`: 101 tests pass (72 lifecycle,
+  16 governed, 13 interaction unit). This command used the wrong integration
+  filename, so it did not run that suite; its count is not reported as 207.
+- `/tmp/sleep28-retirement-interaction-service-tests.log`: the correctly selected
+  existing interaction integration suite separately passes all 106 cases.
+- `/tmp/sleep28-native-retirement-typecheck.log`: server production types pass.
+
+CI at 3603b45c43 failed chat shard 1 in the newly added native review metadata
+repair test: expected no signal, received an initial intent. The shared database
+owner retains failed transactions until XID reconciliation; subscribing correctly
+replays unresolved intent even when this test's operation is a no-op. A deliberate
+unrelated rolled-back producer reproduces the same failure in
+`/tmp/sleep28-ci-intent-before.log`. The repair test now uses a separate database
+signal owner, preserving the intentional rollback and all commit/no-op assertions.
+`/tmp/sleep28-ci-intent-tests.log` passes this test plus both current-authority
+revocation cases (3 total). Production uncertainty handling is unchanged. Remote
+acceptance still needs a fresh head; no blind CI retry was requested.
+
+Fresh origin/master is aec86c794b. No changes landed in the three service owners
+above or chat-run-publications since the preceding 3536b3649f inspection. Full
+stack reconciliation remains outstanding. The lifecycle projector remains
+unregistered and its periodic production scan remains until the rest of the
+publication, configuration, and recovery producer audit is complete.

@@ -1524,3 +1524,15 @@ The audit retains the initial invalid tool-publication fixture assertion and
 corrected before-fix failures. Native external-review supersession is already
 covered by its status-decision outer transaction. Other external interaction and
 lineage producers remain under audit; the draft is not production-wired yet.
+
+
+Slice 28 covers native automatic/obsolete review retirement and conversation
+reset with seven additional governed cases, including retained-history and
+explicit-request controls. Three missing wakes were reproduced before repair;
+207 lifecycle/governed/interaction cases pass. The draft CI chat-shard failure
+was reproduced as a test subscribing to unrelated unresolved transaction intent;
+isolating that test's DB owner preserves the production protocol and passes three
+native review acceptance cases. Server production types pass. The slice audit
+retains the invalid fixture and missed test-file selection. Polling removal,
+remaining producers, fresh CI/review, older findings and the full inventory remain
+unfinished; no stack merge or whole-goal completion is claimed.
