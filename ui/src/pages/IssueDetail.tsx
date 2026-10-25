@@ -1624,13 +1624,15 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     queryFn: async () => {
       if (historyExpanded) return activityApi.runsForIssue(issueQueryRef);
       let recent = await activityApi.recentRunsForIssue(issueQueryRef);
-      const previous = queryClient.getQueryData<RunForIssue[]>(linkedRunsKey) ?? [];
+      let previous = queryClient.getQueryData<RunForIssue[]>(linkedRunsKey) ?? [];
       if (previous.some((run) =>
         (run.status === "running" || run.status === "queued") && !recent.some((next) => next.runId === run.runId),
       )) {
         // After a reconnect, several turns may have completed beyond the small
         // window. Reconcile watched runs once against authoritative summaries.
         recent = await activityApi.runsForIssue(issueQueryRef);
+        const existingRunIds = new Set(recent.map((run) => run.runId));
+        previous = previous.filter((run) => existingRunIds.has(run.runId));
       }
       // The second row refreshes a just-finished predecessor. Start with only
       // the latest run, then keep every run observed while this task is open.

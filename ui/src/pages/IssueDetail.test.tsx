@@ -1738,7 +1738,7 @@ describe("IssueDetail", () => {
     expect(queryClient.getQueryData(queryKeys.issues.detail("PAP-1"))).toBeUndefined();
   });
 
-  it("settles watched runs that fall outside the preview after reconnecting", async () => {
+  it.each(["settled", "deleted"])("reconciles %s watched runs outside the preview after reconnecting", async (outcome) => {
     queryClient.setQueryData(["issues", "history-expanded", "PAP-1"], false);
     mockIssuesApi.get.mockResolvedValue(createIssue());
     const run = (runId: string, status = "succeeded") => ({ runId, status, agentId: "agent-1", createdAt: new Date().toISOString() });
@@ -1746,10 +1746,10 @@ describe("IssueDetail", () => {
     await act(async () => renderIssueView());
     await waitForAssertion(() => expect(mockIssueChatThreadRender.mock.calls.at(-1)?.[0].linkedRuns).toEqual([expect.objectContaining({ runId: "watched", status: "running" })]));
     mockActivityApi.recentRunsForIssue.mockResolvedValue([run("newest"), run("middle")]);
-    mockActivityApi.runsForIssue.mockClear().mockResolvedValue([run("newest"), run("middle"), run("watched")]);
+    mockActivityApi.runsForIssue.mockClear().mockResolvedValue([run("newest"), run("middle"), ...(outcome === "settled" ? [run("watched")] : [])]);
     await act(async () => { await queryClient.invalidateQueries({ queryKey: queryKeys.issues.runs("PAP-1") }); });
     await waitForAssertion(() => expect(mockIssueChatThreadRender.mock.calls.at(-1)?.[0].linkedRuns).toEqual([
-      expect.objectContaining({ runId: "watched", status: "succeeded" }),
+      ...(outcome === "settled" ? [expect.objectContaining({ runId: "watched", status: "succeeded" })] : []),
       expect.objectContaining({ runId: "newest", status: "succeeded" }),
     ]));
     await act(async () => { await queryClient.invalidateQueries({ queryKey: queryKeys.issues.runs("PAP-1") }); });
