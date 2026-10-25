@@ -1,3 +1,4 @@
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -27,7 +28,8 @@ vi.mock("../telemetry.ts", () => ({ getTelemetryClient: () => mockTelemetryClien
 import { heartbeatService } from "../services/heartbeat.ts";
 import { recoveryService } from "../services/recovery/service.ts";
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_STALE_LOCK_TEST_DATABASE_URL");
+const embeddedPostgresSupport = external ? { supported: true, reason: undefined } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 if (!embeddedPostgresSupport.supported) {
@@ -43,8 +45,8 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-stale-lock-sweep-");
-    db = createDb(tempDb.connectionString);
+    if (!external) tempDb = await startEmbeddedPostgresTestDatabase("paperclip-stale-lock-sweep-");
+    db = createDb(external ?? tempDb!.connectionString);
   }, 20_000);
 
   afterEach(async () => {
@@ -64,6 +66,7 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
   });
 
   afterAll(async () => {
+    await db?.$client.end({ timeout: 1 });
     await tempDb?.cleanup();
   });
 

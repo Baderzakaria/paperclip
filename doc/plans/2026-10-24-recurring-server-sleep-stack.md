@@ -1660,3 +1660,11 @@ GitHub credential tests pass after repairing their external-DB fixture URL;
 server types/build pass. Recovery terminalization/classification writers are the
 next audit. Master 34409a92c4 was fetched without disturbing this draft. The
 worker is still not production-registered and all original stack duties remain.
+
+
+Slice 28 now covers orphan-run terminalization in stale-lock recovery. Both
+real-producer missing-notice cases failed before repair and pass afterward;
+all 40 existing stale-lock ownership/race cases and server types/build pass.
+The conditional update and provider/process authority retain their existing
+owners. Adapter-failure classification and remaining producer audits still gate
+production registration; this does not migrate the stale-lock polling duty itself.

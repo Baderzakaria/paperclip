@@ -1290,3 +1290,30 @@ Fresh master is 34409a92c4 (native failover backup filtering); it was fetched,
 not merged into this draft. Recovery service orphan terminalization and adapter
 failure classification are the next direct run writers to audit. Production
 registration/poll removal and the original stack's gates remain unfinished.
+
+
+## Orphan-run terminalization
+
+The stale-lock recovery owner can move a running run to interrupted/cancelled
+without passing through normal run lifecycle writers. Its terminal update now
+registers an issue-scoped milestone intent in a short transaction. The existing
+conditional update still rechecks status, runtime, native ownership/finalization,
+and legacy controller generation/lease. Process checks and telemetry remain
+outside that transaction; cleanup and audit handling retain their prior order.
+
+Two real-producer cases (dead process and cancelled issue with a live process)
+first exhausted the worker after its working notice, then recovered the run.
+Both lacked the terminal notice before this change. Both now publish it once,
+return to two-minute SQL quiet, and remain quiet after a repeated empty sweep.
+Evidence: /tmp/sleep28-recovery-before.log and /tmp/sleep28-recovery-tests.log.
+All 40 existing stale-lock recovery cases pass against a separate test database
+(/tmp/sleep28-stale-lock-acceptance.log), including native ownership arrival,
+controller/finalization races, shared references, explicit retry ownership and
+failed audit insertion. Its test harness now supports the guarded external DB
+path; no recovery assertions were weakened. Server typecheck/build and diff
+whitespace checks pass (/tmp/sleep28-recovery-{typecheck,build}.log).
+
+Adapter-failure classification remains a separate producer audit: it changes
+errorCode/resultJson/updatedAt after issue-monitor or escalation writes, so an
+earlier issue notification cannot by itself prove coverage of the later run
+commit. Production registration and removal of the lifecycle poll remain gated.
