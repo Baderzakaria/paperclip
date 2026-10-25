@@ -52581,6 +52581,45 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         };
       }
 
+      it.each(["action", "delivery"] as const)("wakes a post-close milestone when interrupted inbound acceptance settles its %s receipt", async receipt => {
+        const f = await reopenedFixture();
+        const onError = vi.fn();
+        const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError });
+        const notice = () => db.select().from(chatPublications).where(and(
+          eq(chatPublications.issueId, f.conversation.issueId),
+          eq(chatPublications.idempotencyKey, `run:${f.fresh.runId}:working:${f.endpoint.id}`),
+        ));
+        try {
+          // Crash boundary: the run/wake is durable, but its inbound action has
+          // not yet recorded settlement. Recovery must not dispatch it again.
+          if (receipt === "action") {
+            await db.update(chatActions).set({ status: "issued", result: {}, updatedAt: new Date() })
+              .where(eq(chatActions.id, f.fresh.action.id));
+          } else {
+            // Operator repair of a failed ledger keeps the already-admitted
+            // action/run. Only delivery acceptance needs to commit again.
+            await db.update(chatDeliveries).set({ state: "retry", processedAt: null, nextAttemptAt: null })
+              .where(eq(chatDeliveries.id, f.delivery.id));
+          }
+          await chatRunMilestoneWork(db).register(coordinator, () => true).ready;
+          await vi.waitFor(() => expect(coordinator.nextWakeAt()).toBeNull());
+          expect(await notice()).toEqual([]);
+          const wakesBefore = f.wakeup.mock.calls.length;
+          await expect.poll(async () => {
+            await f.service.processPendingDeliveries(25, f.delivery.id);
+            const [action] = await db.select().from(chatActions).where(eq(chatActions.id, f.fresh.action.id));
+            const [delivery] = await db.select().from(chatDeliveries).where(eq(chatDeliveries.id, f.delivery.id));
+            return [action.status, delivery.state];
+          }, { timeout: 10_000 }).toEqual(["processed", "processed"]);
+          expect(f.wakeup.mock.calls.length).toBe(wakesBefore);
+          await expect.poll(notice, { timeout: 5000 }).toEqual([
+            expect.objectContaining({ idempotencyKey: `run:${f.fresh.runId}:working:${f.endpoint.id}` }),
+          ]);
+          await vi.waitFor(() => expect(coordinator.nextWakeAt()).toBeNull());
+          expect(onError).not.toHaveBeenCalled();
+        } finally { await coordinator.stop(); await f.close(); }
+      });
+
       it("publishes working and the exact fresh final after pinned close without resurrecting the old source", async () => {
         const f = await reopenedFixture();
         try {

@@ -1641,3 +1641,13 @@ All 12 selected ingress/revocation/Telegram migration cases and server types/bui
 pass. The milestone audit records evidence, isolated DB, and remaining authority/
 lineage producers. This is another producer checkpoint in draft #17606, not
 production polling removal or completion of the full requested stack.
+
+
+Slice 28 now signals successful inbound action settlement and repaired delivery
+acceptance for already-admitted runs. Both post-close missing notices reproduced
+before repair. All 41 selected post-close/ingress/revocation/migration cases and
+server types/build pass; recovery proves it does not admit a second wake. The
+audit retains the initial contention-sensitive assertion and its correction to
+honor the existing retry. Identity activation and remaining authority/lineage
+producers still gate production polling removal. All original slices and older
+parent CI/review findings remain required.

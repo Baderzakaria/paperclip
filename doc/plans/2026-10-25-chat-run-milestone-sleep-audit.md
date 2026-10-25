@@ -1220,3 +1220,47 @@ writers. Endpoint update does not assign a new agent or change publication mode;
 its unrelated health/configuration writes must not cause blanket milestone scans.
 Production registration/poll removal, complete remote gates, prior parent findings,
 and the full original stack remain unfinished.
+
+
+## Interrupted inbound receipt settlement
+
+freshChatSourceAfterPublishedControl requires both the inbound action and its
+delivery to be processed. A durable admitted run can exist before action
+settlement, and operator recovery can repair a delivery while keeping its already
+processed action/run. Earlier queue/admission signals cannot cover either later
+commit. Two real Discord post-close recovery cases reproduce missing working
+notices before these producer signals.
+
+The inbound wakeup owner now registers issue intent before successful action
+settlement, and before repaired delivery acceptance when the action was already
+processed. It uses the existing validated durable request/receipt and transaction;
+no new validation layer, queue, scheduler or provider-specific branch is added.
+Failed/issued action settlement does not create milestone work. Existing claim
+fences, authorization, retry semantics and duplicate-admission protection remain.
+
+Evidence:
+- /tmp/sleep28-inbound-receipt-before.log: action settlement becomes processed
+  without publishing the expected working notice (causal before-fix failure).
+- /tmp/sleep28-inbound-receipt-tests.log: action recovery passes after repair.
+- /tmp/sleep28-inbound-receipt-delivery-before.log: delivery repair misses the
+  publication. The action case also hit its existing NOWAIT contention retry;
+  its immediate processed assertion was invalid. The test now drives the owning
+  recovery path through its saved retry and waits for both durable receipts.
+- /tmp/sleep28-inbound-receipts-tests.log: both cases pass with no second wake.
+- /tmp/sleep28-inbound-receipts-acceptance.log: all 41 selected cases pass,
+  comprising the full 29-case fresh-after-close authority group and the previous
+  12 ingress/revocation/Telegram migration cases (1,392 deselected).
+- Production server typecheck/build pass in
+  /tmp/sleep28-inbound-receipts-{typecheck,build}.log.
+
+Further producer audit remains required before production wiring. In particular,
+run-identity.ts::activate changes responsibleUserId, which the monitor and native
+continuation lineage readers compare between source and successor. Audit actual
+identity activation/steering ownership and test legitimate reactivation before
+adding a signal. Native safe replacement and provider-capacity retry create
+scheduled_retry rows, which are outside this projector's current status selector;
+the already-covered promotion/claim paths own their later eligibility. Task retry
+strategy-only wake changes do not alter lineage fields. Slack Board dispatch uses
+source issue.comment and its own response path; do not infer milestone eligibility
+from the shared binding reader alone. These are dispositions and next audits,
+not proof that all remaining producers are complete.
