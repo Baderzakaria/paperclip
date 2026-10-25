@@ -33,7 +33,7 @@ import { DELIVERY_QUEUES, subscribeDeliveryWork } from "../services/delivery-wor
 import { aiConnectionService } from "../services/ai-connections.js";
 import { fastResponseService } from "../services/fast-responses.js";
 import { fastResponseReceipt } from "../services/fast-response-provider.js";
-import { fastResponseRequests } from "@paperclipai/db";
+import { companyFastResponses, fastResponseRequests } from "@paperclipai/db";
 import { toolAccessService } from "../services/tool-access.js";
 import { toolActionRequests, toolInvocations, toolPolicies } from "@paperclipai/db";
 import { GitHubPublicationLeaseLost, withGitHubPublicationLease } from "../services/chat-github-publication-lease.js";
@@ -3554,6 +3554,240 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       expect(attempts).toBe(2);
       expect(f.responseWrites).toHaveLength(writes);
     });
+    it.each(["release", "restart", "drain", "standby"] as const)("wakes GitHub acknowledgements from a real publication lease %s", async mode => {
+      const f = await reviewBotFixture();
+      const [resource] = await db.select().from(chatEndpointResources).where(eq(chatEndpointResources.endpointId, f.endpoint.id));
+      const errors: unknown[] = [];
+      let canRun = true;
+      let coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => canRun,
+        canReconcile: () => mode !== "standby" || canRun, onError: error => errors.push(error) });
+      const register = () => f.service.registerGitHubAcknowledgementWork(coordinator, () => canRun);
+      let worker = register();
+      let release!: () => void, entered!: () => void;
+      const hold = new Promise<void>(resolve => { release = resolve; });
+      const claimed = new Promise<void>(resolve => { entered = resolve; });
+      let lease: Promise<unknown> | undefined;
+      try {
+        await worker.ready;
+        expect(errors).toEqual([]);
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+        expect(coordinator.nextWakeAt()).toBeNull();
+        const reads = vi.spyOn(db, "select"), writes = vi.spyOn(db, "transaction");
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(reads).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled();
+        reads.mockRestore(); writes.mockRestore();
+        vi.setSystemTime(Date.now() - 120_000);
+        lease = withGitHubPublicationLease(db, { companyId: f.companyId, endpointId: f.endpoint.id,
+          repositoryId: String(resource.metadata.providerRepositoryId), number: 418 }, f.providerFetch, async () => { entered(); await hold; });
+        await claimed;
+        if (mode === "restart") await coordinator.stop();
+        if (mode === "drain" || mode === "standby") canRun = false;
+        const thread = makeThread({ channelId: "paperclipai/paperclip", id: "github:paperclipai/paperclip:issue:418" }).thread;
+        await deliverMessage({ callbacks: f.callbacks, endpointId: f.endpoint.id, provider: "github", thread,
+          trigger: "mention", message: makeMessage({ id: "41801", text: "Fix this", userId: "42", userName: "octocat", mentioned: true }) });
+        const [action] = await db.select().from(chatActions).where(and(eq(chatActions.endpointId, f.endpoint.id), eq(chatActions.kind, "github_response_comment")));
+        expect(action.status).toBe("received"); expect(f.responseWrites).toEqual([]);
+        release(); await lease;
+        if (mode === "drain" || mode === "standby") {
+          await vi.advanceTimersByTimeAsync(1000);
+          expect(f.responseWrites).toEqual([]);
+          canRun = true; worker.wake();
+        }
+        if (mode === "restart") {
+          coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+          worker = register(); await worker.ready;
+        }
+        await vi.waitFor(async () => {
+          await vi.advanceTimersByTimeAsync(10);
+          expect((await db.select().from(chatActions).where(eq(chatActions.id, action.id)))[0].status).toBe("processed");
+          expect(idleWorkSnapshot().active).toBe(0); expect(coordinator.nextWakeAt()).toBeNull();
+        }, { timeout: 10_000 });
+        expect(f.responseWrites).toHaveLength(1);
+        expect(f.responseWrites[0].body).toContain("Working on this");
+        const settledReads = vi.spyOn(db, "select"), settledWrites = vi.spyOn(db, "transaction");
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(settledReads).not.toHaveBeenCalled(); expect(settledWrites).not.toHaveBeenCalled();
+        settledReads.mockRestore(); settledWrites.mockRestore();
+        expect(errors).toEqual([]);
+      } finally {
+        release(); await lease; await coordinator.stop(); vi.useRealTimers();
+      }
+    });
+
+    it.each(["failure", "expiry", "published", "delivery_unknown", "streaming quarantine"] as const)("releases a GitHub acknowledgement after fast response %s without maintenance polling", async outcome => {
+      await instanceSettingsService(db).updateExperimental({ enableFastResponses: true });
+      const f = await reviewBotFixture();
+      const binding = await aiConnectionService(db).save(f.companyId, "owner-user", { provider: "openrouter", method: "api_key", name: "Fast GitHub", ownership: "shared", apiKey: "fixture-key", agentIds: [], allAgents: true }, "fixture-key");
+      const fast = fastResponseService(db, { authorizeExternal: f.service.authorizeFastResponse,
+        provider: async () => ({ ...(outcome === "failure" ? { errorCode: "invalid_output", noProviderWork: true } : { text: "I’ll check it." }), receipt: fastResponseReceipt({ usage: { inputTokens: 80, outputTokens: 8 } }) }) });
+      await fast.configure(f.companyId, "owner-user", { enabled: true, ...binding, model: "openai/gpt-oss-120b", allowSponsored: true });
+      const errors: unknown[] = [];
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+      try {
+        await f.service.registerGitHubAcknowledgementWork(coordinator, () => true).ready;
+        const thread = makeThread({ channelId: "paperclipai/paperclip", id: "github:paperclipai/paperclip:issue:418" }).thread;
+        await deliverMessage({ callbacks: f.callbacks, endpointId: f.endpoint.id, provider: "github", thread,
+          trigger: "mention", message: makeMessage({ id: "41801", text: "Fix this", userId: "42", userName: "octocat", mentioned: true }) });
+        const [job] = await db.select().from(fastResponseRequests).where(eq(fastResponseRequests.companyId, f.companyId));
+        await vi.waitFor(async () => {
+          await vi.advanceTimersByTimeAsync(10);
+          expect(coordinator.nextWakeAt()).toBe(job.expiresAt.getTime());
+        }, { timeout: 5000 });
+        expect(f.responseWrites).toEqual([]);
+        if (outcome === "expiry") await vi.advanceTimersByTimeAsync(job.expiresAt.getTime() - Date.now());
+        else {
+          await fast.process(job);
+          if (outcome === "streaming quarantine") {
+            await db.update(chatPublications).set({ state: "streaming", updatedAt: new Date(0) })
+              .where(eq(chatPublications.idempotencyKey, `fast-response:${job.id}`));
+            await vi.advanceTimersByTimeAsync(Math.max(0, job.expiresAt.getTime() - Date.now()));
+            await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(10); expect(coordinator.nextWakeAt()).toBeNull(); expect(idleWorkSnapshot().active).toBe(0); });
+            expect(f.responseWrites).toEqual([]);
+            const reads = vi.spyOn(db, "select"), writes = vi.spyOn(db, "transaction");
+            await vi.advanceTimersByTimeAsync(120_000);
+            expect(reads).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled();
+            reads.mockRestore(); writes.mockRestore();
+            await f.service.processPendingPublications();
+          } else if (outcome === "delivery_unknown") {
+            await db.transaction(async tx => {
+              await notifyChatPublicationWork(tx, { companyId: job.companyId, issueId: job.issueId });
+              await tx.update(chatPublications).set({ state: "delivery_unknown" }).where(eq(chatPublications.idempotencyKey, `fast-response:${job.id}`));
+            });
+          } else if (outcome === "published") await f.service.processPendingPublications();
+        }
+        let processedAt: number | undefined;
+        await vi.waitFor(async () => {
+          await vi.advanceTimersByTimeAsync(10);
+          const [action] = await db.select().from(chatActions).where(and(eq(chatActions.endpointId, f.endpoint.id), eq(chatActions.kind, "github_response_comment")));
+          expect(action.status).toBe("processed");
+          processedAt ??= Date.now();
+          expect(idleWorkSnapshot().active).toBe(0); expect(coordinator.nextWakeAt()).toBeNull();
+        }, { timeout: 10_000 });
+        if (outcome !== "expiry" && outcome !== "streaming quarantine") expect(processedAt).toBeLessThan(job.expiresAt.getTime());
+        expect(f.responseWrites).toHaveLength(["failure", "expiry"].includes(outcome) ? 1 : 0);
+        const reads = vi.spyOn(db, "select"), writes = vi.spyOn(db, "transaction");
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(reads).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled();
+        reads.mockRestore(); writes.mockRestore();
+        expect(errors).toEqual([]);
+      } finally { await coordinator.stop(); vi.useRealTimers(); }
+    });
+
+    it("wakes a GitHub acknowledgement only after the outer fast-response transaction commits", async () => {
+      await instanceSettingsService(db).updateExperimental({ enableFastResponses: true });
+      const f = await reviewBotFixture();
+      const binding = await aiConnectionService(db).save(f.companyId, "owner-user", { provider: "openrouter", method: "api_key", name: "Fast GitHub", ownership: "shared", apiKey: "fixture-key", agentIds: [], allAgents: true }, "fixture-key");
+      const fast = fastResponseService(db, { authorizeExternal: f.service.authorizeFastResponse });
+      await fast.configure(f.companyId, "owner-user", { enabled: true, ...binding, model: "openai/gpt-oss-120b", allowSponsored: true });
+      const thread = makeThread({ channelId: "paperclipai/paperclip", id: "github:paperclipai/paperclip:issue:418" }).thread;
+      await deliverMessage({ callbacks: f.callbacks, endpointId: f.endpoint.id, provider: "github", thread,
+        trigger: "mention", message: makeMessage({ id: "41801", text: "Fix this", userId: "42", userName: "octocat", mentioned: true }) });
+      const [job] = await db.update(fastResponseRequests).set({ expiresAt: new Date(Date.now() + 60_000) })
+        .where(eq(fastResponseRequests.companyId, f.companyId)).returning();
+      const errors: unknown[] = [];
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+      try {
+        await f.service.registerGitHubAcknowledgementWork(coordinator, () => true).ready;
+        expect(coordinator.nextWakeAt()).toBe(job.expiresAt.getTime());
+        const skip = async (tx: Parameters<Parameters<Db["transaction"]>[0]>[0]) => {
+          await tx.update(companyFastResponses).set({ enabled: false }).where(eq(companyFastResponses.companyId, f.companyId));
+          expect(await fastResponseService(tx as unknown as Db).process(job)).toMatchObject({ status: "unavailable" });
+          await vi.advanceTimersByTimeAsync(100);
+          expect(f.responseWrites).toEqual([]);
+          expect((await db.select().from(fastResponseRequests).where(eq(fastResponseRequests.id, job.id)))[0].status).toBe("pending");
+        };
+        await expect(db.transaction(async tx => { await skip(tx); throw new Error("rollback fast response skip"); })).rejects.toThrow("rollback fast response skip");
+        await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(10); expect(idleWorkSnapshot().active).toBe(0); });
+        expect(f.responseWrites).toEqual([]);
+        expect(coordinator.nextWakeAt()).toBe(job.expiresAt.getTime());
+        await db.transaction(skip);
+        await vi.waitFor(async () => {
+          await vi.advanceTimersByTimeAsync(10);
+          expect(f.responseWrites).toHaveLength(1);
+          expect(coordinator.nextWakeAt()).toBeNull(); expect(idleWorkSnapshot().active).toBe(0);
+        }, { timeout: 10_000 });
+        expect(Date.now()).toBeLessThan(job.expiresAt.getTime());
+        expect(errors).toEqual([]);
+      } finally { await coordinator.stop(); vi.useRealTimers(); }
+    });
+
+    it.each(["drain", "standby", "shutdown"] as const)("stops GitHub acknowledgement sends at %s between provider requests", async mode => {
+      const f = await reviewBotFixture();
+      f.setSupplementalProviderFetch(async (input, init) => String(input).includes("/issues/418/comments") && init?.method === "POST" ? new Response("unavailable", { status: 503 }) : undefined);
+      const thread = makeThread({ channelId: "paperclipai/paperclip", id: "github:paperclipai/paperclip:issue:418" }).thread;
+      await deliverMessage({ callbacks: f.callbacks, endpointId: f.endpoint.id, provider: "github", thread,
+        trigger: "mention", message: makeMessage({ id: "41801", text: "Fix this", userId: "42", userName: "octocat", mentioned: true }) });
+      const [action] = await db.select().from(chatActions).where(and(eq(chatActions.endpointId, f.endpoint.id), eq(chatActions.kind, "github_response_comment")));
+      expect(action.status).toBe("failed"); expect(action.result?.attempts).toBe(1);
+      await db.update(chatActions).set({ result: { ...action.result, retryAt: new Date(0).toISOString() } }).where(eq(chatActions.id, action.id));
+      let release!: () => void, entered!: () => void;
+      const held = new Promise<void>(resolve => { release = resolve; });
+      const started = new Promise<void>(resolve => { entered = resolve; });
+      f.setSupplementalProviderFetch(async input => {
+        if (String(input).includes("/issues/418/comments?")) { entered(); await held; }
+        return undefined;
+      });
+      let canRun = true;
+      const errors: unknown[] = [];
+      let coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => canRun,
+        canReconcile: () => mode !== "standby" || canRun, onError: error => errors.push(error) });
+      let worker = f.service.registerGitHubAcknowledgementWork(coordinator, () => canRun);
+      let stopping: Promise<void> | undefined;
+      try {
+        await started;
+        if (mode === "shutdown") stopping = coordinator.stop(); else canRun = false;
+        release(); await worker.ready; await stopping;
+        expect(f.responseWrites).toEqual([]);
+        expect((await db.select().from(chatActions).where(eq(chatActions.id, action.id)))[0].result?.attempts).toBe(1);
+        canRun = true;
+        if (mode === "shutdown") {
+          coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+          worker = f.service.registerGitHubAcknowledgementWork(coordinator, () => true); await worker.ready;
+        } else worker.wake();
+        await vi.waitFor(() => { expect(f.responseWrites).toHaveLength(1); expect(coordinator.nextWakeAt()).toBeNull(); }, { timeout: 10_000 });
+        expect(errors).toEqual([]);
+      } finally { release(); await stopping; await coordinator.stop(); }
+    });
+
+    it("retries a failed GitHub acknowledgement at its saved deadline", async () => {
+      const f = await reviewBotFixture();
+      let unavailable = true, attempts = 0;
+      f.setSupplementalProviderFetch(async (input, init) => {
+        if (String(input).includes("/issues/418/comments") && init?.method === "POST") { attempts++; if (unavailable) return new Response("unavailable", { status: 503 }); }
+        return undefined;
+      });
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+      try {
+        await f.service.registerGitHubAcknowledgementWork(coordinator, () => true).ready;
+        const thread = makeThread({ channelId: "paperclipai/paperclip", id: "github:paperclipai/paperclip:issue:418" }).thread;
+        await deliverMessage({ callbacks: f.callbacks, endpointId: f.endpoint.id, provider: "github", thread,
+          trigger: "mention", message: makeMessage({ id: "41801", text: "Fix this", userId: "42", userName: "octocat", mentioned: true }) });
+        const [action] = await db.select().from(chatActions).where(and(eq(chatActions.endpointId, f.endpoint.id), eq(chatActions.kind, "github_response_comment")));
+        expect(action.status).toBe("failed"); expect(attempts).toBe(1);
+        await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(10); expect(coordinator.nextWakeAt()).toBe(Date.parse(String(action.result?.retryAt))); });
+        unavailable = false;
+        await vi.advanceTimersByTimeAsync(Math.max(0, coordinator.nextWakeAt()! - Date.now()));
+        await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(10); expect(f.responseWrites).toHaveLength(1); expect(coordinator.nextWakeAt()).toBeNull(); }, { timeout: 10_000 });
+        expect(attempts).toBe(2);
+      } finally { await coordinator.stop(); vi.useRealTimers(); }
+    });
+
+    it.each(["received", "failed", "cancelled"] as const)("preserves the %s GitHub receipt lifecycle during acknowledgement recovery", async status => {
+      const f = await toolReplyFixture();
+      const [action] = await db.select().from(chatActions).where(and(eq(chatActions.endpointId, f.endpoint.id), eq(chatActions.kind, "github_response_comment")));
+      expect(action.result?.id).toBeTruthy();
+      await db.update(chatActions).set({ status }).where(eq(chatActions.id, action.id));
+      const writes = f.responseWrites.length;
+      await githubResponseCommentService(db, f.providerFetch).tryAcknowledge(action.deliveryId!);
+      const [settled] = await db.select().from(chatActions).where(eq(chatActions.id, action.id));
+      expect(settled.status).toBe(status === "cancelled" ? "cancelled" : "processed");
+      expect(settled.result).toEqual(action.result);
+      expect(f.responseWrites).toHaveLength(writes);
+    });
+
     it("does not post a GitHub working comment when the scheduler declines the request", async () => {
       const f = await reviewBotFixture();
       f.wakeup.mockImplementation(async (agentId, opts) => {

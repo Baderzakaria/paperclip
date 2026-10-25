@@ -13,7 +13,7 @@ export function createGitHubMaintenance(db: Db, fetchImpl: typeof globalThis.fet
     options.scheduleMessageProcessing(async () => {
       try {
         // Provider I/O must not block Slack, Teams, or ordinary message receipts.
-        await githubResponseCommentService(db, fetchImpl).processPending();
+        await githubResponseCommentService(db, fetchImpl).processTerminalResponses();
         await githubReviewCheckService(db, fetchImpl).processPending();
       } finally {
         githubMaintenancePending = false;

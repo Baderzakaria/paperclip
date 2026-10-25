@@ -1892,3 +1892,29 @@ projection repair. Those are separate reasons and remain separate planned PRs.
 See `2026-10-25-github-chat-maintenance-sleep-audit.md` for the inspected owners,
 producer boundaries, and response-slot dependencies. No GitHub migration is yet
 claimed implemented or verified.
+
+## Slice 34: initial GitHub acknowledgement delivery
+
+Based on accepted slice 33 (`276ef23d2a0b01b15e6bfb8ff31ab13495741b19`).
+The implementation moves only initial response-comment acknowledgement out of
+recurring GitHub maintenance. The existing response actions, fast-response
+records, and publication leases own durability. Committed response-slot changes
+and actual saved deadlines drive recovery. Terminal responses, review checks,
+and stale-head projection remain separate upcoming reasons.
+
+Fourteen new real-PostgreSQL lifecycle cases and the existing startup guard pass.
+The producer-removal regression fails as expected when fast-response settlement
+has no notification. Migration application/replay pass after adding the generated
+concurrent-index migration to the existing top-level execution registry. Broader
+local and remote acceptance is pending. See the detailed
+[GitHub owner audit](2026-10-25-github-chat-maintenance-sleep-audit.md).
+
+All earlier failing CI, review findings, stack/master reconciliation, and remaining
+inventory duties retain their existing requirements. This slice does not claim
+that the stack is ready or authorize a merge.
+
+Slice-34 final focused acceptance passes 17 new cases plus the startup guard.
+Workspace typecheck/build pass again after the receipt-lifecycle correction.
+The fast-response suites pass 69 tests. The initial complete chat run passed
+1,554 tests; a fresh complete run with the three added lifecycle regressions
+is in progress. No remote gate or full-stack readiness claim is made yet.

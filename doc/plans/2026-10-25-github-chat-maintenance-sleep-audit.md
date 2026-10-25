@@ -146,3 +146,129 @@ Early failure/skip and adding a publication binding require producer coverage.
 Do not blindly wrap every write or introduce GitHub branches in fast-responses.
 Use a normalized response-slot change contract if these shared owners need a
 new notification capability, with existing transactions reused wherever present.
+
+## Slice 34 implementation and boundaries
+
+Initial response acknowledgement now registers with the existing delivery
+coordinator. This is a separate worker from terminal-response reconciliation,
+review-check delivery, and stale-head repair. The latter three remain in the
+GitHub maintenance owner. The explicit/manual combined `processPending` entry
+point still performs both initial and terminal response recovery.
+
+The durable source remains `chat_actions.kind = github_response_comment`.
+Received actions and retryable failed actions are reconstructed on startup in
+100-row ID pages. The shared scoped-deadline helper dispatches a fair batch of
+25 across companies. Exact delivery, conversation, issue, and repository-lease
+hints restrict reconstruction. Processed/cancelled actions and exhausted failures
+leave this worker's inventory; retained response history does not arm a timer.
+No new queue table or changed automatic retry limit is introduced.
+
+The next deadline is derived from existing saved retry state, a competing
+repository publication lease, or a pending fast response's expiration. A
+streaming fast response parks acknowledgement work until publication settlement
+or quarantine changes its state. The publication worker still owns stale-stream
+recovery. This worker does not invent a second timeout or replay an uncertain
+publication. Published or delivery-unknown fast responses suppress the ordinary
+acknowledgement through the existing provider owner.
+
+Producer coverage:
+
+- `stageResponse` signals its insert transaction. Existing response lookups do
+  not emit another signal. This prevents acknowledgement itself from continuously
+  waking an unchanged received action.
+- Failed/cancelled acknowledgement settlement signals the existing action's
+  delivery before its transaction writes the result.
+- Repository publication lease release signals the precise endpoint/repository/
+  pull-or-issue number. The signal covers receipt changes made under that lease,
+  and releases waiting acknowledgements when another publication finishes.
+- Fast-response admission, early skip, accounting settlement, and publication
+  binding signal the existing response slot. Pending-to-running claims retain
+  the same wait predicate; pending expiry already has a saved deadline.
+- `supersedeFastResponse` is used only by Board chat, which has no external
+  acknowledgement delivery. It was audited and left unchanged.
+- Publication completion, failure, retry, ambiguous delivery, preparation failure,
+  pause-race reset, and stale-stream quarantine notify response availability.
+  Task-control cancellation covers the affected conversation. Content preparation
+  and lease bookkeeping do not create response-availability debt.
+- Endpoint removal deletes its response actions. Other authority checks remain
+  in the response service before any provider write. The worker does not cache
+  authorization or infer authority from a queued action.
+
+The shared capability is `notifyChatResponseAvailability`: an identifier-only
+hint that an existing response slot may have changed. Fast-response and ordinary
+publication owners do not inspect GitHub payloads or choose GitHub behavior.
+Only the GitHub acknowledgement owner parses repository thread identity and
+applies its response protocol. Notification serialization explicitly picks IDs
+so passing a publication row cannot carry its payload into scheduler hints.
+
+Provider requests remain outside database transactions. The existing repository
+lease, current source/principal checks, response markers, shared pull-response
+identity, version fencing, and final-receipt preservation remain in charge of
+provider effects. A recovered known receipt is marked processed so it cannot
+remain permanently in the pending acknowledgement inventory. Admission is checked
+at the actual fetch boundary after lease renewal; an in-flight request may settle,
+but a stopped worker cannot start the next provider request. Stop-related failures
+do not consume the provider retry budget.
+
+The migration adds three concurrent, idempotent indexes: pending acknowledgement
+IDs, fast-response delivery lookup, and publication comment/destination lookup.
+It uses the existing top-level migration mechanism and snapshot pruning rules.
+These indexes avoid rebuilding pending work by scanning completed history.
+
+Supported writes are the service's process-local transaction notification model.
+Independent SQL writers or a second instance do not acquire a new wake guarantee
+from this change. Host sleep eligibility and external alarm coverage are unchanged.
+A local deadline is not evidence that a stopped host can wake itself.
+
+## Verification evidence retained during development
+
+- The first eight lifecycle tests failed on a PostgreSQL JSON-expression precedence
+  error in the lease lookup. Parenthesizing the repository-ID expression fixed
+  the query; all eight then passed.
+- Removing the real fast-response settlement notification made the regression
+  fail: fallback waited until the response expired. Restoring that signal is the
+  implementation under test. The assertion measures when the action settles,
+  separately from the coordinator's final coalesced bookkeeping pass.
+- The initial concurrent-index application failed because the migration was not
+  in the existing top-level statement registry. Registering it fixed application;
+  a second application also completed successfully.
+- Expanded tests exposed provider error normalization at the fetch boundary.
+  The worker now preserves a stopped attempt without charging a provider failure.
+  The fault fixture was also narrowed to response-comment POSTs so installation
+  access-token requests were not mistaken for acknowledgement attempts.
+- Fourteen new real-PostgreSQL cases and the startup guard pass. They cover empty
+  and retained-history quiet, lease release, restart, drain, standby, fast-response
+  failure/expiry/publication/unknown outcome, stale-stream quarantine, outer
+  rollback/commit, saved provider retry, and stop between provider requests.
+- Full chat/fast-response acceptance, workspace typecheck/build, remote CI and
+  review remain pending. This document does not yet claim PR readiness.
+
+Workspace typecheck/build now pass. The fast-response test harness supports an
+explicit fresh `_test` PostgreSQL database, retaining embedded PostgreSQL by
+default. Its first run passed the 69 test bodies but failed cleanup on an invalid
+client-close call; the corrected setup then hit retained fixed-prefix fixtures
+when the same database was reused. A fresh database passes all 69 tests and cleanup.
+Final server typecheck passes. All three migration indexes are valid in PostgreSQL.
+The complete affected chat suites are still running; remote checks/review have not
+been claimed complete.
+
+A rollback-only PostgreSQL plan experiment seeded 10,000 completed response
+actions and 10,000 unrelated fast-response records alongside one pending action
+and its matching request. The pending-ID lookup used
+`chat_actions_github_ack_work_idx` and read one row (two shared buffers); the
+request lookup used `fast_response_requests_delivery_idx` and read one row
+(three shared buffers). This checks the two lookup access paths, not whole-worker
+latency or deployed fleet savings. All experimental writes were rolled back.
+
+The first complete chat acceptance passed all 1,554 tests without skips in
+496.42 seconds. Final review then added three receipt-lifecycle cases: confirmed
+received/failed receipts settle, but cancelled receipts stay cancelled. The new
+cancelled case failed before correction. Settlement now applies only to pending
+states and compares the observed status before writing. The final version of the
+producer-removal test also failed as expected without the settlement notification.
+The corrected implementation is undergoing a fresh full acceptance run with the
+three additional cases; earlier full results are not substituted for that run.
+
+After the final receipt correction, all 17 new lifecycle cases and the startup
+guard pass. Workspace typecheck and build pass again. The final complete chat
+run remains in progress; source and branch remain fixed during acceptance.

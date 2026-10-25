@@ -116,6 +116,7 @@ export async function withGitHubPublicationLease<T>(
     await renewal;
     await db.transaction(async tx => {
       await notifyDeliveryWork(tx, DELIVERY_QUEUES.chatGitHubPublications);
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.chatGitHubAcknowledgements, JSON.stringify(scope));
       await tx.delete(chatEndpointLeases).where(and(eq(chatEndpointLeases.id, claimed.id), eq(chatEndpointLeases.token, token)));
     });
   }

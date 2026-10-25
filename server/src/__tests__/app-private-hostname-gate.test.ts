@@ -94,6 +94,10 @@ describe("createChatReconciliationCoordinator", () => {
     expect(publicationMaintenance).not.toContain("await enqueueFailedChatRetryPublications(");
     expect(publicationMaintenance).not.toContain("reconcileTerminalConfirmationActions(");
     expect(source).toContain("chatChannels.registerInteractionContinuationWork(deliveryWork,");
+    expect(source).toContain("chatChannels.registerGitHubAcknowledgementWork(deliveryWork,");
+    const github = readFileSync(new URL("../services/chat-channels/github/maintenance.ts", import.meta.url), "utf8");
+    expect(github).not.toContain("githubResponseCommentService(db, fetchImpl).processPending()");
+    expect(github).toContain("githubResponseCommentService(db, fetchImpl).processTerminalResponses()");
     expect(source).toContain("chatChannels.registerTerminalConfirmationWork(deliveryWork,");
     expect(source).toContain("chatFailedRetryNoticeWork(chatChannels).register(deliveryWork,");
   });
