@@ -6,7 +6,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import { startControlledObservability } from './observability.mjs';
-import { bindRequest, canonical, costRuntime, readJson, sha256, validateManifest } from './manifest.mjs';
+import { assertHostedAdmission, bindRequest, canonical, costRuntime, readJson, sha256, validateManifest } from './manifest.mjs';
 
 async function atomicJson(file, value) {
   const temporary = `${file}.tmp`;
@@ -68,6 +68,7 @@ export async function runControlledEval({ manifestPath, requestPath, outputPath,
   signal?.throwIfAborted();
   const { manifest, manifestSha256 } = validateManifest(await readJson(manifestPath));
   const request = await readJson(requestPath, 8_388_608), attempt = bindRequest(manifest, request);
+  assertHostedAdmission(manifest, attempt, environment);
   try { await lstat(outputPath); throw new Error('Controlled output already exists'); }
   catch (error) { if (error.code !== 'ENOENT') throw error; }
   if (request.session.workingDirectory) {

@@ -238,6 +238,27 @@ The manifest schema is `paperclip.runner-eval.controller/v1`. It contains:
   `nativeLimits`, and a reviewed full-lifecycle `provisionalBound`. When absent,
   the controller starts no exporter or OTLP relay.
 
+For GitHub workers, the manifest must also contain `hosted` with `repository`,
+`runId` (a decimal string), `runAttempt: 1`, and `workflowRevision` (the trusted
+orchestration commit). Its `campaignId` must be `gha-<runId>-1`. Before creating
+an admission record, reading provider credentials, or starting a proxy, both
+`archive.mjs verify` and `run.mjs` compare this identity with the current
+`GITHUB_ACTIONS`, `GITHUB_REPOSITORY`, `GITHUB_RUN_ID`, `GITHUB_RUN_ATTEMPT` and
+`GITHUB_SHA`. Set `PAPERCLIP_RUNNER_EVAL_EXECUTION_ID` from the worker's selected
+cell. It must equal the bound allocation's `executionId`. A reused preparation
+job cannot authorize a later GitHub run attempt. Local manifests remain usable
+outside a GitHub context. A hosted manifest cannot execute with missing context.
+
+This checks the trusted workflow's current environment; it is not a distributed
+lock or signed GitHub attestation. The workflow must prepare one complete manifest,
+distribute identical bytes and fan out each selected cell exactly once. The
+private `prepare_controlled_campaign.py` command prepares requests with the
+existing case compiler and rejects duplicate or missing matrix cells. Independent
+budgets, a second workflow run, or duplicate first-attempt jobs are not authorized
+by this guard. Pack and report commands remain usable offline after the run, so
+expired or failed attempts can still be retained and reconciled. The current
+live workflow has not yet been connected to this contract.
+
 Use `requestBindingSha256` from `controlled-evals/manifest.mjs` to bind the
 complete compiled request. It excludes only the temporary working directory
 and native executable path; the executable digest remains bound and its path

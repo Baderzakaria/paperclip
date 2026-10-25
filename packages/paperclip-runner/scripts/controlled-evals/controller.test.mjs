@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { test } from 'node:test';
 import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 const runtime = process.env.PAPERCLIP_CONTROLLER_TEST_RUNTIME
   ? pathToFileURL(resolve(process.env.PAPERCLIP_CONTROLLER_TEST_RUNTIME) + '/') : import.meta.url;
 const { canonical, costRuntime, observabilityBoundConfiguration, requestBindingSha256, sha256, validateManifest } = await import(new URL('./manifest.mjs', runtime));
@@ -15,6 +17,8 @@ import { aggregateProtocolEvalCampaign, sanitizeProtocolEvalRuns } from '../runn
 
 const childScript = options => `
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import {createHash} from 'node:crypto';
 import {spawn} from 'node:child_process';
 import {once} from 'node:events';
@@ -621,4 +625,55 @@ test('cancellation during root export stops forwarding and cannot close the atte
   assert.equal(rows.find(row => row.type === 'outcome').outcome, 'uncertain'); assert.equal(rows.at(-1).type, 'closed');
   const summary = await summarizeControlledCampaign(f.manifest);
   assert.equal(summary.committedUsd, '0.014000000'); assert.equal(summary.knownUsd, '0.000068000');
+});
+
+
+test('hosted workers reject reruns and identity drift before requests, while retained evidence replays offline', async t => {
+  const f = await fixture(t);
+  f.manifest.campaignId = 'gha-12345-1';
+  f.manifest.hosted = { repository: 'paperclipai/paperclip', runId: '12345', runAttempt: 1, workflowRevision: 'c'.repeat(40) };
+  await f.save();
+  const context = { GITHUB_ACTIONS: 'true', GITHUB_REPOSITORY: 'paperclipai/paperclip', GITHUB_RUN_ID: '12345',
+    GITHUB_RUN_ATTEMPT: '1', GITHUB_SHA: 'c'.repeat(40), PAPERCLIP_RUNNER_EVAL_EXECUTION_ID: 'execution-0' };
+  let calls = 0;
+  const transport = async () => { calls++; return success(); };
+  for (const [key, value] of Object.entries(context)) {
+    for (const wrong of [undefined, key === 'GITHUB_RUN_ATTEMPT' ? '2' : 'wrong']) {
+      Object.assign(f.environment, context, { [key]: wrong });
+      await assert.rejects(f.run(0, transport), /current first-attempt worker/);
+      assert.equal(calls, 0);
+      await assert.rejects(readdir(f.manifest.outputDirectory), { code: 'ENOENT' });
+    }
+    f.environment[key] = value;
+  }
+  Object.assign(f.environment, context);
+  const command = [fileURLToPath(new URL('./archive.mjs', runtime)), 'verify', f.manifestPath, f.requests[0].requestPath];
+  const verify = promisify(execFile);
+  await verify(process.execPath, command, { env: { PATH: process.env.PATH, ...context }, timeout: 15000 });
+  await assert.rejects(verify(process.execPath, command, {
+    env: { PATH: process.env.PATH, ...context, GITHUB_RUN_ATTEMPT: '2' }, timeout: 15000,
+  }), /current first-attempt worker/);
+  assert.equal(calls, 0);
+  assert.equal((await f.run(0, transport)).code, 0);
+  assert.equal(calls, 2);
+  const bundle = await packControlledAttempt({ manifest: f.manifest, attemptId: 'attempt-0', environment: f.environment });
+  const replay = await summarizeControlledEvidence([bundle], { environment: {} });
+  assert.equal(replay.incompleteAttempts, 0);
+  assert.equal(replay.campaigns[0].campaignId, 'gha-12345-1');
+});
+
+test('hosted context requires a manifest identity and rejects invalid or later-attempt manifests', async t => {
+  const f = await fixture(t);
+  f.environment.GITHUB_ACTIONS = 'true';
+  await assert.rejects(f.run(), /requires a hosted controller identity/);
+  const hosted = { repository: 'paperclipai/paperclip', runId: '12345', runAttempt: 1, workflowRevision: 'c'.repeat(40) };
+  f.manifest.campaignId = 'gha-12345-1';
+  for (const change of [{ repository: '' }, { repository: 'paperclip' }, { runId: 12345 }, { runId: '012345' },
+    { runAttempt: 2 }, { workflowRevision: 'master' }, { workflowRevision: ['c'.repeat(40)] }, { unexpected: true }]) {
+    f.manifest.hosted = { ...hosted, ...change };
+    assert.throws(() => validateManifest(f.manifest), /hosted controller identity|controller fields/);
+  }
+  f.manifest.hosted = hosted;
+  f.manifest.campaignId = 'gha-12345-2';
+  assert.throws(() => validateManifest(f.manifest), /hosted controller identity/);
 });

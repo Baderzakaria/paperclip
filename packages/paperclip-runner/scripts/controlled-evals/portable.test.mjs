@@ -73,11 +73,11 @@ test('copied controller runs without source dependencies, retains native evidenc
     console.log('stdin imports are side-effect free');
   `);
   assert.match((await stdin).stdout, /stdin imports are side-effect free/);
-  const cases = 'real child requests|disjoint concurrent|controller owns native|cancellation during root export';
+  const cases = 'real child requests|disjoint concurrent|controller owns native|cancellation during root export|hosted workers reject reruns';
   const behavioral = await exec(process.execPath, ['--test', '--test-reporter=tap', '--test-name-pattern', cases, join(source, 'controller.test.mjs')], {
     cwd: root, env: { ...environment, PAPERCLIP_CONTROLLER_TEST_RUNTIME: join(directory, 'controlled-evals') }, timeout: 80_000, maxBuffer: 1_048_576,
   });
-  assert.match(behavioral.stdout, /# pass 5\b/);
+  assert.match(behavioral.stdout, /# pass 6\b/);
   const cli = await exec(process.execPath, [join(directory, 'controlled-evals/archive.mjs'), 'report-attempts', join(root, 'empty-attempts')], {
     cwd: root, env: environment, timeout: 10_000,
   }).then(value => value, error => error);
