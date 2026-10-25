@@ -161,10 +161,18 @@ persist restoration, still requires conservative durable uncertainty handling.
   (`/tmp/sleep38-full-chat.log`). It misspelled the standalone publication suite
   filename, so it did not run that suite and is not three-suite acceptance.
   The corrected complete command includes `chat-interaction-publications.test.ts`.
-- Fresh final workspace typecheck/build and corrected three-suite acceptance on
-  `paperclip_sleep38_final_20261025_1837_test` are running. Initial remote CI has
-  52 passing checks and the valid failing Greptile review; repaired-head gates
-  remain required.
+- Final workspace typecheck/build passed. Corrected three-suite acceptance on
+  `paperclip_sleep38_final_20261025_1837_test` passed 1,605 cases and failed one
+  resume timing assertion in 571.32 seconds (`/tmp/sleep38-final-chat.log`).
+  The test observed the newly committed checkpoint before `check` reloaded its
+  deadline and the coordinator scheduled it. It now waits for idle tracking to
+  settle and a deadline more than 30 seconds in the future, then verifies pause
+  disarms it. Production code is unchanged by this assertion repair.
+- All 37 selected lifecycle/publication/startup cases pass with that assertion
+  (`/tmp/sleep38-settlement-fixed.log`, 23.10 seconds). This is focused repair
+  evidence, not a claim that the earlier full run passed. The latest commit still
+  requires all remote CI and fresh review. The production repair at `491a7e1eef`
+  received Greptile 5/5 and its P1 thread is resolved.
 
 ## Remaining boundaries
 

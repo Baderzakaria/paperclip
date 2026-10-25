@@ -15497,7 +15497,10 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         const oldVersion = (await f.checkpoint()).version;
         await f.service.configure(f.endpoint.id, { action: "resume" }, "owner-user");
         await expect.poll(async () => (await f.checkpoint()).version, { timeout: 5000 }).toBeGreaterThan(oldVersion);
-        expect(coordinator.nextWakeAt()).not.toBeNull();
+        await expect.poll(() => {
+          const next = coordinator.nextWakeAt();
+          return { active: idleWorkSnapshot().active, future: next !== null && next > Date.now() + 30_000 };
+        }, { timeout: 5000 }).toEqual({ active: 0, future: true });
         await f.service.configure(f.endpoint.id, { action: "pause" }, "owner-user");
         await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }), { timeout: 5000 })
           .toEqual({ active: 0, next: null });

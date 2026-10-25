@@ -2042,3 +2042,12 @@ standalone publication filename. The corrected three-file command is running
 on a fresh database; the earlier result is not full publication acceptance.
 Earlier stack CI/review issues, all remaining migrations, and master reconciliation
 remain outstanding. No stack PR is merged or claimed ready as a whole.
+
+
+Slice 38 production repair is pushed at `491a7e1eef`; fresh review is 5/5 and
+the P1 thread is resolved. Workspace types/build passed. The corrected complete
+three-suite run passed 1,605 tests and failed one assertion that read the timer
+before worker settlement. The assertion now waits for settled idle tracking and
+the actual future deadline; all 37 affected lifecycle/publication/startup cases
+pass. The full failure remains in the audit; latest-head remote gates are required.
+No full-run success or stack completion is inferred from that focused repair.
