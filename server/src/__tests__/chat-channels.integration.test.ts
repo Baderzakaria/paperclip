@@ -1203,6 +1203,40 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     return { companyId, assignedAgentId, replacementAgentId };
   }
 
+  it("expires Teams consent from the committed Board transfer without periodic maintenance", async () => {
+    const context = await teamsFileAuthorityFixture();
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+    const settle = () => vi.waitFor(async () => {
+      await vi.advanceTimersByTimeAsync(1000); expect(idleWorkSnapshot().active).toBe(0);
+    }, { timeout: 5000 });
+    try {
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+      // Register before the ordinary Board producer, with no transfer rows yet.
+      await context.service.registerTeamsConsentExpiryWork(coordinator, () => true).ready;
+      expect(coordinator.nextWakeAt()).toBeNull();
+      const attachment = await context.createFile();
+      const publication = await context.service.publishBoardMessage(context.endpoint.id, context.conversation.id,
+        "A file awaiting consent", `teams-expiry-${randomUUID()}`, "owner-user", [attachment.id]);
+      const [transfer] = await db.select().from(chatTeamsFileTransfers).where(eq(chatTeamsFileTransfers.publicationId, publication.id));
+      expect(transfer.phase).toBe("awaiting_consent"); expect(context.consentCards).toHaveLength(1);
+      await settle(); expect(coordinator.nextWakeAt()).toBe(transfer.expiresAt.getTime());
+      const reads = vi.spyOn(db, "select");
+      try { await vi.advanceTimersByTimeAsync(10_000); expect(reads).not.toHaveBeenCalled(); }
+      finally { reads.mockRestore(); }
+      await vi.advanceTimersByTimeAsync(transfer.expiresAt.getTime() - Date.now() + 1000); await settle();
+      const [expired] = await db.select().from(chatTeamsFileTransfers).where(eq(chatTeamsFileTransfers.id, transfer.id));
+      const [projected] = await db.select().from(chatPublications).where(eq(chatPublications.id, publication.id));
+      expect(expired.phase).toBe("expired"); expect(projected.state).toBe("cancelled");
+      expect(coordinator.nextWakeAt()).toBeNull();
+      expect(context.consentCards).toHaveLength(1); expect(context.fileCards).toEqual([]);
+      expect(context.uploadRequest).not.toHaveBeenCalled(); expect(errors).toEqual([]);
+    } finally {
+      await coordinator.stop(); vi.useRealTimers();
+      await retirePublicationFixture(context.service, context.endpoint.id);
+    }
+  });
+
   it("retries a colliding company fixture prefix and creates a distinct complete fixture", async () => {
     const existing = await seedCompany();
     const [original] = await db.select().from(companies).where(eq(companies.id, existing.companyId));

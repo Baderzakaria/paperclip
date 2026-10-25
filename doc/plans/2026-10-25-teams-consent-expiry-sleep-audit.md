@@ -2,7 +2,7 @@
 
 Baseline: voice call-report PR #17586 at 250fca6cff.
 Branch: codex/sleep-26-teams-consent-expiry.
-Status: audit; implementation, local acceptance, publication and remote gates pending.
+Status: implemented and locally verified; publication and remote gates pending.
 
 ## Separate reasons
 
@@ -68,3 +68,54 @@ cannot expire consent. Full stack checks and master reconciliation remain requir
 #17586 is published, attached, and locally verified; remote CI/reviews are pending.
 #17580's company deletion policy finding and #17490's E2E cancellation failure are
 still unresolved. No original recurring-server obligation is removed from scope.
+
+## Implementation and acceptance
+
+The Teams owner now registers a scoped deadline worker. The existing service
+signals before issue/update writes, including caller-owned resolution transactions.
+Startup pages eligible rows; transfer hints reload only that primary key. The
+owner rechecks expiry with the original publication/transfer lock order and
+atomic projection. The old periodic selection and execution now cover attempts
+only. No schema or external wake contract changes are included.
+
+Local verification at the slice-26 implementation:
+
+- 65 transfer protocol cases pass on a fresh external PostgreSQL database.
+  These include 102-entry paging/fairness with one corrupt row, shutdown joining
+  a held projection, the three consent phases, precision, rollback, restart,
+  drain/resume, private-error redaction and the remaining maintenance boundary.
+- The earlier five-suite run passed 206 cases: then-63 transfer cases and 143
+  publication, consent, consent-runtime and app-wiring cases. The final transfer
+  run adds two cases. The latest app-wiring assertions pass all 16 cases again.
+- 14 selected real production integration cases pass. This includes registration
+  before an actual Board publication, post-commit wake, saved deadline, pre-expiry
+  SQL quiet, atomic expiry/publication cancellation, no extra provider requests,
+  and the existing Teams current-authority/Board-transfer group. The other 1,411
+  integration cases were skipped, not passed.
+- Together these are 222 unique selected cases. Workspace `pnpm -r typecheck`
+  and `pnpm build` pass. Server typechecking excludes test files; it is not proof
+  that the test files were statically checked.
+- Local full `pnpm test:run` remains unclaimed because this host's embedded
+  PostgreSQL setup failed earlier in the stack. Full remote gates are required.
+  No live Teams tenant or deployed host-suspension qualification is claimed.
+
+Failure ledger: the first protocol run had two invalid fixtures. A direct phase
+mutation set attempt expiry without its required paired attempt ID; another
+assertion treated the public ISO expiry string as a Date. Both were corrected,
+then all five suites passed on a fresh database. The first production expiry
+assertion expected a failed publication; the existing correct expiry projection
+is cancelled. The corrected test and the authority group pass. These were test
+expectation/setup errors, not weakened production contracts or hidden retries.
+
+Evidence logs: `/tmp/sleep26-teams-tests.log` (initial two fixture failures),
+`/tmp/sleep26-teams-fixed-tests.log` (206 pass),
+`/tmp/sleep26-teams-final-tests.log` (65 pass),
+`/tmp/sleep26-producer-tests.log` (initial projection-state assertion),
+`/tmp/sleep26-production-acceptance.log` (14 pass),
+`/tmp/sleep26-final-wiring.log` (16 pass), and
+`/tmp/sleep26-workspace-{types,build}.log` (pass).
+
+Parent #17586 at 250fca6cff has passing Actions, security and Greptile checks;
+Paperclip Review is still running at the latest inspection. This does not clear
+older stack findings or imply merge authority. Refreshed master is b7dc594bfa;
+final whole-stack reconciliation is still required.

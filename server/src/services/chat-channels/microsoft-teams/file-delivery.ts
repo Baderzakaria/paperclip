@@ -1,3 +1,5 @@
+import { teamsConsentExpiryWork } from "./consent-expiry-work.js";
+import type { createDeliveryWorkCoordinator } from "../../delivery-work-coordinator.js";
 import { createOutboundAttachments } from "../outbound-attachments.js";
 
 import { createTeamsFileAuthority } from "./file-transfer-authority.js";
@@ -14,7 +16,6 @@ import {
   eq,
   inArray,
   lte,
-  or,
 } from "drizzle-orm";
 
 import type { Db } from "@paperclipai/db";
@@ -392,24 +393,11 @@ export function createTeamsFileDelivery(db: Db, options: TeamsFileDeliveryOption
           .selectDistinct({ companyId: chatTeamsFileTransfers.companyId })
           .from(chatTeamsFileTransfers)
           .where(
-            or(
-              and(
-                inArray(chatTeamsFileTransfers.phase, [
-                  "consent_pending",
-                  "awaiting_consent",
-                  "upload_pending",
-                ]),
-                lte(chatTeamsFileTransfers.expiresAt, new Date()),
-              ),
-              and(
-                inArray(chatTeamsFileTransfers.phase, [
-                  "consent_sending",
-                  "uploading",
-                  "file_info_sending",
-                  "conflict",
-                ]),
-                lte(chatTeamsFileTransfers.attemptExpiresAt, new Date()),
-              ),
+            and(
+              inArray(chatTeamsFileTransfers.phase, [
+                "consent_sending", "uploading", "file_info_sending", "conflict",
+              ]),
+              lte(chatTeamsFileTransfers.attemptExpiresAt, new Date()),
             ),
           );
         const protocol = teamsTransferProtocol();
@@ -417,7 +405,7 @@ export function createTeamsFileDelivery(db: Db, options: TeamsFileDeliveryOption
         // its row count and lock waits and performs no provider I/O.
         for (const scope of scopes) {
           if (isShuttingDown()) break;
-          await protocol.expireAndRecover(scope.companyId, 100);
+          await protocol.recoverAbandonedAttempts(scope.companyId, 100);
         }
       } catch {
         // Selection errors are closed here too; private transfer envelopes and
@@ -430,5 +418,9 @@ export function createTeamsFileDelivery(db: Db, options: TeamsFileDeliveryOption
       }
     });
   }
-  return { teamsTransferProtocol, handleTeamsFileConsent, tryProcessTeamsFilePublication, scheduleTeamsFileMaintenance };
+  function registerTeamsConsentExpiryWork(coordinator: ReturnType<typeof createDeliveryWorkCoordinator>, canRun: () => boolean) {
+    return teamsConsentExpiryWork(db, (companyId, id) => teamsTransferProtocol().expireUnusedConsent(companyId, id))
+      .register(coordinator, () => !isShuttingDown() && canRun());
+  }
+  return { registerTeamsConsentExpiryWork, teamsTransferProtocol, handleTeamsFileConsent, tryProcessTeamsFilePublication, scheduleTeamsFileMaintenance };
 }

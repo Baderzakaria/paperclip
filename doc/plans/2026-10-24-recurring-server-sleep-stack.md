@@ -1358,3 +1358,16 @@ cleanup and retention workers had 37 passing cases. CI/reviews remain required.
 Next owner audit splits Teams unused-consent expiry from abandoned send/upload
 attempt recovery, preserving one reason per PR. Company deletion cleanup policy
 and the earlier E2E failure remain unresolved completion duties.
+
+
+## Slice 26: Teams unused-consent expiry
+
+The Teams owner now selects existing unused-consent phases and their saved expiry
+through scoped deadline work. Production maintenance retains only abandoned
+attempts; these are the next distinct reason. No new table or Cloud alarm policy
+is included. The [audit](2026-10-25-teams-consent-expiry-sleep-audit.md) records
+222 unique selected passing cases, workspace types/build, and initial fixture
+failures. Publication and fresh remote checks/review remain required.
+Parent #17586 Actions/security/Greptile pass at 250fca6cff; Paperclip Review is
+still running. The original full inventory, older E2E failure, deletion-policy
+finding and master reconciliation remain outstanding. No stack PR is merged.
