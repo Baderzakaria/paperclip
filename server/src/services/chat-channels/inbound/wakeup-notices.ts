@@ -19,12 +19,12 @@ type NoticeOptions = {
   isShuttingDown: () => boolean;
 };
 export type InboundWakeNoticeScope = { companyId: string; issueId?: string };
-type NoticeCursor = { createdAt: string; id: string };
+export type InboundWakeNoticeCursor = { createdAt: string; id: string };
 type NoticeCandidate = { action: typeof chatActions.$inferSelect; cursorCreatedAt: string };
 
 export function createInboundWakeNotices(db: Db, options: NoticeOptions) {
   const { authorizeInboundWakeup, enqueueFailedChatRetryPublications, authorizeRetainedChatSourcePublication, isExternalActionAuthorizationChange } = options;
-  let inboundWakeNoticeCursor: NoticeCursor | null = null;
+  let inboundWakeNoticeCursor: InboundWakeNoticeCursor | null = null;
   async function currentInboundWakeNotice(
     tx: DbOrTransaction,
     action: typeof chatActions.$inferSelect,
@@ -134,7 +134,7 @@ export function createInboundWakeNotices(db: Db, options: NoticeOptions) {
     return Boolean(link);
   }
 
-  async function noticeCandidates(limit: number, cursor: NoticeCursor | null, scope?: InboundWakeNoticeScope): Promise<NoticeCandidate[]> {
+  async function noticeCandidates(limit: number, cursor: InboundWakeNoticeCursor | null, scope?: InboundWakeNoticeScope): Promise<NoticeCandidate[]> {
     const owner = alias(agentWakeupRequests, "chat_notice_owner");
     // Keep UUID columns indexable. Match only canonical lowercase UUID text,
     // preserving the old comparison while malformed payloads match nothing.
@@ -212,7 +212,7 @@ export function createInboundWakeNotices(db: Db, options: NoticeOptions) {
       .limit(Math.max(1, Math.min(limit, 200)));
   }
 
-  function continuation(candidates: NoticeCandidate[], limit: number): NoticeCursor | null {
+  function continuation(candidates: NoticeCandidate[], limit: number): InboundWakeNoticeCursor | null {
     const last = candidates.at(-1);
     return candidates.length === limit && last
       ? { createdAt: last.cursorCreatedAt, id: last.action.id }
@@ -325,7 +325,7 @@ export function createInboundWakeNotices(db: Db, options: NoticeOptions) {
 
   async function loadInboundWakeNoticeScopes(scope?: InboundWakeNoticeScope, signal?: AbortSignal) {
     const scopes = new Map<string, { companyId: string; issueId: string }>();
-    let cursor: NoticeCursor | null = null;
+    let cursor: InboundWakeNoticeCursor | null = null;
     do {
       signal?.throwIfAborted();
       const candidates = await noticeCandidates(200, cursor, scope);
@@ -340,22 +340,16 @@ export function createInboundWakeNotices(db: Db, options: NoticeOptions) {
   }
 
   async function reconcileInboundWakeNotices(input: {
-    scope: InboundWakeNoticeScope; limit?: number; signal?: AbortSignal;
+    scope: InboundWakeNoticeScope; limit?: number; cursor?: InboundWakeNoticeCursor | null; signal?: AbortSignal;
   }) {
-    const limit = Math.max(1, Math.min(input.limit ?? 100, 1000));
-    let inserted = 0;
-    let contended = false;
-    let cursor: NoticeCursor | null = null;
-    do {
-      input.signal?.throwIfAborted();
-      const pageSize = Math.min(200, limit - inserted);
-      const candidates = await noticeCandidates(pageSize, cursor, input.scope);
-      const result = await projectNotices(candidates, input.signal);
-      inserted += result.inserted;
-      contended ||= result.contended;
-      cursor = continuation(candidates, pageSize);
-    } while (cursor && inserted < limit);
-    return { inserted, contended };
+    // Bound authorization work, not successful publications: denied history is
+    // still a candidate check. The worker retains this precise cursor between
+    // passes and resets it when a committed change invalidates the scope.
+    input.signal?.throwIfAborted();
+    const limit = Math.max(1, Math.min(input.limit ?? 100, 200));
+    const candidates = await noticeCandidates(limit, input.cursor ?? null, input.scope);
+    const result = await projectNotices(candidates, input.signal);
+    return { ...result, nextCursor: continuation(candidates, limit) };
   }
 
   async function authorizeInboundWakePublication(

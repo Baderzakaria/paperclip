@@ -297,3 +297,39 @@ The corrected call passes 50, preserving the old combined wrapper's default.
 The full chat run at that revision was deliberately interrupted (exit 130) after
 this compiler evidence; it is not acceptance. Its log remains at
 `/tmp/sleep30-wired-full-chat.log`. Fresh verification is required after repair.
+
+
+## Bounded candidate passes after review
+
+At `87f5c827b0`, workspace typecheck and build passed, and the full chat plus
+startup-gate selection passed all 1,486 tests in
+`/tmp/sleep30-final-full-chat.log`. CI subsequently passed every code gate;
+Greptile found a real fairness defect (comment 4371894496): the reconciliation
+limit counted inserted notices rather than candidates authorized, so a denied
+history could monopolize one pass.
+
+The new regression fails before repair in `/tmp/sleep30-fairness-before.log`:
+a requested 50-candidate pass opens more than 50 candidate transactions. The
+repair returns a precise continuation cursor after at most the requested page
+size. The notice worker retains that cursor between scheduler passes. It also
+retains contention from earlier pages and, after reaching the end, revisits it
+from the beginning rather than silently discarding locked work. A committed
+scope invalidation reconstructs the entry with a fresh cursor; no shared
+scheduler or authorization policy changes are needed.
+
+All 44 selected integration cases pass in
+`/tmp/sleep30-fairness-acceptance.log`, including a 150-row denied backlog,
+an unrelated task completing between bounded passes, contention on the first
+page surviving a later page, and a real privacy-restoration write while a page
+is in flight. The latter revisits the formerly denied prefix, publishes exactly
+once, and then performs no root SQL for two minutes of fake idle time. Manual
+pagination remains separate and retains PostgreSQL microsecond precision.
+Server typecheck passed after the cursor contract change. Full latest-head
+remote checks and review must be revalidated after pushing the repair.
+
+The next owner audit must explicitly trace ordinary receipts coalesced into a
+failed-run retry receipt: `findExistingDeferredWake` does not itself exclude a
+retry owner. `allowRunCoalescing: false` on the retry's own admission is not
+proof that a later ordinary admission cannot select it. In particular, inspect
+the retry authorization-denial write before assuming it can only affect retry
+notices. This is an open producer-audit question, not a verified exemption.

@@ -71499,9 +71499,17 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         const second = await context.service.enqueueInboundWakeupPublications(50);
         expect(first + second).toBe(1);
       } else {
-        expect(await context.service.reconcileInboundWakeNotices({
-          scope: { companyId: context.fixture.companyId, issueId: context.conversation.issueId }, limit: 50,
-        })).toEqual({ inserted: 1, contended: false });
+        const scope = { companyId: context.fixture.companyId, issueId: context.conversation.issueId };
+        const transaction = vi.spyOn(db, "transaction");
+        try {
+          const first = await context.service.reconcileInboundWakeNotices({ scope, limit: 50 });
+          expect(transaction).toHaveBeenCalledTimes(50);
+          expect(first).toMatchObject({ inserted: 0, contended: false, nextCursor: expect.any(Object) });
+          transaction.mockClear();
+          expect(await context.service.reconcileInboundWakeNotices({ scope, limit: 50, cursor: first.nextCursor }))
+            .toEqual({ inserted: 1, contended: false, nextCursor: null });
+          expect(transaction).toHaveBeenCalledTimes(1);
+        } finally { transaction.mockRestore(); }
       }
       const rows = await readChatPublicationsByEndpointId(context.endpoint.id);
       expect(rows).toEqual([expect.objectContaining({
@@ -71515,19 +71523,135 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     }
   });
 
+  it.each(["denied", "contended"] as const)("yields a %s inbound notice backlog between bounded passes without losing work", async mode => {
+    const context = await deferredChatQueueFixture();
+    const other = await deferredChatQueueFixture();
+    const rejectedIds = Array.from({ length: 150 }, () => randomUUID());
+    let release = () => {};
+    let holder: Promise<unknown> | undefined;
+    try {
+      const [receipt] = await readAgentWakeupRequestsById(context.action.id);
+      const at = new Date(context.action.createdAt.getTime() + (mode === "denied" ? -1000 : 1000)).toISOString();
+      await db.insert(chatActions).values(rejectedIds.map(id => ({
+        ...context.action, id, providerActionId: `inbound_wakeup:${id}`,
+        payload: { ...context.action.payload, commentId: randomUUID() },
+        createdAt: sql`${at}::timestamptz + interval '0.000123 seconds'`,
+      })));
+      await db.insert(agentWakeupRequests).values(rejectedIds.map(id => ({
+        ...receipt, id, idempotencyKey: `chat-fairness-fixture:${id}`,
+      })));
+      if (mode === "contended") {
+        let locked!: () => void;
+        const ready = new Promise<void>(resolve => { locked = resolve; });
+        const hold = new Promise<void>(resolve => { release = resolve; });
+        holder = db.transaction(async tx => {
+          await tx.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, context.action.id)).for("update");
+          locked(); await hold;
+        });
+        await ready;
+      }
+      const worker = chatInboundWakeNoticeWork(context.service);
+      const [entry] = await worker.load({ companyId: context.fixture.companyId, issueId: context.conversation.issueId });
+      const [otherEntry] = await worker.load({ companyId: other.fixture.companyId, issueId: other.conversation.issueId });
+      const transaction = vi.spyOn(db, "transaction");
+      try {
+        let remaining = await worker.check(entry!);
+        expect(transaction).toHaveBeenCalledTimes(100);
+        expect(remaining).toMatchObject({ cursor: expect.any(Object), contended: mode === "contended" });
+        expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toEqual([]);
+        // Another scope can finish while the first still has a saved cursor.
+        expect(await worker.check(otherEntry!)).toBeNull();
+        expect(await readChatPublicationsByEndpointId(other.endpoint.id)).toHaveLength(1);
+        transaction.mockClear();
+        remaining = await worker.check(remaining!);
+        expect(transaction).toHaveBeenCalledTimes(51);
+        if (mode === "contended") {
+          expect(remaining).toMatchObject({ cursor: null });
+          expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toEqual([]);
+          release(); await holder;
+          remaining = await worker.check(remaining!);
+          expect(remaining).not.toBeNull();
+          remaining = await worker.check(remaining!);
+        }
+        expect(remaining).toBeNull();
+        expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toEqual([expect.objectContaining({
+          commentId: context.action.payload.commentId,
+          payload: { text: "Your follow-up is queued.", progressState: "queued" },
+        })]);
+      } finally { transaction.mockRestore(); }
+    } finally {
+      release(); await holder;
+      await context.service.shutdown(); await other.service.shutdown();
+      await db.delete(chatActions).where(inArray(chatActions.id, [...rejectedIds, context.action.id]));
+      await db.delete(agentWakeupRequests).where(inArray(agentWakeupRequests.id, [...rejectedIds, context.action.id]));
+    }
+  });
+
+  it("restarts an inbound notice cursor when privacy is restored during a bounded pass", async () => {
+    const context = await deferredChatQueueFixture(false, undefined, true);
+    const rejectedIds = Array.from({ length: 100 }, () => randomUUID());
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true,
+      canReconcile: () => true, onError: error => errors.push(error) });
+    let held = false, release!: () => void;
+    const pending = new Promise<void>(resolve => { release = resolve; });
+    let ready: Promise<unknown> | undefined;
+    const reconcile = context.service.reconcileInboundWakeNotices.bind(context.service);
+    const pass = vi.spyOn(context.service, "reconcileInboundWakeNotices").mockImplementationOnce(async input => {
+      const result = await reconcile(input);
+      expect(result).toMatchObject({ inserted: 0, nextCursor: expect.any(Object) });
+      held = true; await pending; return result;
+    });
+    try {
+      await db.update(issues).set({ visibility: "private", privacyRootIssueId: context.conversation.issueId,
+        createdByUserId: null, responsibleUserId: null, assigneeUserId: null,
+      }).where(eq(issues.id, context.conversation.issueId));
+      const [receipt] = await readAgentWakeupRequestsById(context.action.id);
+      const at = new Date(context.action.createdAt.getTime() + 1000).toISOString();
+      await db.insert(chatActions).values(rejectedIds.map(id => ({
+        ...context.action, id, providerActionId: `inbound_wakeup:${id}`,
+        payload: { ...context.action.payload, commentId: randomUUID() }, createdAt: new Date(at),
+      })));
+      await db.insert(agentWakeupRequests).values(rejectedIds.map(id => ({
+        ...receipt, id, idempotencyKey: `chat-cursor-reset:${id}`,
+      })));
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+      ready = chatInboundWakeNoticeWork(context.service).register(coordinator, () => true).ready;
+      await vi.waitFor(() => expect(held).toBe(true), { timeout: 10_000 });
+      await issueService(db).update(context.conversation.issueId, { visibility: "open" });
+      release(); await ready;
+      await vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(1);
+        expect(coordinator.nextWakeAt()).toBeNull(); expect(idleWorkSnapshot().active).toBe(0);
+      }, { timeout: 10_000 });
+      const select = vi.spyOn(db, "select"), transaction = vi.spyOn(db, "transaction");
+      try {
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(select).not.toHaveBeenCalled(); expect(transaction).not.toHaveBeenCalled();
+      } finally { select.mockRestore(); transaction.mockRestore(); }
+      expect(errors).toEqual([]);
+    } finally {
+      release(); await ready; await coordinator.stop(); pass.mockRestore(); vi.useRealTimers();
+      await context.service.shutdown();
+      await db.delete(chatActions).where(inArray(chatActions.id, [...rejectedIds, context.action.id]));
+      await db.delete(agentWakeupRequests).where(inArray(agentWakeupRequests.id, [...rejectedIds, context.action.id]));
+    }
+  });
+
   it("isolates pre-run FIFO reconciliation scopes and exhausts published history", async () => {
     const first = await deferredChatQueueFixture();
     const second = await deferredChatQueueFixture();
     try {
       const scope = { companyId: first.fixture.companyId, issueId: first.conversation.issueId };
       expect(await first.service.loadInboundWakeNoticeScopes({ companyId: scope.companyId })).toEqual([scope]);
-      expect(await first.service.reconcileInboundWakeNotices({ scope })).toEqual({ inserted: 1, contended: false });
+      expect(await first.service.reconcileInboundWakeNotices({ scope })).toEqual({ inserted: 1, contended: false, nextCursor: null });
       expect(await readChatPublicationsByEndpointId(second.endpoint.id)).toEqual([]);
       expect(await first.service.loadInboundWakeNoticeScopes(scope)).toEqual([]);
-      expect(await first.service.reconcileInboundWakeNotices({ scope })).toEqual({ inserted: 0, contended: false });
+      expect(await first.service.reconcileInboundWakeNotices({ scope })).toEqual({ inserted: 0, contended: false, nextCursor: null });
       expect(await second.service.reconcileInboundWakeNotices({
         scope: { companyId: second.fixture.companyId, issueId: second.conversation.issueId },
-      })).toEqual({ inserted: 1, contended: false });
+      })).toEqual({ inserted: 1, contended: false, nextCursor: null });
     } finally {
       await first.service.shutdown(); await second.service.shutdown();
     }
@@ -71547,10 +71671,10 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     try {
       await ready;
       const scope = { companyId: context.fixture.companyId, issueId: context.conversation.issueId };
-      expect(await context.service.reconcileInboundWakeNotices({ scope })).toEqual({ inserted: 0, contended: true });
+      expect(await context.service.reconcileInboundWakeNotices({ scope })).toEqual({ inserted: 0, contended: true, nextCursor: null });
       expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toEqual([]);
       release(); await holder;
-      expect(await context.service.reconcileInboundWakeNotices({ scope })).toEqual({ inserted: 0, contended: false });
+      expect(await context.service.reconcileInboundWakeNotices({ scope })).toEqual({ inserted: 0, contended: false, nextCursor: null });
       expect(await context.service.loadInboundWakeNoticeScopes(scope)).toEqual([]);
     } finally {
       release(); await holder; await context.service.shutdown();
