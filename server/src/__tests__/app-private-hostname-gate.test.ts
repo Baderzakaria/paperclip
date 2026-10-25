@@ -78,8 +78,15 @@ describe("createChatReconciliationCoordinator", () => {
     const source = readFileSync(new URL("../app.ts", import.meta.url), "utf8");
     const maintenance = source.slice(source.indexOf("const chatReconciliation ="), source.indexOf("const unsubscribeChatPublicationSignals"));
     expect(maintenance).not.toContain("chatChannels.reconcileProviderRuntimes()");
-    expect(maintenance).toContain("chatChannels.voice.reconcile()");
+    expect(maintenance).toContain("chatChannels.voice.reconcileMaintenance()");
     expect(source).toContain("chatChannels.registerReceiverWork(deliveryWork,");
+  });
+
+  it("separates live voice recovery from the remaining periodic maintenance", () => {
+    const source = readFileSync(new URL("../app.ts", import.meta.url), "utf8");
+    expect(source).toContain("chatChannels.voice.registerRecoveryWork(deliveryWork,");
+    expect(source).toContain("chatChannels.voice.reconcileMaintenance()");
+    expect(source).not.toContain("chatChannels.voice.reconcile()");
   });
 
   it("wires GitHub recovery into its independent lane", () => {

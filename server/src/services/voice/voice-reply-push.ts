@@ -1,3 +1,4 @@
+import { notifyVoiceRecovery } from "./voice-recovery-notifications.js";
 import { createHash } from "node:crypto";
 import { and, asc, eq, gt, inArray, isNull, lt, sql } from "drizzle-orm";
 import { chatActions, chatEndpoints, chatPublications, chatVoiceReplies, chatVoiceSessions, type Db } from "@paperclipai/db";
@@ -114,6 +115,7 @@ export async function pushVoiceReplies(db: Db, options: {
           : providerError?.httpStatus === 429 ? "retry" : "failed";
         await db.transaction(async tx => {
           await tx.update(chatActions).set({status, result: {errorCode: providerError?.code ?? "voice_authority_unavailable", ...(status === "retry" ? {retryAt: Date.now() + 10_000} : {})}, updatedAt: new Date()}).where(eq(chatActions.id, claim.action.id));
+          if (status === "call_ended" || status === "unknown") await notifyVoiceRecovery(tx, { kind: "session", id: candidate.id });
           if (status === "call_ended") await tx.update(chatVoiceSessions).set({state: "ended", endedAt: new Date(), updatedAt: new Date()}).where(and(eq(chatVoiceSessions.id, candidate.id), eq(chatVoiceSessions.companyId, candidate.companyId)));
           if (status === "unknown") await tx.update(chatVoiceSessions).set({errorCode: "message_delivery_unknown", updatedAt: new Date()}).where(eq(chatVoiceSessions.id, candidate.id));
         });

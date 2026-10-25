@@ -1,0 +1,89 @@
+import { and, eq, gt, inArray, sql } from "drizzle-orm";
+import { chatEndpoints, chatVoiceSessions, toolConnections, type Db } from "@paperclipai/db";
+import { HttpError } from "../../errors.js";
+import { instanceSettingsService } from "../instance-settings.js";
+import { withVoiceSessionChange, type VoiceRecoveryScope } from "./voice-recovery-notifications.js";
+
+export const LIVE_VOICE_STATES = ["reserved", "creating", "creation_unknown", "connecting", "active", "ending"] as const;
+type Session = typeof chatVoiceSessions.$inferSelect;
+export type VoiceRecoveryEntry = { id: string; companyId: string; endpointId: string; connectionId: string; dueAt: number };
+type Candidate = { session: Session; connectionId: string; endpointStatus: string; enabled: boolean; generation: number };
+
+export function voiceSessionRecoveryAt(row: Candidate, featureEnabled: boolean): number {
+  const session = row.session;
+  if (!session.providerSessionId) return session.expiresAt.getTime() + 120_001;
+  const changed = !featureEnabled || !row.enabled || !["active", "verifying"].includes(row.endpointStatus)
+    || session.generation !== row.generation || session.state === "ending";
+  if (changed) return session.errorCode === "cleanup_pending" ? session.updatedAt.getTime() + 30_000 : 0;
+  if (["connecting", "active"].includes(session.state)) return Math.min(session.expiresAt.getTime(), session.updatedAt.getTime() + 30_000);
+  return session.expiresAt.getTime();
+}
+
+export function voiceSessionRecovery(db: Db, operations: {
+  authorize(session: Session): Promise<void>;
+  inspect(session: Session): Promise<{ endedAt?: unknown } | null>;
+  close(session: Session): Promise<unknown>;
+}) {
+  async function candidates(scope?: VoiceRecoveryScope, signal?: AbortSignal) {
+    const rows: Candidate[] = [];
+    let cursor: string | undefined;
+    for (;;) {
+      signal?.throwIfAborted();
+      const page = await db.select({ session: chatVoiceSessions, connectionId: toolConnections.id,
+        endpointStatus: chatEndpoints.status, enabled: toolConnections.enabled, generation: sql<number>`coalesce((${chatEndpoints.setup}->>'runtimeGeneration')::integer, 0)` })
+        .from(chatVoiceSessions)
+        .innerJoin(chatEndpoints, and(eq(chatEndpoints.id, chatVoiceSessions.endpointId), eq(chatEndpoints.companyId, chatVoiceSessions.companyId)))
+        .innerJoin(toolConnections, and(eq(toolConnections.id, chatEndpoints.connectionId), eq(toolConnections.companyId, chatVoiceSessions.companyId)))
+        .where(and(inArray(chatVoiceSessions.state, [...LIVE_VOICE_STATES]),
+          scope?.kind === "session" ? eq(chatVoiceSessions.id, scope.id) : undefined,
+          scope?.kind === "endpoint" ? eq(chatVoiceSessions.endpointId, scope.id) : undefined,
+          scope?.kind === "connection" ? eq(toolConnections.id, scope.id) : undefined,
+          scope?.kind === "company" ? eq(chatVoiceSessions.companyId, scope.id) : undefined,
+          cursor ? gt(chatVoiceSessions.id, cursor) : undefined))
+        .orderBy(chatVoiceSessions.id).limit(100);
+      rows.push(...page);
+      if (page.length < 100) return rows;
+      cursor = page[page.length - 1].session.id;
+    }
+  }
+  async function load(scope?: VoiceRecoveryScope, signal?: AbortSignal): Promise<VoiceRecoveryEntry[]> {
+    const rows = await candidates(scope, signal);
+    if (!rows.length) return [];
+    const enabled = (await instanceSettingsService(db).getExperimental()).enableChatConnectors;
+    return rows.map(row => ({ id: row.session.id, companyId: row.session.companyId, endpointId: row.session.endpointId,
+      connectionId: row.connectionId, dueAt: voiceSessionRecoveryAt(row, enabled) }));
+  }
+  async function check(id: string, signal?: AbortSignal): Promise<VoiceRecoveryEntry | null> {
+    const scope = { kind: "session", id } as const;
+    const [row] = await candidates(scope, signal);
+    if (!row) return null;
+    const enabled = (await instanceSettingsService(db).getExperimental()).enableChatConnectors;
+    if (voiceSessionRecoveryAt(row, enabled) <= Date.now()) {
+      signal?.throwIfAborted();
+      const session = row.session;
+      try {
+        let authorized = false;
+        if (enabled && ["connecting", "active"].includes(session.state) && session.expiresAt.getTime() > Date.now()) {
+          try { await operations.authorize(session); authorized = true; }
+          catch (error) { if (!(error instanceof HttpError && [403, 404].includes(error.status))) throw error; }
+        }
+        if (authorized) {
+          const state = await operations.inspect(session);
+          await withVoiceSessionChange(db, id, tx => tx.update(chatVoiceSessions).set({
+            ...(state?.endedAt ? { state: "ended" as const, endedAt: new Date(), errorCode: null } : {}), updatedAt: new Date(),
+          }).where(and(eq(chatVoiceSessions.id, id), inArray(chatVoiceSessions.state, ["connecting", "active"]))));
+        } else if (session.providerSessionId) await operations.close(session);
+        else if (session.expiresAt.getTime() + 120_000 < Date.now()) {
+          await withVoiceSessionChange(db, id, tx => tx.update(chatVoiceSessions).set({ state: "expired", endedAt: new Date(), updatedAt: new Date() })
+            .where(and(eq(chatVoiceSessions.id, id), inArray(chatVoiceSessions.state, [...LIVE_VOICE_STATES]))));
+        }
+      } catch (error) {
+        await withVoiceSessionChange(db, id, tx => tx.update(chatVoiceSessions).set({ errorCode: "cleanup_pending", updatedAt: new Date() })
+          .where(and(eq(chatVoiceSessions.id, id), inArray(chatVoiceSessions.state, [...LIVE_VOICE_STATES]))));
+        throw error;
+      }
+    }
+    return (await load(scope, signal))[0] ?? null;
+  }
+  return { load, check };
+}

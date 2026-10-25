@@ -1298,6 +1298,7 @@ export async function createApp(
   }
   registerChatDeliveryWork(deliveryWork, chatChannels, () => !isIdleTaskDrainActive());
   registerChatActionWork(deliveryWork, chatChannels, () => !isIdleTaskDrainActive());
+  chatChannels.voice.registerRecoveryWork(deliveryWork, () => !isWarmStandby() && !isIdleTaskDrainActive());
   chatChannels.registerReceiverWork(deliveryWork, () => !isWarmStandby() && !isIdleTaskDrainActive());
   chatChannels.registerCommandWork(deliveryWork, () => !isWarmStandby() && !isIdleTaskDrainActive());
   emailChannels.start();
@@ -1305,7 +1306,7 @@ export async function createApp(
     await chatChannels.processPublicationMaintenance();
   };
   const chatReconciliation = createChatReconciliationCoordinator({
-    reconcileVoiceSessions: () => chatChannels.voice.reconcile(),
+    reconcileVoiceSessions: () => chatChannels.voice.reconcileMaintenance(),
     // Chat delivery, action, and Telegram discovery workers now own these
     // duties. Keep the coordinator's other maintenance lanes independent.
     processPendingDeliveries: async () => undefined,

@@ -87,3 +87,28 @@ and is published/attached. CI run 40173962833 is live on its exact head; Greptil
 security and Paperclip review are pending. This is not stack completion or merge
 permission. The full original ledger, #17490 failure and final master
 reconciliation remain required.
+
+
+## Initial implementation checkpoint
+
+Live-session recovery now has a voice-owned paged deadline reader and a scoped
+coordinator worker. The periodic wrapper retains reply, inbound, and report
+maintenance. Session writes signal their existing transactions; standalone service
+updates use one small transaction helper. Configuration, feature-disable and
+voice tool/access removal paths signal relevant scopes. Active sessions retain
+30-second inspection, unknown creation retains the saved expiry plus two-minute
+grace, and no call-creation action exists in recovery. Authority lookup failures
+retry instead of treating an unavailable database as confirmed revocation.
+
+Four initial actual-service cases pass: first start after quiet and retirement
+on missed hangup, membership revocation, and feature disable; unknown creation
+expires at its saved grace deadline without another provider call. Server types
+pass after fixing the database projection of the internal runtime generation.
+The startup wiring regression failed before removal. This is a checkpoint only:
+full producer, lifecycle, race, backlog, and consumer evidence is still required.
+
+Receiver #17572 has Greptile 5/5 and no failed checks, but Paperclip Review 4/5
+requests suppressing rediscovery after discovery-initiated stops. Its optional
+full-refresh coalescing observation will also be addressed in the owning parent
+before this branch is published. Preserve all unfinished voice changes in this
+commit while repairing that parent.
