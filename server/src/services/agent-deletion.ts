@@ -1,3 +1,4 @@
+import { notifyDirectoryCleanup } from "./directory-cleanup-notifications.js";
 import { notifyInstructionCommit } from "./instruction-commit-notifications.js";
 import { notifyScheduledRetryCancellation } from "./scheduled-retry-cancellation-notifications.js";
 import { and, eq, or, sql } from "drizzle-orm";
@@ -46,6 +47,7 @@ export async function deleteAgentDependencies(tx: Db, companyId: string, id: str
   await tx.delete(issueComments).where(eq(issueComments.authorAgentId, id));
   await notifyScheduledRetryCancellation(tx, { companyId: companyId });
   await notifyInstructionCommit(tx, { companyId: companyId });
+  await notifyDirectoryCleanup(tx, { companyId: companyId });
   await tx.delete(heartbeatRuns).where(eq(heartbeatRuns.agentId, id));
   await tx.delete(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, id));
   await tx.delete(agentApiKeys).where(eq(agentApiKeys.agentId, id));

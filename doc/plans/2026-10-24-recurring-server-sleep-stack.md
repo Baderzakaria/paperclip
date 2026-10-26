@@ -2118,3 +2118,19 @@ startup/instruction-release wiring passes 64 (184 distinct tests across these
 selections). Workspace types/build pass. Fresh remote gates remain required.
 See the instruction recovery audit for producer coverage and all failed attempts.
 Earlier stack CI/review findings and final master reconciliation remain outstanding.
+
+## Slice 40 remote acceptance and slice 41 directory cleanup
+
+Captured instruction commits (#17670) at
+`03e1b3cd7270c7438a47562b170b3a9b2dbf112e` now have all 53 checks successful,
+fresh Greptile 5/5, and zero unresolved threads. The PR remains unmerged.
+
+Slice 41 owns post-save directory release only. It reconstructs existing cleanup
+receipts, signals relevant copy writes and invalidations, and delegates deletion
+to the existing directory owner. It schedules saved retry times and leaves
+settled history quiet. See [directory cleanup audit](2026-10-25-directory-cleanup-sleep-audit.md)
+for producer coverage, lifecycle, index plan, failure history and local tests.
+Local verification currently has 200 passing cases across directory, startup,
+captured instruction and heartbeat release suites, plus workspace typecheck/build.
+Remote acceptance is pending. Stopped collection and the remaining
+original inventory and older stack review/CI gates remain outstanding.

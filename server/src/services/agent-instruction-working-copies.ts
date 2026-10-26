@@ -1,3 +1,4 @@
+import { notifyDirectoryCleanup, type DirectoryCleanupScope } from "./directory-cleanup-notifications.js";
 import { notifyInstructionCommit, type InstructionCommitScope } from "./instruction-commit-notifications.js";
 import { DELIVERY_QUEUES } from "./delivery-work-notifications.js";
 import type { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
@@ -8,7 +9,7 @@ import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { and, asc, desc, eq, gt, inArray, lte, or, isNull, isNotNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, lte, or, isNull, sql } from "drizzle-orm";
 import { agents, heartbeatRuns, agentInstructionWorkingCopies as copies, type Db } from "@paperclipai/db";
 import {
   prepareAdapterExecutionTargetRuntime,
@@ -78,10 +79,12 @@ export function agentInstructionWorkingCopyService(db: Db, options: { environmen
     return row ?? null;
   }
   async function tryPatch(row: Copy, values: Partial<typeof copies.$inferInsert>, requireDue = false) {
+    const signalsCleanup = directoryCleanupEntry(row) !== null || directoryCleanupEntry({ ...row, ...values }) !== null;
     const signalsCommit = row.state === "pending_commit" || values.state === "pending_commit";
     const write = async (tx: Db) => {
       if (signalsCommit)
         await notifyInstructionCommit(tx, { companyId: row.companyId, runId: row.runId });
+      if (signalsCleanup) await notifyDirectoryCleanup(tx, { companyId: row.companyId, runId: row.runId });
       const [updated] = await tx.update(copies).set({ ...values, updatedAt: new Date() }).where(and(
         scope(row.companyId, row.runId), eq(copies.state, row.state), eq(copies.attempts, row.attempts), eq(copies.baseHash, row.baseHash),
         sql`${copies.receipt}->>'retainedByRunId' IS NOT DISTINCT FROM ${typeof row.receipt?.retainedByRunId === "string" ? row.receipt.retainedByRunId : null}`,
@@ -89,7 +92,7 @@ export function agentInstructionWorkingCopyService(db: Db, options: { environmen
       )).returning();
       return updated;
     };
-    return signalsCommit ? db.transaction(tx => write(tx as unknown as Db)) : write(db);
+    return signalsCommit || signalsCleanup ? db.transaction(tx => write(tx as unknown as Db)) : write(db);
   }
   async function patch(row: Copy, values: Partial<typeof copies.$inferInsert>) {
     const updated = await tryPatch(row, values);
@@ -315,7 +318,7 @@ export function agentInstructionWorkingCopyService(db: Db, options: { environmen
   }
 
   /** Restarts can retry persisted bytes without touching a live filesystem or launching a model. */
-  async function recoverCaptured(options: { skipCommit?: boolean } = {}) {
+  async function recoverCaptured(options: { skipCommit?: boolean; skipDirectoryCleanup?: boolean } = {}) {
     const pending = options.skipCommit ? [] : await db.select().from(copies).where(and(
       eq(copies.state, "pending_commit"),
       or(isNull(copies.nextAttemptAt), lte(copies.nextAttemptAt, new Date())),
@@ -324,13 +327,16 @@ export function agentInstructionWorkingCopyService(db: Db, options: { environmen
     for (const row of pending) await recoverCommit(commitEntry(row)!, () => true);
     // A crash between a durable save and release must not retain run snapshots
     // forever. Only discard copies with recorded stop proof and a terminal receipt.
-    const cleanup = await db.select().from(copies).where(and(
-      inArray(copies.state, [...completed, "unavailable"]), isNotNull(copies.processStoppedAt),
-      sql`${copies.receipt}->>'schema' = 'paperclip.agent-files.v1'`,
-      or(sql`${copies.receipt} ? 'baseline'`, sql`${copies.receipt}->>'cleanupPending' = 'true'`),
-      or(isNull(copies.nextAttemptAt), lte(copies.nextAttemptAt, new Date())),
-    )).orderBy(asc(copies.updatedAt)).limit(20);
-    for (const row of cleanup) await recoverDirectoryCleanup(row, () => directories.release(row));
+    if (!options.skipDirectoryCleanup) {
+      const cleanup = await db.select({ id: copies.runId, companyId: copies.companyId,
+        dueAt: copies.nextAttemptAt }).from(copies).where(and(directoryCleanupPredicate(),
+        or(isNull(copies.nextAttemptAt), lte(copies.nextAttemptAt, new Date())),
+      )).orderBy(asc(copies.updatedAt)).limit(20);
+      for (const row of cleanup) {
+        try { await recoverDirectoryRelease({ ...row, dueAt: row.dueAt?.getTime() ?? 0 }, () => true); }
+        catch (error) { logger.warn({ err: error, runId: row.id }, "Agent file cleanup deferred; save receipt unchanged"); }
+      }
+    }
     return pending.length;
   }
 
@@ -384,6 +390,62 @@ export function agentInstructionWorkingCopyService(db: Db, options: { environmen
       }
     }
     return pending.length;
+  }
+
+  type DirectoryCleanupEntry = { id: string; companyId: string; dueAt: number };
+  function directoryCleanupEntry(row: Copy | null): DirectoryCleanupEntry | null {
+    return row && ["saved", "unchanged", "resolved", "unavailable"].includes(row.state)
+      && row.processStoppedAt && isAgentDirectoryCopy(row) && !row.receipt?.retainedByRunId
+      && row.receipt?.cleanupPending !== false
+      && (Object.hasOwn(row.receipt!, "baseline") || row.receipt?.cleanupPending === true)
+      ? { id: row.runId, companyId: row.companyId, dueAt: row.nextAttemptAt?.getTime() ?? 0 } : null;
+  }
+  function directoryCleanupPredicate() {
+    return sql`${copies.state} IN ('saved', 'unchanged', 'resolved', 'unavailable')
+      AND ${copies.processStoppedAt} IS NOT NULL
+      AND ${copies.receipt}->>'schema' = 'paperclip.agent-files.v1'
+      AND coalesce(${copies.receipt}->>'retainedByRunId', '') = ''
+      AND ${copies.receipt}->>'cleanupPending' IS DISTINCT FROM 'false'
+      AND (${copies.receipt} ? 'baseline' OR ${copies.receipt}->>'cleanupPending' = 'true')`;
+  }
+  async function loadDirectoryCleanup(scope: DirectoryCleanupScope | undefined, admitted: () => boolean) {
+    const entries: DirectoryCleanupEntry[] = [];
+    let cursor: string | undefined;
+    while (admitted()) {
+      const rows = await db.select({ id: copies.runId, companyId: copies.companyId, nextAttemptAt: copies.nextAttemptAt })
+        .from(copies).where(and(directoryCleanupPredicate(),
+          scope ? eq(copies.companyId, scope.companyId) : undefined,
+          scope?.runId ? eq(copies.runId, scope.runId) : undefined,
+          cursor ? gt(copies.runId, cursor) : undefined,
+        )).orderBy(asc(copies.runId)).limit(100);
+      for (const row of rows) entries.push({ id: row.id, companyId: row.companyId, dueAt: row.nextAttemptAt?.getTime() ?? 0 });
+      if (rows.length < 100) return entries;
+      cursor = rows[rows.length - 1].id;
+    }
+    throw new Error("Directory cleanup reconstruction stopped");
+  }
+  async function recoverDirectoryRelease(entry: DirectoryCleanupEntry, admitted: () => boolean) {
+    const row = await get(entry.companyId, entry.id);
+    const current = directoryCleanupEntry(row);
+    if (!row || !current || current.dueAt > Date.now()) return current;
+    if (!admitted()) throw new Error("Directory cleanup recovery stopped");
+    const claimed = await tryPatch(row, { nextAttemptAt: new Date(Date.now() + 30_000) }, true);
+    if (claimed) await directories.release(claimed);
+    const remaining = directoryCleanupEntry(await get(entry.companyId, entry.id));
+    if (remaining && remaining.dueAt <= Date.now()) throw new Error("Directory cleanup remains unresolved without a future retry");
+    return remaining;
+  }
+  function registerDirectoryCleanupWork(coordinator: ReturnType<typeof createDeliveryWorkCoordinator>,
+    canRun: () => boolean, canRecover: () => Promise<boolean>) {
+    return registerScopedDeadlineWork(coordinator, {
+      queue: DELIVERY_QUEUES.directoryCleanup,
+      batchSize: 20,
+      decodeScope: (hint: string): DirectoryCleanupScope | undefined => hint === "*" ? undefined : JSON.parse(hint),
+      matches: (entry: DirectoryCleanupEntry, scope?: DirectoryCleanupScope) => !scope ||
+        entry.companyId === scope.companyId && (!scope.runId || entry.id === scope.runId),
+      load: async (scope, signal) => await canRecover() ? loadDirectoryCleanup(scope, () => canRun() && !signal?.aborted) : [],
+      check: async (entry, signal) => await canRecover() ? recoverDirectoryRelease(entry, () => canRun() && !signal?.aborted) : null,
+    }, canRun);
   }
 
   type CommitEntry = { id: string; companyId: string; dueAt: number };
@@ -481,5 +543,5 @@ export function agentInstructionWorkingCopyService(db: Db, options: { environmen
     }
     return row;
   }
-  return { registerCapturedCommitWork, prepare, checkpointWarm, canReuseWarm: directories.canReuse, adopt, reportRetirementUnconfirmed, get, hasChanges, acknowledgeExplicitSave, collectStopped, recoverCaptured, recoverStopped, list, resolve, reportUnavailable, release };
+  return { registerDirectoryCleanupWork, registerCapturedCommitWork, prepare, checkpointWarm, canReuseWarm: directories.canReuse, adopt, reportRetirementUnconfirmed, get, hasChanges, acknowledgeExplicitSave, collectStopped, recoverCaptured, recoverStopped, list, resolve, reportUnavailable, release };
 }
