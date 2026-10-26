@@ -2084,3 +2084,15 @@ real worker and owner acceptance passed, but startup wiring coverage was missing
 from the local selection. The double now exposes the method, and new assertions
 verify scheduler enablement and periodic-reaper exclusion. All 48 startup tests
 pass in 5.34 seconds. This is a test-only repair; fresh head CI/review is required.
+
+Slice 39 is draft [#17667](https://github.com/paperclipai/paperclip/pull/17667),
+initial head `bd490ee50b303187f0ae6f8fe2aa95477d66a40f`, targeting slice 38.
+Its initial review was 5/5. The startup repair is now pushed at `ecef7776a4`;
+fresh CI and review are required. No merge or full-stack acceptance is claimed.
+
+The instruction-copy audit splits the apparent two reaper calls into three
+reasons: stopped collection, captured-byte commit, and post-save directory release.
+Slice 40 will own captured-byte commit only. See
+[instruction recovery audit](2026-10-25-instruction-recovery-sleep-audit.md).
+Existing instruction-copy and directory suites pass 20 and 87 tests respectively
+on separate external PostgreSQL databases before any production behavior changes.

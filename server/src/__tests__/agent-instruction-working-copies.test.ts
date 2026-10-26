@@ -1,3 +1,4 @@
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import fs from "node:fs/promises";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
@@ -17,6 +18,8 @@ import { agentInstructionWorkingCopyService } from "../services/agent-instructio
 import { appendHeartbeatRunEvent } from "../services/heartbeat-run-events.js";
 import { resolveManagedInstructionsRoot } from "../services/agent-instructions.js";
 import { buildNativeRuntimeContext } from "../services/native-runtime/runtime-context.js";
+
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_INSTRUCTION_COPY_TEST_DATABASE_URL");
 
 describe("registered run instruction copies", () => {
   let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
@@ -38,13 +41,14 @@ describe("registered run instruction copies", () => {
   beforeAll(async () => {
     home = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "instruction-working-copies-")));
     process.env.PAPERCLIP_HOME = home;
-    database = await startEmbeddedPostgresTestDatabase("instruction-copies-db-");
-    db = createDb(database.connectionString);
+    if (!external) database = await startEmbeddedPostgresTestDatabase("instruction-copies-db-");
+    db = createDb(external ?? database.connectionString);
     copies = agentInstructionWorkingCopyService(db);
     revisions = agentInstructionRevisionService(db);
   }, 90_000);
   afterAll(async () => {
     if (previousHome === undefined) delete process.env.PAPERCLIP_HOME; else process.env.PAPERCLIP_HOME = previousHome;
+    await db?.$client.end({ timeout: 1 });
     await database?.cleanup();
     if (home) {
       const writable = async (dir: string) => {
