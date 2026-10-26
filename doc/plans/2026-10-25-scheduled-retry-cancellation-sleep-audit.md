@@ -131,3 +131,13 @@ unfinished. This slice and its parent stack are not authorized for merge.
 Final combined owner acceptance passed all 164 tests in five suites, with no
 skips, in 41.14 seconds using separate dispatch and recovery databases. Together
 with the 30 retry-route tests this covers 194 tests. Remote PR gates remain pending.
+
+
+## Startup CI fixture repair
+
+Initial head bd490ee50b failed server shard 4/12: eleven tests in the startup
+suite used a heartbeat test double without the new registration method. The
+real worker and owner acceptance passed, but startup wiring coverage was missing
+from the local selection. The double now exposes the method, and new assertions
+verify scheduler enablement and periodic-reaper exclusion. All 48 startup tests
+pass in 5.34 seconds. This is a test-only repair; fresh head CI/review is required.
