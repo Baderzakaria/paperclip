@@ -703,6 +703,31 @@ describe("issue update comment wakeups", () => {
     );
   });
 
+  it("does not wake the assignee when a board-authenticated comment carries the issue execution run", async () => {
+    const existing = makeIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+      status: "in_progress",
+      executionRunId: SOURCE_RUN_ID,
+    });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-owning-run",
+      issueId: existing.id,
+      companyId: existing.companyId,
+      body: "Completed the current heartbeat work.",
+    });
+
+    const res = await request(await createApp())
+      .post(`/api/issues/${existing.id}/comments`)
+      .set("X-Paperclip-Run-Id", SOURCE_RUN_ID)
+      .send({ body: "Completed the current heartbeat work." });
+
+    expect(res.status).toBe(201);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
   it("retains the Slack session key when reopening strips the read-only conversation projection", async () => {
     const existing = makeIssue({ externalConversationState: "active", status: "done", assigneeAgentId: ASSIGNEE_AGENT_ID });
     const updated = makeIssue({ status: "todo", assigneeAgentId: ASSIGNEE_AGENT_ID });

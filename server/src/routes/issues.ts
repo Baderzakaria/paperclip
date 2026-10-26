@@ -2175,6 +2175,19 @@ function isClosedIssueStatus(
   return status === "done" || status === "cancelled";
 }
 
+function isCommentFromIssueOwningRun(input: {
+  actorRunId: string | null | undefined;
+  checkoutRunId: string | null | undefined;
+  executionRunId: string | null | undefined;
+}) {
+  return (
+    typeof input.actorRunId === "string" &&
+    input.actorRunId.length > 0 &&
+    (input.actorRunId === input.checkoutRunId ||
+      input.actorRunId === input.executionRunId)
+  );
+}
+
 function shouldImplicitlyMoveCommentedIssueToTodo(input: {
   issueStatus: string | null | undefined;
   assigneeAgentId: string | null | undefined;
@@ -2197,12 +2210,7 @@ function shouldImplicitlyMoveCommentedIssueToTodo(input: {
   // then posts a follow-up comment in the same run silently reopens it.
   // Suppress the implicit move whenever the comment's source run matches the
   // issue's checkout/execution run.
-  if (
-    typeof input.actorRunId === "string" &&
-    input.actorRunId.length > 0 &&
-    (input.actorRunId === input.checkoutRunId ||
-      input.actorRunId === input.executionRunId)
-  ) {
+  if (isCommentFromIssueOwningRun(input)) {
     return false;
   }
   // Only human comments should implicitly reopen finished work.
@@ -15504,7 +15512,12 @@ export function issueRoutes(
       }
 
       const commentIsFromAssigneeRun = comment
-        ? await commentWasCreatedByAssigneeRun(comment, issue.assigneeAgentId)
+        ? (await commentWasCreatedByAssigneeRun(comment, issue.assigneeAgentId)) ||
+          isCommentFromIssueOwningRun({
+            actorRunId: actor.runId,
+            checkoutRunId: issue.checkoutRunId,
+            executionRunId: issue.executionRunId,
+          })
         : false;
 
       const assigneeChanged =
@@ -19041,10 +19054,16 @@ export function issueRoutes(
         }
       }
 
-      const commentIsFromAssigneeRun = await commentWasCreatedByAssigneeRun(
-        comment,
-        currentIssue.assigneeAgentId,
-      );
+      const commentIsFromAssigneeRun =
+        (await commentWasCreatedByAssigneeRun(
+          comment,
+          currentIssue.assigneeAgentId,
+        )) ||
+        isCommentFromIssueOwningRun({
+          actorRunId: actor.runId,
+          checkoutRunId: currentIssue.checkoutRunId,
+          executionRunId: currentIssue.executionRunId,
+        });
 
       await revalidateActiveSourceRecoveryAfterCommittedWrite({
         issue: currentIssue,

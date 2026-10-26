@@ -1,0 +1,7 @@
+Command:
+pnpm exec vitest run server/src/__tests__/issue-update-comment-wakeup-routes.test.ts -t "does not wake the assignee for a board-authored comment from the issue execution run" --testTimeout 30000
+
+Result: 1 passed, 7 skipped.
+
+The focused test needs the longer timeout because the existing route mock path
+can exceed Vitest's five-second default while asynchronous route cleanup settles.

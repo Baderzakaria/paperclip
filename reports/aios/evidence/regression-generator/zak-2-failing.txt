@@ -1,0 +1,6 @@
+Command:
+pnpm exec vitest run server/src/__tests__/issue-update-comment-wakeup-routes.test.ts
+
+Before the fix, the new regression test failed because the board-authenticated
+comment carrying the issue execution run ID still invoked heartbeat.wakeup with
+reason "issue_commented" for the assigned agent.

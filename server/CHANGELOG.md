@@ -5,6 +5,8 @@
 ### Patch Changes
 
 - Bound full-tree workspace Git scans with process-wide concurrency, queue, timeout, cancellation, coalescing, and short-lived changed-file caching. Saturated or timed-out changed-file requests now return a retryable degraded response, and hidden file-browser panels no longer initiate scans.
+- Prevent local-CLI comments submitted under board authentication from waking the
+  same issue assignee when their run owns the issue checkout or execution lock.
 
 ## 0.3.1
 
