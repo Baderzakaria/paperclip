@@ -1,7 +1,10 @@
 Command:
-pnpm exec vitest run server/src/__tests__/issue-update-comment-wakeup-routes.test.ts -t "does not wake the assignee for a board-authored comment from the issue execution run" --testTimeout 30000
+pnpm exec vitest run server/src/__tests__/issue-update-comment-wakeup-routes.test.ts -t "does not wake the assignee when a board-authenticated comment carries the issue execution run" --testTimeout 30000
 
-Result: 1 passed, 7 skipped.
+Result: 1 passed, 36 skipped (37 tests in file; re-verified on rebased head
+1ce558835, 2026-10-26). The previous recording named a `-t` filter that did not
+match the test title, so it could not demonstrate the claimed result; this
+recording uses the exact test name.
 
 The focused test needs the longer timeout because the existing route mock path
 can exceed Vitest's five-second default while asynchronous route cleanup settles.
