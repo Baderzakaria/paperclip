@@ -123,23 +123,37 @@ export const expandedMcpCapabilities: Capability[] = [
           input.adapterConfig = applyMcpReasoningEffort(String(input.adapterType ?? "process"), tuning, tuning);
         } catch (error) {
           const status = error instanceof HttpError ? error.status : 422;
-          throw new McpApiError(status, { code: "MCP_REASONING_EFFORT_UNSUPPORTED" });
+          const supported = rows(object(error instanceof HttpError ? error.details : null).supportedReasoningEfforts).filter(v => typeof v === "string");
+          throw new McpApiError(status, { code: "MCP_REASONING_EFFORT_UNSUPPORTED", ...(supported.length ? { supportedReasoningEfforts: supported } : {}) });
         }
       }
       const hire = object(await api(p, "POST", `/companies/${pathId(a.companyId)}/agent-hires`, input));
       const created = object(hire.agent);
-      const settled = created.status === "idle"
-        ? object(await api(p, "PATCH", `/agents/${pathId(created.id)}`, { status: "paused" }))
-        : created;
+      let settled = created;
+      if (created.status === "idle") {
+        // The dedicated pause route is authorized by the same agents:create grant
+        // as the hire route and also cancels in-flight heartbeat work. A generic
+        // PATCH would require a separate agents:configure grant, so a caller
+        // holding only agents:create would be left with a runnable idle agent.
+        try {
+          settled = object(await api(p, "POST", `/agents/${pathId(created.id)}/pause`));
+        } catch (error) {
+          const status = error instanceof McpApiError ? error.status : 500;
+          throw new McpApiError(status, { code: "MCP_AGENT_PAUSE_FAILED", agentId: created.id ?? null });
+        }
+      }
       const approval = object(hire.approval);
       return {
         agent: agentOutput(settled),
+        configurationWarnings: rows(created.configurationWarnings),
         approval: approval.id ? { ...pick(approval, ["id", "type", "status"]), url: origin + "/" + pathId(p.company.issuePrefix) + "/approvals/" + pathId(approval.id) } : null,
         url: origin + "/" + pathId(p.company.issuePrefix) + "/agents/" + pathId(settled.urlKey ?? settled.id),
         state: settled.status === "pending_approval" ? "pending_approval" : settled.status === "paused" ? "paused" : settled.status,
         note: settled.status === "pending_approval"
           ? "This company requires board approval for new agents. The board must approve the hire in Paperclip before the agent can run."
-          : "The agent is paused and cannot run. Resume it in Paperclip when it should start work.",
+          : settled.status === "paused"
+            ? "The agent is paused and cannot run. Resume it in Paperclip when it should start work."
+            : `The agent was created with status "${String(settled.status)}". Check its state in Paperclip before relying on it.`,
       };
     },
   },

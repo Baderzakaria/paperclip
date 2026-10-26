@@ -203,7 +203,9 @@ export function createPublicMcpExecutor(db: Db, oauth: PublicMcpOAuth, api: ApiD
         return result;
       }
       await db.update(mcpMutationReceipts).set({ status: "unknown" }).where(eq(mcpMutationReceipts.id, receipt.id));
-      return { outcome: "unknown", requestId: key.requestId, message: "Paperclip did not confirm this action. Inspect the task and comments before another action; do not retry with a new requestId." };
+      // Capability-provided details (e.g. a partially-created agent id) help the
+      // caller reconcile an uncertain outcome instead of duplicating a mutation.
+      return { outcome: "unknown", requestId: key.requestId, message: "Paperclip did not confirm this action. Inspect the task and comments before another action; do not retry with a new requestId.", ...(error instanceof McpApiError ? error.details : {}) };
     }
   };
 }

@@ -852,6 +852,25 @@ describe.skipIf(!support.supported)("public MCP OAuth and tool boundary", () => 
     } finally { await f.cleanup(); }
   });
 
+  it("pauses the new agent when the caller holds only the agents:create grant", async () => {
+    const f = await expandedFixture(true);
+    try {
+      // The hire route needs agents:create; the pause must not require a second,
+      // independently-granted agents:configure permission or the agent is left runnable.
+      await db.delete(principalPermissionGrants).where(and(
+        eq(principalPermissionGrants.companyId, f.company.id),
+        eq(principalPermissionGrants.principalId, f.actor.userId!),
+        eq(principalPermissionGrants.permissionKey, "agents:configure"),
+      ));
+      await db.insert(principalPermissionGrants).values({ companyId: f.company.id, principalType: "user", principalId: f.actor.userId!, permissionKey: "agents:create" });
+      const result = await f.call("paperclip_create_agent", { requestId: randomUUID(), agent: { name: "Create Only", adapterType: "process" } });
+      expect(result).toMatchObject({ state: "paused", approval: null, agent: { status: "paused" } });
+      const agentId = (result.agent as { id: string }).id;
+      expect((await db.select().from(agents).where(eq(agents.id, agentId)))[0]?.status).toBe("paused");
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId))).toHaveLength(0);
+    } finally { await f.cleanup(); }
+  });
+
   it("requires configure consent and the authorized company for registration, and honors hire approval policy", async () => {
     const denied = await expandedFixture();
     try {
