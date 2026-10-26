@@ -816,6 +816,67 @@ describe.skipIf(!support.supported)("public MCP OAuth and tool boundary", () => 
     } finally { await f.cleanup(); }
   });
 
+  it("registers a paused agent without starting execution, replays receipts and rejects unsafe fields", async () => {
+    const f = await expandedFixture(true);
+    try {
+      await db.insert(principalPermissionGrants).values({ companyId: f.company.id, principalType: "user", principalId: f.actor.userId!, permissionKey: "agents:create" });
+      const args = { requestId: randomUUID(), agent: { name: "Roster Writer", role: "engineer", adapterType: "process", budgetMonthlyCents: 500 } };
+      const first = await f.call("paperclip_create_agent", args);
+      expect(first).toMatchObject({ state: "paused", approval: null, agent: { companyId: f.company.id, name: "Roster Writer", status: "paused", budgetMonthlyCents: 500 } });
+      const agentId = (first.agent as { id: string }).id;
+      const stored = (await db.select().from(agents).where(eq(agents.id, agentId)))[0]!;
+      expect(stored.status).toBe("paused");
+      expect(stored.spentMonthlyCents).toBe(0);
+      // Registration starts no background execution or billing.
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId))).toHaveLength(0);
+      // The tool result carries no adapter environment, credentials or secrets.
+      const serialized = JSON.stringify(first);
+      for (const marker of ["env", "secret", "token", "apiKey"]) expect(serialized).not.toContain(marker);
+      // Replaying the same requestId and arguments returns the stored result, not a second agent.
+      expect(await f.call("paperclip_create_agent", args)).toEqual(first);
+      expect(await db.select().from(agents).where(and(eq(agents.companyId, f.company.id), eq(agents.name, "Roster Writer")))).toHaveLength(1);
+      // A changed payload under the same requestId is rejected rather than re-executed.
+      await expect(f.call("paperclip_create_agent", { ...args, agent: { ...args.agent, name: "Different" } })).rejects.toThrow("different arguments");
+      // A nonexistent reporting line is rejected by domain validation.
+      expect(await f.call("paperclip_create_agent", { requestId: randomUUID(), agent: { name: "Orphan", adapterType: "process", reportsTo: randomUUID() } })).toMatchObject({ outcome: "rejected" });
+      // Credentials, environment and host commands never fit the hire schema.
+      for (const extra of [{ adapterConfig: { env: { KEY: "v" } } }, { adapterConfig: { command: "evil" } }, { permissions: { inheritCompanyTools: true } }]) {
+        await expect(f.call("paperclip_create_agent", { requestId: randomUUID(), agent: { name: "Unsafe", adapterType: "process", ...extra } })).rejects.toThrow();
+      }
+      // The hire is readable through the existing read tools and leaves audit activity.
+      expect(await f.call("paperclip_get_agent", { agentId })).toHaveProperty("agent.status", "paused");
+      const activity = await db.select().from(activityLog).where(and(eq(activityLog.companyId, f.company.id), eq(activityLog.entityId, agentId)));
+      expect(activity.map(row => row.action)).toContain("agent.hire_created");
+      const discovered = (await f.call("paperclip_search_api", { query: "create agent" })).operations as { operationId: string; scope: string }[];
+      expect(discovered.find(op => op.operationId === "paperclip_create_agent")).toMatchObject({ scope: "paperclip:configure" });
+    } finally { await f.cleanup(); }
+  });
+
+  it("requires configure consent and the authorized company for registration, and honors hire approval policy", async () => {
+    const denied = await expandedFixture();
+    try {
+      await expect(denied.call("paperclip_create_agent", { requestId: randomUUID(), agent: { name: "Nope", adapterType: "process" } })).rejects.toThrow("paperclip:configure");
+    } finally { await denied.cleanup(); }
+    const viewer = await fixture("viewer", false);
+    const api = express.Router(); api.use(boardMutationGuard()); api.use(agentRoutes(db));
+    const execute = createPublicMcpExecutor(db, oauth, createMcpApiDispatch(api));
+    await expect(execute(viewer.tokens.access_token, "paperclip_create_agent", { companyId: viewer.company.id, requestId: randomUUID(), agent: { name: "Nope", adapterType: "process" } })).rejects.toThrow("paperclip:configure");
+    const f = await expandedFixture(true);
+    try {
+      await db.insert(principalPermissionGrants).values({ companyId: f.company.id, principalType: "user", principalId: f.actor.userId!, permissionKey: "agents:create" });
+      const other = await fixture();
+      await expect(execute(f.tokens.access_token, "paperclip_create_agent", { companyId: other.company.id, requestId: randomUUID(), agent: { name: "Nope", adapterType: "process" } })).rejects.toThrow("Company does not match");
+      await db.update(companies).set({ requireBoardApprovalForNewAgents: true }).where(eq(companies.id, f.company.id));
+      const result = await f.call("paperclip_create_agent", { requestId: randomUUID(), agent: { name: "Queued", adapterType: "process" } });
+      expect(result).toMatchObject({ state: "pending_approval", agent: { status: "pending_approval" }, approval: { type: "hire_agent", status: "pending" } });
+      const agentId = (result.agent as { id: string }).id;
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId))).toHaveLength(0);
+      const stored = (await db.select().from(agents).where(eq(agents.id, agentId)))[0]!;
+      expect(stored.status).toBe("pending_approval");
+      expect(stored.spentMonthlyCents).toBe(0);
+    } finally { await f.cleanup(); }
+  });
+
   it("rejects unchecked legacy prompt edits through named and generic operations", async () => {
     const f = await expandedFixture(true);
     try {
