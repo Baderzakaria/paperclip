@@ -1,3 +1,4 @@
+import { notifyScheduledRetryCancellation } from "../../../services/scheduled-retry-cancellation-notifications.js";
 import { hasConversationContinuationPolicy } from "../../../services/conversation-continuation.js";
 import { getExecutionBlocker } from "../../../services/execution-blocker.js";
 import { validateReconstructedWorkspaceDispatch } from "../../../services/native-runtime/native-workspace-reconstruction.js";
@@ -666,6 +667,7 @@ export function createPostgresRunDispatchAdapter(
     | { applied: true; run: HeartbeatRun; postCommitEffects: PostCommitEffect[] }
     | { applied: false }
   > {
+    await notifyScheduledRetryCancellation(tx, { companyId: input.companyId, runId: input.runId });
     await notifyChatRunMilestones(tx, { companyId: input.companyId, issueId: issueId ?? undefined });
     const [row] = await tx
       .update(heartbeatRuns)
@@ -708,6 +710,7 @@ export function createPostgresRunDispatchAdapter(
     tx: Db,
     input: CancelSuppressedRetryInput,
   ): Promise<CancelSuppressedRetryResult> {
+    await notifyScheduledRetryCancellation(tx, { companyId: input.companyId, runId: input.runId });
     await notifyChatRunMilestones(tx, { companyId: input.companyId, issueId: input.issueId ?? undefined });
     const [row] = await tx
       .update(heartbeatRuns)
@@ -1085,6 +1088,7 @@ export function createPostgresRunDispatchAdapter(
     const previousWait = parseObject(run.resultJson?.executionWait);
     const scheduledRetryAt = new Date(now.getTime() + 30_000);
     const executionWait = { issueId, runId: blocker.runId, cause: blocker.cause };
+    await notifyScheduledRetryCancellation(tx, { companyId: run.companyId, runId: run.id });
     const [waiting] = await tx.update(heartbeatRuns)
       .set({
         status: "scheduled_retry",

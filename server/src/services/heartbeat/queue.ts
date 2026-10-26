@@ -1,3 +1,4 @@
+import { notifyScheduledRetryCancellation } from "../scheduled-retry-cancellation-notifications.js";
 import { notifyChatResponseAvailability } from "../chat-response-availability.js";
 import { notifyChatInboundWakeNotices } from "../chat-inbound-wake-notice-notifications.js";
 import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js";
@@ -3440,6 +3441,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             const reason = issueCancelled
               ? "Cancelled because the issue was cancelled before the scheduled retry became due"
               : "Cancelled because the issue was reassigned before the scheduled retry became due";
+            await notifyScheduledRetryCancellation(tx, { companyId: scheduledRun.companyId, runId: scheduledRun.id });
             await notifyChatRunMilestones(tx, { companyId: scheduledRun.companyId, issueId: issue.id });
             const cancelled = await tx
               .update(heartbeatRuns)

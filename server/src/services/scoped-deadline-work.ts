@@ -32,6 +32,7 @@ export function registerScopedDeadlineWork<Entry extends ScheduledEntry, Scope>(
     return [...dirty].map(hint => { try { return options.decodeScope(hint); } catch { return undefined; } });
   }
   function next() {
+    if (!canRun()) return dirty.size > 0 || entries.size > 0 ? Date.now() + 30_000 : null;
     let nextAt: number | null = null;
     const take = (at: number) => { nextAt = nextAt === null ? at : Math.min(nextAt, at); };
     for (const hint of dirty.has("*") ? ["*"] : dirty) take(Math.max(earliest, scopeFailures.get(hint)?.retryAt ?? 0));

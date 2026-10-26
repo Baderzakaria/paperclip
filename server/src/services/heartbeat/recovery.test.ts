@@ -1,3 +1,4 @@
+import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
 import { randomUUID } from "node:crypto";
 import type { Db } from "@paperclipai/db";
 import { agents, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, environments, environmentLeases, heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations } from "@paperclipai/db";
@@ -166,7 +167,8 @@ describe("heartbeat recovery module callbacks", () => {
   });
 });
 
-const support = await getEmbeddedPostgresTestSupport();
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_RECOVERY_TEST_DATABASE_URL");
+const support = external ? { supported: true, reason: undefined } : await getEmbeddedPostgresTestSupport();
 const describePostgres = support.supported ? describe : describe.skip;
 if (!support.supported) console.warn(`Skipping recovery module database tests: ${support.reason}`);
 
@@ -174,10 +176,10 @@ describePostgres("heartbeat recovery module ownership", () => {
   let db: Db;
   let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   beforeAll(async () => {
-    database = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-recovery-module-");
-    db = createDb(database.connectionString);
+    if (!external) database = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-recovery-module-");
+    db = createDb(external ?? database.connectionString);
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
-  afterAll(async () => { await database?.cleanup(); });
+  afterAll(async () => { await db?.$client.end(); await database?.cleanup(); });
 
   async function seedRun() {
     const companyId = randomUUID(), agentId = randomUUID(), runId = randomUUID(), issueId = randomUUID();
@@ -394,7 +396,7 @@ describePostgres("heartbeat recovery module ownership", () => {
       const old = (await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id)))[0];
       await db.update(heartbeatRuns).set({ status: "interrupted", contextSnapshot: { issueId: f.run.issueId }, resultJson: { workspaceRestored: true } }).where(eq(heartbeatRuns.id, f.run.id));
       await finishLegacyShutdownWorkspaceSettlement(db, f.run);
-      const single = createDb(database.connectionString, { maxConnections: 1 });
+      const single = createDb(external ?? database.connectionString, { maxConnections: 1 });
       try { expect(await allowLegacyShutdownWorkspaceCleanup(single, old, new Date(Date.now() + 60_000))).toBe(true); }
       finally { await single.$client.end({ timeout: 1 }); }
       expect((await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id)))[0])

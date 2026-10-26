@@ -1,3 +1,4 @@
+import { notifyScheduledRetryCancellation } from "../scheduled-retry-cancellation-notifications.js";
 import { notifyChatInboundWakeNotices } from "../chat-inbound-wake-notice-notifications.js";
 import { notifyEnvironmentCleanup } from "../environment-cleanup-notifications.js";
 import { readTaskRetryIntent, reconcileTaskChatRetryReceipts } from "../task-retry.js";
@@ -1135,6 +1136,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
           startupCancellation: { requestedAt, beforeNativeSelection: currentRun.runtimeMode === "legacy" && !currentRun.runtimeModeResolvedAt
             && currentRun.executionStage === "preparing" && parseObject(currentRun.runnerProfileJson?.adapterDispatch).adapterType === "paperclip_runner" },
         } : {};
+        await notifyScheduledRetryCancellation(tx, { companyId: run!.companyId, runId });
         const [fenced] = await tx.update(heartbeatRuns).set({
           resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify({
             executionCancellation: { state: "requested", requestedAt }, ...guardedCancellation,
@@ -1219,6 +1221,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
     // additional durable fence before its existing cancellation path.
     if (!committedBudgetCancellation && (options.expectedStatus || options.budgetEnforcement || (!options.cancellationRequestId && (run.runtimeMode === "native" || (!run.runtimeModeResolvedAt && !running && !control))))) {
       const fence = async (tx: Db) => {
+        await notifyScheduledRetryCancellation(tx, { companyId: run!.companyId, runId });
         const [fenced] = await tx.update(heartbeatRuns).set({
           // Record handoff intent before native cancellation can finalize and release
           // the run. Only its audited stop acknowledgement suppresses recovery.
@@ -1233,7 +1236,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
       try {
         fenced = options.budgetEnforcement
           ? await withCurrentBudgetEnforcement(db, options.budgetEnforcement, fence)
-          : await fence(db);
+          : await db.transaction(tx => fence(tx as unknown as Db));
       } catch (error) {
         stopOwnership?.release();
         throw error;
@@ -1608,6 +1611,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
           inArray(heartbeatRuns.status, [...CANCELLABLE_HEARTBEAT_RUN_STATUSES]),
         )).then((rows) => rows.map((row) => row.id));
       if (!candidates.length) return [];
+      await notifyScheduledRetryCancellation(tx, { companyId: scope.companyId });
       return tx.update(heartbeatRuns).set({ resultJson: runCancellationFenceSql({
         cancellation: requestedRunCancellation({}, reason), errorCode: "cancelled", preserveCancellation: true, budgetEnforcement: scope,
       }) }).where(and(eq(heartbeatRuns.companyId, scope.companyId), inArray(heartbeatRuns.id, candidates),

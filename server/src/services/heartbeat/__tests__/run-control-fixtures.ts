@@ -1,3 +1,4 @@
+import { resolveExternalTestDatabaseUrl } from "../../../__tests__/helpers/external-test-database.js";
 import type { Db } from "@paperclipai/db";
 import { agents, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns } from "@paperclipai/db";
 import { sql } from "drizzle-orm";
@@ -63,15 +64,16 @@ export function callbacks(db: Db): TestCallbacks {
     failedProcessRunCancellations: new Map<string, { settled: Promise<void>; failed: boolean; error?: unknown }>(),
   } satisfies HeartbeatRunControlDependencies;
 }
-export const runControlPostgresSupport = await getEmbeddedPostgresTestSupport();
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_RUN_CONTROL_TEST_DATABASE_URL");
+export const runControlPostgresSupport = external ? { supported: true, reason: undefined } : await getEmbeddedPostgresTestSupport();
 if (!runControlPostgresSupport.supported) console.warn(`Skipping run-control database tests: ${runControlPostgresSupport.reason}`);
 
 export function setupRunControlDatabase(name: string, ready: (db: Db) => void) {
-  let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+  let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
   let db: Db;
   beforeAll(async () => {
-    database = await startEmbeddedPostgresTestDatabase(name);
-    db = createDb(database.connectionString);
+    if (!external) database = await startEmbeddedPostgresTestDatabase(name);
+    db = createDb(external ?? database!.connectionString);
     ready(db);
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
   afterAll(async () => {

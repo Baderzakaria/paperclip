@@ -1,3 +1,4 @@
+import { createScheduledRetryCancellationRecovery } from "./scheduled-retry-cancellation.js";
 import { pendingCleanupDeadlineSql } from "../environment-cleanup-state.js";
 import { writeEnvironmentCleanup } from "../environment-cleanup-notifications.js";
 import type { WorkspaceWorkers } from "../plugin-workspaces.js";
@@ -80,7 +81,6 @@ import {
 } from "../hot-restart.js";
 import { serverVersion } from "../../version.js";
 import { adapterExecutionControls, waitForAdapterStop } from "../adapter-execution-control.js";
-import { readRunCancellation } from "../run-cancellation.js";
 import { allowLegacyShutdownWorkspaceCleanup, beginLegacyShutdownWorkspaceSettlement, finishLegacyShutdownWorkspaceSettlement, maintainLegacyShutdownWorkspaceSettlement, sweepLegacyShutdownWorkspaceSettlements } from "../legacy-shutdown-workspace-settlement.js";
 
 import type { environmentService } from "../environments.js";
@@ -386,6 +386,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
     scheduleInteractionContinuationInfrastructureRetryIfEligible,
     startNextQueuedRunForAgent,
   } = dependencies;
+  const scheduledRetryCancellation = createScheduledRetryCancellationRecovery(db, cancelRunInternal);
 
   async function enqueueProcessLossRetry(
     run: typeof heartbeatRuns.$inferSelect,
@@ -1914,35 +1915,11 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
 
   let settledProcessesDiscovered = false;
 
-  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number }) {
+  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number; skipScheduledRetryCancellation?: boolean }) {
     await preserveCancelledNativeWorkspaces(db);
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
     const now = new Date();
-    // A parked retry has no executor to finish a cancellation after a restart
-    // or a failed status write. Consume its durable intent through normal run
-    // control; the guarded CAS and terminal settlement make competing sweeps
-    // safe, and dispatch cannot promote a fenced retry in the meantime.
-    const interruptedRetryCancellations = await db.select().from(heartbeatRuns)
-      .where(and(
-        eq(heartbeatRuns.status, "scheduled_retry"),
-        sql`jsonb_typeof(${heartbeatRuns.resultJson}->'startupCancellation') = 'object'`,
-      ))
-      .orderBy(asc(heartbeatRuns.updatedAt), asc(heartbeatRuns.id))
-      .limit(20);
-    for (const run of interruptedRetryCancellations) {
-      const cancellation = readRunCancellation(run.resultJson);
-      if (!cancellation?.expected) continue;
-      try {
-        await cancelRunInternal(run.id, cancellation.reason, {
-          expectedStatus: "scheduled_retry",
-          errorCode: readNonEmptyString(parseObject(run.resultJson?.startupCancellation).errorCode) ?? "cancelled",
-          resultJson: parseObject(run.resultJson),
-        });
-      } catch (error) {
-        // Leave the durable intent for the next bounded periodic sweep.
-        logger.warn({ err: error, runId: run.id }, "failed to finish interrupted retry cancellation");
-      }
-    }
+    if (!opts?.skipScheduledRetryCancellation) await scheduledRetryCancellation.sweep();
     // Recovery never launches a provider or infers stopped ownership from
     // terminal status. Uncaptured local copies require durable stop evidence.
     await instructionCopies.recoverStopped().catch(error => {
@@ -2551,6 +2528,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
   }
 
   return {
+    registerScheduledRetryCancellationWork: scheduledRetryCancellation.register,
     sweepPendingCleanupLeases,
     markNativeOwnershipUnverified,
     prepareHotRestartShutdown,
