@@ -1915,7 +1915,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
 
   let settledProcessesDiscovered = false;
 
-  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number; skipScheduledRetryCancellation?: boolean }) {
+  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number; skipScheduledRetryCancellation?: boolean; skipCapturedInstructionCommit?: boolean }) {
     await preserveCancelledNativeWorkspaces(db);
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
     const now = new Date();
@@ -1925,7 +1925,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
     await instructionCopies.recoverStopped().catch(error => {
       logger.warn({ err: error }, "failed to recover stopped instruction copies");
     });
-    await instructionCopies.recoverCaptured().catch(error => {
+    await instructionCopies.recoverCaptured({ skipCommit: opts?.skipCapturedInstructionCommit }).catch(error => {
       logger.warn({ err: error }, "failed to retry captured instruction revisions");
     });
 

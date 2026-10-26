@@ -2096,3 +2096,25 @@ Slice 40 will own captured-byte commit only. See
 [instruction recovery audit](2026-10-25-instruction-recovery-sleep-audit.md).
 Existing instruction-copy and directory suites pass 20 and 87 tests respectively
 on separate external PostgreSQL databases before any production behavior changes.
+
+
+## Slice 39 accepted; slice 40 captured instruction commits
+
+[#17667](https://github.com/paperclipai/paperclip/pull/17667), head
+`ecef7776a4b38e0c7e0b86d7009fcd01ed7658e5`, has all 53 checks passing,
+fresh Greptile 5/5, and no unresolved threads. The startup fixture failure and
+repair remain recorded. This PR is still draft and unmerged.
+
+Slice 40 migrates only captured instruction commits. Existing saved bytes,
+attempt counts, and retry deadlines drive a bounded worker. Local writes signal
+the existing transaction boundary; the revision service still owns authorization,
+conflicts, file replacement, and exact-byte replay. A race test exposed a newer
+retry deadline being ignored; the attempt claim now checks that it is still due.
+Manual/startup recovery shares the guarded owner. Stopped collection and post-save
+directory release remain separate duties. No schema migration is needed.
+
+Final instruction acceptance passes 33 tests, directory/startup passes 137, and
+startup/instruction-release wiring passes 64 (184 distinct tests across these
+selections). Workspace types/build pass. Fresh remote gates remain required.
+See the instruction recovery audit for producer coverage and all failed attempts.
+Earlier stack CI/review findings and final master reconciliation remain outstanding.
