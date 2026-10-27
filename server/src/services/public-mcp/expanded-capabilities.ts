@@ -1,8 +1,9 @@
 import { z } from "zod";
-import { mcpAgentModelConfig } from "./agent-config.js";
+import { applyMcpReasoningEffort, mcpAgentModelConfig } from "./agent-config.js";
+import { HttpError } from "../../errors.js";
 import {
   updateIssueSchema, upsertIssueDocumentSchema, updateAgentSchema, upsertAgentInstructionsFileSchema,
-  aiRuntimeConnectionBindingSchema, createProjectSchema, updateProjectSchema,
+  aiRuntimeConnectionBindingSchema, createProjectSchema, updateProjectSchema, createAgentHireSchema,
   companySkillCreateSchema, companySkillUpdateSchema, companySkillFileUpdateSchema,
   createIssueWorkProductSchema, updateIssueWorkProductSchema,
 } from "@paperclipai/shared";
@@ -17,10 +18,16 @@ const taskChanges = updateIssueSchema.pick({ title: true, description: true, ass
   title: z.string().trim().min(1).max(240).optional(), description: z.string().max(524288).nullable().optional(),
   assigneeAgentId: z.uuid().nullable().optional(), blockedByIssueIds: z.array(z.uuid()).max(100).optional(),
 }).strict();
-const agentChanges = updateAgentSchema.pick({ name: true, role: true, title: true, icon: true, reportsTo: true, capabilities: true, desiredSkills: true, budgetMonthlyCents: true }).extend({
+const agentTuning = {
   adapterConfig: z.object({ model: z.string().trim().min(1).max(256).optional(), reasoningEffort: z.enum(["minimal", "low", "medium", "high", "xhigh", "max", "ultra"]).optional() }).strict().optional(),
   runtimeConfig: z.object({ aiConnection: aiRuntimeConnectionBindingSchema }).strict().optional(),
-}).strict();
+};
+const agentChanges = updateAgentSchema.pick({ name: true, role: true, title: true, icon: true, reportsTo: true, capabilities: true, desiredSkills: true, budgetMonthlyCents: true }).extend(agentTuning).strict();
+// Hire input is deliberately narrower than the full create schema: no permission
+// policies, adapter environment or host commands, credential/session claims,
+// setup identifiers, runner overrides or instruction bundles. Instructions can be
+// written afterwards through paperclip_update_agent_instructions.
+const newAgent = createAgentHireSchema.pick({ name: true, role: true, title: true, icon: true, reportsTo: true, capabilities: true, desiredSkills: true, adapterType: true, budgetMonthlyCents: true }).extend(agentTuning).strict();
 const projectFields = { name: true, description: true, status: true, leadAgentId: true, goalIds: true, targetDate: true, color: true, icon: true } as const;
 const skillMetadata = companySkillUpdateSchema.unwrap().pick({ description: true, iconUrl: true, color: true, tagline: true, authorName: true, homepageUrl: true, categories: true }).strict();
 const deliverableFields = { type: true, provider: true, externalId: true, title: true, url: true, status: true, isPrimary: true, summary: true } as const;
@@ -103,6 +110,52 @@ export const expandedMcpCapabilities: Capability[] = [
   {
     name: "paperclip_get_agent", description: "Get an agent's identity and non-secret operating configuration. Credentials, environment variables and permission policies are not returned.",
     schema: z.object(agent).strict(), run: async (p, a, api) => ({ agent: agentOutput(await api(p, "GET", `/agents/${pathId(a.agentId)}/configuration`)) }),
+  },
+  {
+    name: "paperclip_create_agent", configure: true, destructive: true,
+    description: "Register a new agent in the authorized company that cannot run: it is created paused, or pending board approval where the company requires hire approval. No heartbeat, run or billing starts, and no credentials, adapter environment or host commands are set. Requires configuration consent. Reuse requestId on retries.",
+    schema: z.object({ ...company, requestId, agent: newAgent }).strict(),
+    run: async (p, a, api, origin) => {
+      const input = { ...object(a.agent) };
+      const tuning = object(input.adapterConfig);
+      if (Object.keys(tuning).length) {
+        try {
+          input.adapterConfig = applyMcpReasoningEffort(String(input.adapterType ?? "process"), tuning, tuning);
+        } catch (error) {
+          const status = error instanceof HttpError ? error.status : 422;
+          const supported = rows(object(error instanceof HttpError ? error.details : null).supportedReasoningEfforts).filter(v => typeof v === "string");
+          throw new McpApiError(status, { code: "MCP_REASONING_EFFORT_UNSUPPORTED", ...(supported.length ? { supportedReasoningEfforts: supported } : {}) });
+        }
+      }
+      const hire = object(await api(p, "POST", `/companies/${pathId(a.companyId)}/agent-hires`, input));
+      const created = object(hire.agent);
+      let settled = created;
+      if (created.status === "idle") {
+        // The dedicated pause route is authorized by the same agents:create grant
+        // as the hire route and also cancels in-flight heartbeat work. A generic
+        // PATCH would require a separate agents:configure grant, so a caller
+        // holding only agents:create would be left with a runnable idle agent.
+        try {
+          settled = object(await api(p, "POST", `/agents/${pathId(created.id)}/pause`));
+        } catch (error) {
+          const status = error instanceof McpApiError ? error.status : 500;
+          throw new McpApiError(status, { code: "MCP_AGENT_PAUSE_FAILED", agentId: created.id ?? null });
+        }
+      }
+      const approval = object(hire.approval);
+      return {
+        agent: agentOutput(settled),
+        configurationWarnings: rows(created.configurationWarnings),
+        approval: approval.id ? { ...pick(approval, ["id", "type", "status"]), url: origin + "/" + pathId(p.company.issuePrefix) + "/approvals/" + pathId(approval.id) } : null,
+        url: origin + "/" + pathId(p.company.issuePrefix) + "/agents/" + pathId(settled.urlKey ?? settled.id),
+        state: settled.status === "pending_approval" ? "pending_approval" : settled.status === "paused" ? "paused" : settled.status,
+        note: settled.status === "pending_approval"
+          ? "This company requires board approval for new agents. The board must approve the hire in Paperclip before the agent can run."
+          : settled.status === "paused"
+            ? "The agent is paused and cannot run. Resume it in Paperclip when it should start work."
+            : `The agent was created with status "${String(settled.status)}". Check its state in Paperclip before relying on it.`,
+      };
+    },
   },
   {
     name: "paperclip_update_agent", configure: true, destructive: true,

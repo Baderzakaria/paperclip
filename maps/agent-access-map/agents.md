@@ -31,7 +31,9 @@ API: `present` — representative operation IDs:
 - `POST /api/companies/{companyId}/agents`.
 
 Agent access: `partial` — Native hire_agent; REST / CLI agent; runtime inheritance for
-native hires.
+native hires. Public MCP `paperclip_create_agent` (configure scope) registers an agent
+that cannot run — parked paused, or `pending_approval` where the company requires hire
+approval — through the same `POST /api/companies/{companyId}/agent-hires` boundary.
 
 Creation requests can use `runner: auto | paperclip | legacy`; the server resolves
 and persists execution configuration. Claude Auto selects the native ACPX profile
@@ -56,6 +58,14 @@ Its standard grants apply at hire. Authorized completion retries recover the
 same record and approval without changing the submitted configuration.
 Normal agent-authored hiring keeps its existing approval policy.
 
+A configure-scoped assistant connection can register only a non-running agent: its
+narrow input excludes permission policies, adapter environment and host commands,
+credential/session claims, setup identifiers, runner overrides and instruction bundles.
+Where the company requires board approval for new agents the hire lands
+`pending_approval` with its `hire_agent` approval record; otherwise the boundary
+immediately pauses the idle hire through the normal lifecycle transition. No
+heartbeat, run or billing starts, and the mutation receipt preserves the person's
+request identity.
 The creation boundary resolves the request-level runner before adapter validation
 and credential normalization. Omitted/automatic new Codex selection uses the
 qualified target's default; explicit Legacy is retained. Disabled adapters and

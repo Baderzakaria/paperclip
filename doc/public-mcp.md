@@ -451,7 +451,7 @@ Existing direct requests and grants are unchanged.
 
 ## Expanded direct assistant tools
 
-Direct instance connections expose 37 explicitly registered operations. The central
+Direct instance connections expose 38 explicitly registered operations. The central
 public directory broker retains its original ten tools and rejects expanded calls.
 The existing experimental setting gates both surfaces; sharing a setup link still
 conveys no authority. Consent has one **Write all of your Paperclip data** checkbox,
@@ -465,10 +465,13 @@ Normal Paperclip permissions are required in addition to the connection scope.
 - Work (`paperclip:write`): update, finish or block tasks; write Markdown documents;
   register or update deliverables; upload attachments. Assignment and status changes
   can schedule agents. Pending execution reviews must be decided in Paperclip.
-- Configuration (`paperclip:configure`): edit existing agents, model/budget and
-  existing connection bindings; edit instructions; create/update projects and choose
-  accessible repositories; create/update organization skills and their files.
-  Credentials, execution commands, policies and agent creation are excluded.
+- Configuration (`paperclip:configure`): register a new agent that cannot run
+  (created paused, or pending board approval where the company requires hire
+  approval); edit existing agents, model/budget and existing connection bindings;
+  edit instructions; create/update projects and choose accessible repositories;
+  create/update organization skills and their files.
+  Credentials, execution commands, permission policies, starting or resuming
+  agents, and hire approval decisions are excluded.
 - Reads (`paperclip:read`): task/document history, agent instructions, skill files,
   accessible repository choices and attachment downloads. Native domain read
   permissions still apply. Revision IDs from reads are required for content edits.
