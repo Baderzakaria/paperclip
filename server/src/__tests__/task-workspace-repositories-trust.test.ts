@@ -371,7 +371,7 @@ const support = await getEmbeddedPostgresTestSupport();
     const source = path.join(root, `${f.issueId}-public-source`);
     await mkdir(source);
     const exec = promisify(execFileCallback);
-    await exec("git", ["init", "--initial-branch=main", source]);
+    await exec("git", ["init", source]);
     await writeFile(path.join(source, "public.txt"), "Public fixture bytes\n");
     await exec("git", ["-C", source, "add", "."]);
     await exec("git", ["-C", source, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-m", "public source"]);

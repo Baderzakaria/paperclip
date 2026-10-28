@@ -1615,7 +1615,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   it.each(["owned", "forged"] as const)("keeps unresolved-ref recovery and reporting while persisting only owned diagnostics: %s", async provenance => {
     const { companyId, agentId, issueId, runId, wakeupRequestId } = await seedQueuedIssueRunFixture();
     const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), "base-ref-heartbeat-"));
-    execFileSync("git", ["init", "-b", "master"], { cwd: repoRoot, stdio: "ignore" });
+    execFileSync("git", ["init"], { cwd: repoRoot, stdio: "ignore" });
     execFileSync("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-m", "Fixture"], { cwd: repoRoot, stdio: "ignore" });
     const original = await workspaceRuntime.realizeExecutionWorkspace({
       base: { baseCwd: repoRoot, source: "project_primary", projectId: null, workspaceId: null, repoUrl: null, repoRef: "absent-fixture" },
@@ -3753,10 +3753,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       await fs.mkdir(instanceRoot, { recursive: true });
       const cwd = path.join(instanceRoot, "source-repository");
       await fs.mkdir(cwd, { recursive: true });
-      execFileSync("git", ["init", "-b", "main"], { cwd, stdio: "ignore" });
+      execFileSync("git", ["init"], { cwd, stdio: "ignore" });
       await fs.writeFile(path.join(cwd, "report.txt"), "source bytes");
       execFileSync("git", ["add", "report.txt"], { cwd, stdio: "ignore" });
       execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.test", "commit", "-m", "Source"], { cwd, stdio: "ignore" });
+      execFileSync("git", ["branch", "-M", "main"], { cwd, stdio: "ignore" });
       const [project] = await db.insert(projects).values({ companyId, name: "Chat source" }).returning();
       const [source] = await db.insert(projectWorkspaces).values({ companyId, projectId: project.id, name: "Source", cwd, isPrimary: true }).returning();
       await db.update(agents).set({ adapterType: "paperclip_runner", adapterConfig: { provider: "codex", model: "gpt-5.6-luna" } }).where(eq(agents.id, agentId));
@@ -6441,10 +6442,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const heartbeat = heartbeatService(db);
     await fs.mkdir(cwd);
     await fs.mkdir(bin);
-    execFileSync("git", ["init", "-b", "main"], { cwd, stdio: "ignore" });
+    execFileSync("git", ["init"], { cwd, stdio: "ignore" });
     await fs.writeFile(path.join(cwd, "README.md"), "Keep this local repository intact.\n");
     execFileSync("git", ["add", "README.md"], { cwd, stdio: "ignore" });
     execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.test", "commit", "-m", "Fixture"], { cwd, stdio: "ignore" });
+    execFileSync("git", ["branch", "-M", "main"], { cwd, stdio: "ignore" });
     await fs.writeFile(path.join(bin, "git"), `#!${process.execPath}\n` +
       `const fs = require('node:fs'); const { spawnSync } = require('node:child_process');\n` +
       `const args = process.argv.slice(2);\n` +

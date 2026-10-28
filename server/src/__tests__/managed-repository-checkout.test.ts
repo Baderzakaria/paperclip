@@ -14,7 +14,7 @@ async function fixture() {
   directories.push(root);
   const source = path.join(root, "source");
   await mkdir(source);
-  await execFile("git", ["init", "--initial-branch=main", source]);
+  await execFile("git", ["init", source]);
   await writeFile(path.join(source, "source.txt"), "initial\n");
   await execFile("git", ["-C", source, "add", "."]);
   await execFile("git", ["-C", source, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-m", "initial"]);

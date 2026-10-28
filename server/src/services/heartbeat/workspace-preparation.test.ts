@@ -67,13 +67,14 @@ describe.skipIf(!support.supported)("heartbeat workspace preparation boundary", 
     const [project] = await db.insert(projects).values({ companyId: company.id, name: "Source project" }).returning();
     const source = join(home, project.id);
     await mkdir(source);
-    await execFile("git", ["init", "--initial-branch=main", source]);
+    await execFile("git", ["init", source]);
     await execFile("git", ["-C", source, "config", "user.email", "test@example.com"]);
     await execFile("git", ["-C", source, "config", "user.name", "Workspace test"]);
     await writeFile(join(source, "README.md"), "source content\n");
     await execFile("git", ["-C", source, "add", "."]);
     await execFile("git", ["-C", source, "commit", "-m", "Source"]);
-    const [projectWorkspace] = await db.insert(projectWorkspaces).values({ companyId: company.id, projectId: project.id, name: "Source", cwd: source, isPrimary: true }).returning();
+    await execFile("git", ["-C", source, "branch", "-M", "main"]);
+    const [projectWorkspace] = await db.insert(projectWorkspaces).values({ companyId: company.id, projectId: project.id, name: "Source", sourceType: "local_path", cwd: source, isPrimary: true }).returning();
     const [issue] = await db.insert(issues).values({ companyId: company.id, title: "Prepare this workspace", identifier: "WSP-1", projectId: project.id, projectWorkspaceId: projectWorkspace.id, assigneeAgentId: agent.id }).returning();
     const [run] = await db.insert(heartbeatRuns).values({ companyId: company.id, agentId: agent.id, issueId: issue.id, scopeKind: "issue", status: "running", runtimeMode: "legacy" }).returning();
     const localEnvironment = await environmentService(db).ensureLocalEnvironment(company.id);

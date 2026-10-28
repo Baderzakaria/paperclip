@@ -51,10 +51,10 @@ async function readOrigin(cwd: string): Promise<string | null> {
 }
 
 async function gitDirectory(cwd: string, flag: "--absolute-git-dir" | "--git-common-dir"): Promise<string | null> {
-  const directory = await exec("git", ["rev-parse", "--path-format=absolute", flag], {
+  const directory = await exec("git", ["rev-parse", flag], {
     cwd, env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" }, timeout: 10_000, maxBuffer: 16 * 1024,
   }).then(result => result.stdout.trim() || null).catch(() => null);
-  return directory ? canonicalDirectory(directory) : null;
+  return directory ? canonicalDirectory(path.resolve(cwd, directory)) : null;
 }
 
 async function hasLinkedWorktreeStorage(cwd: string, owner: string): Promise<boolean> {
