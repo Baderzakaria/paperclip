@@ -853,7 +853,7 @@ async function probeGitWorktreeBase(cwd: string) {
     // corruption and I/O failures must remain reportable in Sentry.
     const notRepository = failure.code === 128 && failure.signal == null &&
       typeof failure.stderr === "string" &&
-      /^fatal: not a git repository \(or any (?:of the parent directories\): \.git|parent up to mount point .+)\)\r?\n(?:Stopping at filesystem boundary \(GIT_DISCOVERY_ACROSS_FILESYSTEM not set\)\.\r?\n)?$/.test(failure.stderr) &&
+      /^fatal: not a git repository \(or any (?:of the parent directories\): \.git|parent up to mount point [^)\r\n]+\))(?:\r?\nStopping at filesystem boundary \(GIT_DISCOVERY_ACROSS_FILESYSTEM not set\)\.)?\r?\n?$/.test(failure.stderr) &&
       !process.env.GIT_DIR && !process.env.GIT_WORK_TREE && !process.env.GIT_COMMON_DIR &&
       await hasNoGitMetadataInWorkspaceAncestors(cwd);
     return { isCheckout: false, notRepository };
@@ -863,7 +863,16 @@ async function probeGitWorktreeBase(cwd: string) {
 async function hasNoGitMetadataInWorkspaceAncestors(cwd: string): Promise<boolean> {
   try {
     let directory = await fs.realpath(cwd);
-    if (!(await fs.stat(directory)).isDirectory()) return false;
+    const rootEntry = await fs.stat(directory);
+    if (!rootEntry.isDirectory()) return false;
+    // Git's own discovery stops at filesystem boundaries unless
+    // GIT_DISCOVERY_ACROSS_FILESYSTEM is set. Metadata above that ceiling is
+    // outside the search space Git used for this probe, so it cannot turn
+    // this path into a damaged checkout.
+    const rootDevice = rootEntry.dev;
+    const crossesFilesystems = /^(1|true|yes|on)$/i.test(
+      process.env.GIT_DISCOVERY_ACROSS_FILESYSTEM ?? "",
+    );
     for (;;) {
       // Damaged repositories can produce the same "not a git repository"
       // message as ordinary directories. Retain those failures in Sentry.
@@ -878,6 +887,7 @@ async function hasNoGitMetadataInWorkspaceAncestors(cwd: string): Promise<boolea
       }
       const parent = path.dirname(directory);
       if (parent === directory) return true;
+      if (!crossesFilesystems && (await fs.lstat(parent)).dev !== rootDevice) return true;
       directory = parent;
     }
   } catch {

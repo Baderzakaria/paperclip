@@ -613,6 +613,75 @@ describe("assertGitWorktreeBaseWorkspaceReady", () => {
     } finally { await fs.rm(cwd, { recursive: true, force: true }); }
   });
 
+  it("recognizes a local path as non-Git when Git stops at a filesystem boundary", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-local-path-boundary-"));
+    const bin = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-git-probe-bin-"));
+    const originalLstat = fs.lstat.bind(fs);
+    const lstat = vi.spyOn(fs, "lstat").mockImplementation(async (...args: Parameters<typeof fs.lstat>) => {
+      if ([".git", "HEAD", "objects", "refs"].includes(path.basename(String(args[0])))) {
+        const error = new Error("not found") as NodeJS.ErrnoException;
+        error.code = "ENOENT";
+        throw error;
+      }
+      return originalLstat(...args);
+    });
+    try {
+      await fs.writeFile(path.join(bin, "git"), "#!/bin/sh\nprintf '%s\\n' 'fatal: not a git repository (or any parent up to mount point /)' >&2\nprintf '%s\\n' 'Stopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set).' >&2\nexit 128\n", { mode: 0o755 });
+      vi.stubEnv("PATH", bin);
+      const failure = await assertGitWorktreeBaseWorkspaceReady(configuredLocalPathInput(cwd)).catch((error) => error);
+      expect(failure).toMatchObject({
+        code: "workspace_validation_failed",
+        resultJson: { workspaceValidation: {
+          reason: "git_worktree_base_not_git_checkout",
+          configurationReason: "local_path_requires_git_checkout",
+        } },
+      });
+    } finally {
+      lstat.mockRestore();
+      vi.unstubAllEnvs();
+      await fs.rm(cwd, { recursive: true, force: true });
+      await fs.rm(bin, { recursive: true, force: true });
+    }
+  });
+
+  it("ignores ancestor Git metadata above Git's own mount boundary", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-local-path-boundary-parent-"));
+    const bin = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-git-probe-bin-"));
+    const boundaryParent = path.dirname(path.dirname(cwd));
+    const rootDevice = (await fs.stat(cwd)).dev;
+    const originalLstat = fs.lstat.bind(fs);
+    const metadataNames = new Set([".git", "HEAD", "objects", "refs"]);
+    const lstat = vi.spyOn(fs, "lstat").mockImplementation(async (...args: Parameters<typeof fs.lstat>) => {
+      const target = String(args[0]);
+      if (target === boundaryParent || path.dirname(target) === boundaryParent && metadataNames.has(path.basename(target))) {
+        return { dev: rootDevice + 1 } as unknown as Awaited<ReturnType<typeof fs.lstat>>;
+      }
+      if (metadataNames.has(path.basename(target))) {
+        const error = new Error("not found") as NodeJS.ErrnoException;
+        error.code = "ENOENT";
+        throw error;
+      }
+      return originalLstat(...args);
+    });
+    try {
+      await fs.writeFile(path.join(bin, "git"), "#!/bin/sh\nprintf '%s\\n' 'fatal: not a git repository (or any parent up to mount point /)' >&2\nprintf '%s\\n' 'Stopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set).' >&2\nexit 128\n", { mode: 0o755 });
+      vi.stubEnv("PATH", bin);
+      const failure = await assertGitWorktreeBaseWorkspaceReady(configuredLocalPathInput(cwd)).catch((error) => error);
+      expect(failure).toMatchObject({
+        code: "workspace_validation_failed",
+        resultJson: { workspaceValidation: {
+          reason: "git_worktree_base_not_git_checkout",
+          configurationReason: "local_path_requires_git_checkout",
+        } },
+      });
+    } finally {
+      lstat.mockRestore();
+      vi.unstubAllEnvs();
+      await fs.rm(cwd, { recursive: true, force: true });
+      await fs.rm(bin, { recursive: true, force: true });
+    }
+  });
+
   it.each(["legacy", "repository", "fallback", "materialization", "session", "unbound"])(
     "does not mark ambiguous non-Git workspace evidence as a configuration-only failure: %s", async (kind) => {
       const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-ambiguous-workspace-"));
