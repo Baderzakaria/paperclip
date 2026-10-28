@@ -175,7 +175,8 @@ export async function ensureManagedRepositoriesIgnored(cwd: string, options: { p
   } catch (error) {
     const failure = error as { code?: unknown; signal?: unknown; stderr?: unknown };
     if (options.plainTaskDirectory && failure.code === 128 && failure.signal == null &&
-        failure.stderr === "fatal: not a git repository (or any of the parent directories): .git\n" &&
+        typeof failure.stderr === "string" &&
+        /^fatal: not a git repository \(or any (?:of the parent directories\): \.git|parent up to mount point [^)\r\n]+\))(?:\r?\nStopping at filesystem boundary \(GIT_DISCOVERY_ACROSS_FILESYSTEM not set\)\.)?\r?\n?$/.test(failure.stderr) &&
         !process.env.GIT_DIR && !process.env.GIT_WORK_TREE && !process.env.GIT_COMMON_DIR) return;
     throw error;
   }

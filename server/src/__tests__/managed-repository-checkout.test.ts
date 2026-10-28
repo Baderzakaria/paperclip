@@ -1,6 +1,6 @@
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdtemp, mkdir, writeFile, readFile, readdir, rm, stat, symlink } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, readFile, readdir, rm, stat, symlink, chmod } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -14,7 +14,8 @@ async function fixture() {
   directories.push(root);
   const source = path.join(root, "source");
   await mkdir(source);
-  await execFile("git", ["init", "--initial-branch=main", source]);
+  await execFile("git", ["init", source]);
+  await execFile("git", ["-C", source, "checkout", "-b", "main"]);
   await writeFile(path.join(source, "source.txt"), "initial\n");
   await execFile("git", ["-C", source, "add", "."]);
   await execFile("git", ["-C", source, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-m", "initial"]);
@@ -41,6 +42,20 @@ describe("atomic managed repository publication", () => {
     await expect(ensureManagedRepositoriesIgnored(target, { plainTaskDirectory: true })).resolves.toBeUndefined();
     expect(await readFile(file, "utf8")).toBe("/.paperclip-repositories/\n");
     await expect(ensureManagedRepositoriesIgnored(target)).rejects.toThrow("not a git repository");
+  });
+  it("allows inert Git metadata when Git stops discovery at a filesystem boundary", async () => {
+    const { root, target } = await fixture();
+    await mkdir(path.join(target, ".git", "info"), { recursive: true });
+    const file = path.join(target, ".git", "info", "exclude");
+    await writeFile(file, "/.paperclip-repositories/\n");
+    const bin = path.join(root, "bin");
+    await mkdir(bin);
+    const git = path.join(bin, "git");
+    await writeFile(git, "#!/bin/sh\nprintf '%s\\n' 'fatal: not a git repository (or any parent up to mount point /)' >&2\nprintf '%s\\n' 'Stopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set).' >&2\nexit 128\n");
+    await chmod(git, 0o755);
+    vi.stubEnv("PATH", bin);
+    await expect(ensureManagedRepositoriesIgnored(target, { plainTaskDirectory: true })).resolves.toBeUndefined();
+    expect(await readFile(file, "utf8")).toBe("/.paperclip-repositories/\n");
   });
   it("still excludes managed repositories when a task directory contains a real checkout", async () => {
     const { source } = await fixture();
